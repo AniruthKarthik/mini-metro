@@ -10,19 +10,25 @@ type Station struct {
 	Kind  int
 	Pos   pos
 	Queue []int
+	Alive bool
 }
 
 type Line struct {
 	ID       int
 	Stations []int
 	Corners  []pos
+	Removed  bool
 }
 
 type Train struct {
 	ID         int
-	Line       Line
+	LineID     int
 	Segment    int // line between stations, explains position of the train in the series of lines
-	Passengers []float64
+	Progress   float64
+	Direction  int
+	Capacity   int
+	Passengers []int
+	Active     bool
 }
 
 type GameState struct {
