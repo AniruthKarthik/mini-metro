@@ -3,6 +3,10 @@ package engine
 const maxQsize = 20
 
 func (s *Simulator) checkGameOver() {
+	if !s.State.Alive {
+		return
+	}
+
 	for i := range s.State.Stations {
 		st := &s.State.Stations[i]
 

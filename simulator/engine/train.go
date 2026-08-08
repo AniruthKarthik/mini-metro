@@ -2,11 +2,27 @@ package engine
 
 const trainSpeed = 0.5
 
+type Train struct {
+	ID          int
+	LineID      int
+	Segment     int // line between stations, explains position of the train in the series of lines
+	Progress    float64
+	Direction   int
+	Capacity    int
+	Passengers  []StationKind
+	Active      bool
+	JustArrived bool
+}
+
 func (s *Simulator) moveTrains(dt float64) {
 	for i := range s.State.Trains {
 		tr := &s.State.Trains[i]
 
 		if !tr.Active {
+			continue
+		}
+
+		if tr.LineID < 0 || tr.LineID >= len(s.State.Lines) {
 			continue
 		}
 
@@ -20,7 +36,7 @@ func (s *Simulator) moveTrains(dt float64) {
 
 		// reached next station
 		if tr.Progress >= 1.0 {
-			tr.Progress = 0
+			tr.Progress -= 1.0
 			tr.Segment += tr.Direction
 
 			last := len(line.Stations) - 1
@@ -35,6 +51,8 @@ func (s *Simulator) moveTrains(dt float64) {
 				tr.Segment = 0
 				tr.Direction = 1
 			}
+
+			tr.JustArrived = true
 		}
 	}
 }
@@ -43,18 +61,34 @@ func (s *Simulator) boardAndAlight() {
 	for i := range s.State.Trains {
 		tr := &s.State.Trains[i]
 
-		if !tr.Active {
+		if !tr.Active || !tr.JustArrived {
 			continue
 		}
 
-		//care only if train is at station
-		if tr.Progress != 0 {
+		tr.JustArrived = false
+
+		if tr.LineID < 0 || tr.LineID >= len(s.State.Lines) {
 			continue
 		}
 
 		line := &s.State.Lines[tr.LineID]
+		if line.Removed || len(line.Stations) < 2 {
+			continue
+		}
+
+		if tr.Segment < 0 || tr.Segment >= len(line.Stations) {
+			continue
+		}
+
 		stationID := line.Stations[tr.Segment]
+		if stationID < 0 || stationID >= len(s.State.Stations) {
+			continue
+		}
+
 		st := &s.State.Stations[stationID]
+		if !st.Alive {
+			continue
+		}
 
 		// alight
 		remaining := tr.Passengers[:0]

@@ -4,7 +4,26 @@ type Simulator struct {
 	State GameState
 }
 
+func NewSimulator(stations []Station) *Simulator {
+	for i := range stations {
+		stations[i].Alive = true
+	}
+	return &Simulator{
+		State: GameState{
+			Stations: stations,
+			Lines:    []Line{},
+			Trains:   []Train{},
+			Score:    0,
+			Tick:     0,
+			Alive:    true,
+		},
+	}
+}
+
 func (s *Simulator) Step(dt float64) {
+	if !s.State.Alive {
+		return
+	}
 	s.spawnPassengers(dt)
 	s.moveTrains(dt)
 	s.boardAndAlight()
@@ -14,6 +33,9 @@ func (s *Simulator) Step(dt float64) {
 }
 
 func (s *Simulator) ApplyAction(a Action) {
+	if !s.State.Alive {
+		return
+	}
 	switch v := a.(type) {
 
 	case AddLine:
@@ -33,6 +55,12 @@ func (s *Simulator) ApplyAction(a Action) {
 func (s *Simulator) addLine(a AddLine) {
 	if len(a.Stations) < 2 {
 		return
+	}
+
+	for _, stID := range a.Stations {
+		if stID < 0 || stID >= len(s.State.Stations) {
+			return
+		}
 	}
 
 	id := len(s.State.Lines)
@@ -69,20 +97,21 @@ func (s *Simulator) addTrain(a AddTrain) {
 
 	line := &s.State.Lines[a.LineID]
 
-	if line.Removed {
+	if line.Removed || len(line.Stations) < 2 {
 		return
 	}
 
 	id := len(s.State.Trains)
 
 	s.State.Trains = append(s.State.Trains, Train{
-		ID:        id,
-		LineID:    a.LineID,
-		Segment:   0,
-		Progress:  0,
-		Direction: 1,
-		Capacity:  6,
-		Active:    true,
+		ID:          id,
+		LineID:      a.LineID,
+		Segment:     0,
+		Progress:    0,
+		Direction:   1,
+		Capacity:    6,
+		Active:      true,
+		JustArrived: true,
 	})
 }
 
@@ -94,7 +123,7 @@ func (s *Simulator) removeLine(a RemoveLine) {
 	line := &s.State.Lines[a.LineID]
 	line.Removed = true
 
-	// deactive trains in this line
+	// deactivate trains in this line
 	for i := range s.State.Trains {
 		tr := &s.State.Trains[i]
 
