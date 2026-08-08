@@ -14,6 +14,6 @@ type Station struct {
 	ID    int
 	Kind  StationKind
 	Pos   Pos
-	Queue []StationKind
+	Queue []Passenger
 	Alive bool
 }

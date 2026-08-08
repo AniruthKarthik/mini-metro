@@ -25,7 +25,11 @@ func (s *Simulator) spawnPassengers(dt float64) {
 		}
 		if rand.Float64() < spawnRate()*dt {
 			dest := randomOtherKind(st.Kind)
-			st.Queue = append(st.Queue, dest)
+			st.Queue = append(st.Queue, Passenger{
+				Origin:      st.ID,
+				Destination: dest,
+				SpawnTick:   s.State.Tick,
+			})
 		}
 	}
 }

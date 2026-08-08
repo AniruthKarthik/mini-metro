@@ -62,20 +62,24 @@ func TestTrainBoardingAndAlighting(t *testing.T) {
 	}
 
 	// Manually place a Triangle passenger in Station 0 queue
-	sim.State.Stations[0].Queue = append(sim.State.Stations[0].Queue, Triangle)
+	sim.State.Stations[0].Queue = append(sim.State.Stations[0].Queue, Passenger{
+		Origin:      0,
+		Destination: Triangle,
+		SpawnTick:   0,
+	})
 
 	// Step 1: Train is at Station 0 and JustArrived is true, so it should board the passenger
 	sim.Step(0.1)
 
 	tr := &sim.State.Trains[0]
-	if len(tr.Passengers) != 1 || tr.Passengers[0] != Triangle {
+	if len(tr.Passengers) != 1 || tr.Passengers[0].Destination != Triangle {
 		t.Errorf("Expected train to board Triangle passenger at Station 0, got passengers %v", tr.Passengers)
 	}
 	if len(sim.State.Stations[0].Queue) != 0 {
 		t.Errorf("Expected Station 0 queue to be empty after boarding, got %d", len(sim.State.Stations[0].Queue))
 	}
 
-	// Step until train reaches Station 1 (trainSpeed = 0.5, segment distance = 1.0 -> takes ~20 steps with dt=0.1)
+	// Step until train reaches Station 1
 	for i := 0; i < 25; i++ {
 		sim.Step(0.1)
 		if sim.State.Score > 0 {
@@ -120,7 +124,11 @@ func TestGameOverTrigger(t *testing.T) {
 
 	// Fill queue of Station 0 beyond maxQsize (20)
 	for i := 0; i < 25; i++ {
-		sim.State.Stations[0].Queue = append(sim.State.Stations[0].Queue, Triangle)
+		sim.State.Stations[0].Queue = append(sim.State.Stations[0].Queue, Passenger{
+			Origin:      0,
+			Destination: Triangle,
+			SpawnTick:   0,
+		})
 	}
 
 	sim.Step(0.1)
@@ -134,6 +142,22 @@ func TestGameOverTrigger(t *testing.T) {
 	sim.Step(0.1)
 	if sim.State.Tick != currentTick {
 		t.Errorf("Expected Tick count to remain unchanged after game over")
+	}
+}
+
+func TestObservation(t *testing.T) {
+	stations := createTestStations()
+	sim := NewSimulator(stations)
+
+	sim.ApplyAction(AddLine{Stations: []int{0, 1}})
+	sim.ApplyAction(AddTrain{LineID: 0})
+
+	obs := sim.Observation()
+	if len(obs.StationKinds) != 5 {
+		t.Errorf("Expected 5 station kinds in observation, got %d", len(obs.StationKinds))
+	}
+	if len(obs.TrainLineIDs) != 1 {
+		t.Errorf("Expected 1 active train in observation, got %d", len(obs.TrainLineIDs))
 	}
 }
 
