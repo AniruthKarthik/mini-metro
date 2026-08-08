@@ -45,7 +45,7 @@ func (s *Simulator) moveTrains(dt float64) {
 		tr.Progress += trainSpeed * dt
 
 		// reached next station
-		if tr.Progress >= 1.0 {
+		for tr.Progress >= 1.0 {
 			tr.Progress -= 1.0
 			tr.Segment += tr.Direction
 
@@ -121,6 +121,9 @@ func (s *Simulator) boardAndAlight() {
 			p := st.Queue[0]
 			st.Queue = st.Queue[1:]
 			tr.Passengers = append(tr.Passengers, p)
+		}
+		if len(st.Queue) == 0 {
+			st.Queue = nil
 		}
 	}
 }

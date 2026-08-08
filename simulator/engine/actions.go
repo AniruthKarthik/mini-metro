@@ -28,3 +28,13 @@ type RemoveLine struct {
 }
 
 func (RemoveLine) isAction() {}
+
+type ChooseReward struct{ Choice RewardType }
+
+func (ChooseReward) isAction() {}
+
+type AddCarriage struct {
+	TrainID int
+}
+
+func (AddCarriage) isAction() {}
