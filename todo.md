@@ -1,0 +1,13 @@
+- [ ] add resource pool tracking for lines trains carriages and tunnels
+- [ ] gate applyaction execution based on available resource pool limits
+- [ ] return resources to pool when lines or trains are removed
+- [ ] build adjacency graph from active lines and stations for network topology
+- [ ] implement default passenger route checking for direct and transfer paths
+- [ ] update boarding and alighting logic to use default network pathing
+- [ ] add event scheduler for time-based simulation triggers
+- [ ] implement dynamic station spawning over time with shape weights
+- [ ] implement weekly reward event for granting extra locomotives and bonus choices
+- [ ] implement station overcrowding countdown timers before triggering game over
+- [ ] add dynamic station capacity and visual overcrowding indicators to state
+- [ ] create gym-style reset and step api for ml agent integration
+- [ ] expose JSON or C-Go IPC bindings for external python RL frameworks
