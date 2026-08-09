@@ -14,18 +14,20 @@ func NewSimulator(stations []Station) *Simulator {
 	for i := range stations {
 		stations[i].Alive = true
 	}
-	return &Simulator{
+	sim := &Simulator{
 		State: GameState{
-			Stations:     stations,
-			Lines:        []Line{},
-			Trains:       []Train{},
-			Resources:    NewResourcePool(),
-			NextRewardAt: rewardInterval(),
-			Score:        0,
-			Tick:         0,
-			Alive:        true,
+			Stations:  stations,
+			Lines:     []Line{},
+			Trains:    []Train{},
+			Resources: NewResourcePool(),
+			Score:     0,
+			Tick:      0,
+			Alive:     true,
 		},
 	}
+	sim.State.Scheduler.Schedule(rewardInterval(), EventReward)
+	sim.State.Scheduler.Schedule(spawnInterval(), EventSpawnStation)
+	return sim
 }
 
 // rebuildGraphIfNeeded rebuilds the cached NetworkGraph whenever the network
@@ -54,24 +56,24 @@ func (s *Simulator) Step(dt float64) {
 	s.updateScore()
 	s.State.Tick++
 
-	if float64(s.State.Tick) >= s.State.NextRewardAt {
-		s.offerReward()
+	for _, ev := range s.State.Scheduler.Poll(s.State.Tick) {
+		switch ev.Kind {
+		case EventReward:
+			s.offerReward()
+		case EventSpawnStation:
+			s.spawnStation()
+		}
 	}
 
 	s.checkGameOver()
 }
 
 func (s *Simulator) offerReward() {
-	// 1. Grant +1 Train automatically every week
 	s.State.Resources.Grant(RewardTrain)
-
-	// 2. Offer 2 random bonus choices
 	pool := []RewardType{RewardLine, RewardCarriage, RewardTunnel, RewardInterchange}
 	rand.Shuffle(len(pool), func(i, j int) { pool[i], pool[j] = pool[j], pool[i] })
 	s.State.PendingRewardChoices = pool[:2]
-
-	// 3. Schedule next reward trigger tick
-	s.State.NextRewardAt = float64(s.State.Tick) + rewardInterval()
+	s.State.Scheduler.Schedule(s.State.Tick+rewardInterval(), EventReward)
 }
 
 func (s *Simulator) ApplyAction(a Action) error {

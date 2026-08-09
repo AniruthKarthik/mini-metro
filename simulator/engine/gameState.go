@@ -6,7 +6,7 @@ type GameState struct {
 	Trains               []Train
 	Resources            ResourcePool
 	Graph                NetworkGraph // cached adjacency graph; rebuilt when TopologyVersion changes
-	NextRewardAt         float64
+	Scheduler            EventScheduler
 	PendingRewardChoices []RewardType
 	TopologyVersion      uint64
 	Score                int

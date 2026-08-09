@@ -5,6 +5,6 @@ type Pos struct {
 	Y float64
 }
 
-func rewardInterval() float64 {
-	return 500.0
+func rewardInterval() uint64 {
+	return 500
 }
