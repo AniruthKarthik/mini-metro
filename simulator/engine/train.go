@@ -111,17 +111,21 @@ func (s *Simulator) boardAndAlight() {
 		}
 		tr.Passengers = remainingPassengers
 
-		// Board
+		// Board - skip passengers whose destination is unreachable via the current network.
 		totalCapacity := tr.Capacity
 		if tr.Carriages > 1 {
 			totalCapacity += (tr.Carriages - 1) * 6
 		}
 
-		for len(st.Queue) > 0 && len(tr.Passengers) < totalCapacity {
-			p := st.Queue[0]
-			st.Queue = st.Queue[1:]
-			tr.Passengers = append(tr.Passengers, p)
+		remaining := st.Queue[:0]
+		for _, p := range st.Queue {
+			if len(tr.Passengers) < totalCapacity && CanReach(&s.State.Graph, &s.State, stationID, p.Destination) {
+				tr.Passengers = append(tr.Passengers, p)
+			} else {
+				remaining = append(remaining, p)
+			}
 		}
+		st.Queue = remaining
 		if len(st.Queue) == 0 {
 			st.Queue = nil
 		}
