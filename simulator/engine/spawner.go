@@ -34,10 +34,12 @@ func weightedRandomKind() StationKind {
 func (s *Simulator) spawnStation() {
 	id := len(s.State.Stations)
 	s.State.Stations = append(s.State.Stations, Station{
-		ID:    id,
-		Kind:  weightedRandomKind(),
-		Pos:   Pos{X: rand.Float64() * 100.0, Y: rand.Float64() * 100.0},
-		Alive: true,
+		ID:                id,
+		Kind:              weightedRandomKind(),
+		Pos:               Pos{X: rand.Float64() * 100.0, Y: rand.Float64() * 100.0},
+		Capacity:          defaultStationCapacity,
+		Alive:             true,
+		OvercrowdingTimer: -1,
 	})
 	s.State.Scheduler.Schedule(s.State.Tick+spawnInterval(), EventSpawnStation)
 }

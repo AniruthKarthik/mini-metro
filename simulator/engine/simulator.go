@@ -13,6 +13,10 @@ type Simulator struct {
 func NewSimulator(stations []Station) *Simulator {
 	for i := range stations {
 		stations[i].Alive = true
+		stations[i].OvercrowdingTimer = -1
+		if stations[i].Capacity == 0 {
+			stations[i].Capacity = defaultStationCapacity
+		}
 	}
 	sim := &Simulator{
 		State: GameState{

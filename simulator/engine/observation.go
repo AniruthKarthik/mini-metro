@@ -3,12 +3,14 @@ package engine
 type Observation struct {
 	StationKinds         []StationKind
 	StationQueues        []int
+	StationCapacities    []int     // max queue per station
+	StationTimers        []float64 // overcrowding countdown per station; -1 = not active
 	TrainLineIDs         []int
 	TrainSegments        []int
 	TrainLoads           []int
 	Resources            ResourcePool
 	PendingRewardChoices []RewardType
-	AdjacencyList        map[int][]int // stationID → reachable neighbour station IDs
+	AdjacencyList        map[int][]int
 	Score                int
 	Tick                 uint64
 }
@@ -22,6 +24,8 @@ func (s *Simulator) Observation() Observation {
 	for _, st := range s.State.Stations {
 		obs.StationKinds = append(obs.StationKinds, st.Kind)
 		obs.StationQueues = append(obs.StationQueues, len(st.Queue))
+		obs.StationCapacities = append(obs.StationCapacities, st.Capacity)
+		obs.StationTimers = append(obs.StationTimers, st.OvercrowdingTimer)
 	}
 
 	for _, tr := range s.State.Trains {
