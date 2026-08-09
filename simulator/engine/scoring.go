@@ -1,5 +1,4 @@
 package engine
 
-func (s *Simulator) updateScore() {
-	// todo
-}
+// updateScore is called each tick; passenger delivery score is tracked in boardAndAlight.
+func (s *Simulator) updateScore() {}

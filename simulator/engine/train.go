@@ -1,6 +1,7 @@
 package engine
 
 const trainSpeed = 0.5
+const dwellTime = 2.0 // seconds a train pauses at each station for boarding/alighting
 
 type Train struct {
 	ID             int
@@ -63,6 +64,11 @@ func (s *Simulator) moveTrains(dt float64) {
 			}
 
 			tr.JustArrived = true
+		}
+
+		// pause at station to allow boarding/alighting
+		if tr.JustArrived {
+			tr.DwellRemaining = dwellTime
 		}
 	}
 }
