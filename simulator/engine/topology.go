@@ -1,57 +1,40 @@
 package engine
 
-// NetworkGraph is an undirected adjacency representation of the active metro network.
-//
-// Adj maps each stationID to the deduplicated list of neighbour station IDs that
-// are reachable by at least one active (non-removed) line.
-//
-// EdgeLines maps a canonical (lo, hi) station-ID pair to the list of line IDs
-// that directly connect those two stations. This is used by route-finding logic
-// (todo items 5 & 6) to detect which lines serve a given edge and to identify
-// interchange stations where multiple lines meet.
+// NetworkGraph is the undirected adjacency representation of the active metro network.
 type NetworkGraph struct {
-	Adj       map[int][]int   // stationID → neighbour station IDs (deduplicated)
-	EdgeLines map[[2]int][]int // canonical (u,v) pair → line IDs
+	Adj       map[int][]int    // stationID → neighbour station IDs (deduplicated)
+	EdgeLines map[[2]int][]int // canonical (u,v) → line IDs that connect them
 }
 
-// BuildGraph constructs a fresh NetworkGraph from the current GameState.
-// Only non-removed lines and alive stations are included.
+// BuildGraph constructs a NetworkGraph from active (non-removed) lines and alive stations.
 func BuildGraph(state *GameState) NetworkGraph {
 	g := NetworkGraph{
 		Adj:       make(map[int][]int),
 		EdgeLines: make(map[[2]int][]int),
 	}
-
 	for _, line := range state.Lines {
 		if line.Removed {
 			continue
 		}
-
 		for i := 0; i+1 < len(line.Stations); i++ {
 			u := line.Stations[i]
 			v := line.Stations[i+1]
-
-			// Skip edges where either station is not alive.
 			if u < 0 || u >= len(state.Stations) || !state.Stations[u].Alive {
 				continue
 			}
 			if v < 0 || v >= len(state.Stations) || !state.Stations[v].Alive {
 				continue
 			}
-
 			g.addEdge(u, v, line.ID)
 		}
 	}
-
 	return g
 }
 
 // addEdge adds an undirected edge between u and v attributed to lineID.
-// Duplicate neighbour entries are avoided by checking before appending.
 func (g *NetworkGraph) addEdge(u, v, lineID int) {
 	key := edgeKey(u, v)
 	g.EdgeLines[key] = append(g.EdgeLines[key], lineID)
-
 	if !contains(g.Adj[u], v) {
 		g.Adj[u] = append(g.Adj[u], v)
 	}
@@ -60,20 +43,17 @@ func (g *NetworkGraph) addEdge(u, v, lineID int) {
 	}
 }
 
-// Neighbours returns the slice of station IDs directly reachable from stationID
-// via at least one active line. Returns nil if the station has no connections.
+// Neighbours returns station IDs directly reachable from stationID via active lines.
 func (g *NetworkGraph) Neighbours(stationID int) []int {
 	return g.Adj[stationID]
 }
 
-// LinesFor returns the IDs of all lines that directly connect stations a and b.
-// Order of a and b does not matter. Returns nil if no direct connection exists.
+// LinesFor returns line IDs that directly connect stations a and b (order-insensitive).
 func (g *NetworkGraph) LinesFor(a, b int) []int {
 	return g.EdgeLines[edgeKey(a, b)]
 }
 
-// edgeKey returns a canonical [2]int key for an undirected edge so that
-// (u,v) and (v,u) map to the same entry.
+// edgeKey returns a canonical key for an undirected edge so (u,v) and (v,u) map identically.
 func edgeKey(u, v int) [2]int {
 	if u <= v {
 		return [2]int{u, v}
