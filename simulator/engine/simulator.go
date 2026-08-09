@@ -6,7 +6,8 @@ import (
 )
 
 type Simulator struct {
-	State GameState
+	State        GameState
+	graphVersion uint64 // tracks which TopologyVersion the cached Graph was built for
 }
 
 func NewSimulator(stations []Station) *Simulator {
@@ -27,6 +28,15 @@ func NewSimulator(stations []Station) *Simulator {
 	}
 }
 
+// rebuildGraphIfNeeded rebuilds the cached NetworkGraph whenever the network
+// topology has changed since the last rebuild (detected via TopologyVersion).
+func (s *Simulator) rebuildGraphIfNeeded() {
+	if s.graphVersion != s.State.TopologyVersion {
+		s.State.Graph = BuildGraph(&s.State)
+		s.graphVersion = s.State.TopologyVersion
+	}
+}
+
 func (s *Simulator) Step(dt float64) {
 	if !s.State.Alive {
 		return
@@ -37,6 +47,7 @@ func (s *Simulator) Step(dt float64) {
 		return
 	}
 
+	s.rebuildGraphIfNeeded()
 	s.spawnPassengers(dt)
 	s.moveTrains(dt)
 	s.boardAndAlight()
@@ -108,6 +119,7 @@ func (s *Simulator) addLine(a AddLine) error {
 		Removed:  false,
 	})
 
+	s.State.TopologyVersion++
 	return nil
 }
 
@@ -131,6 +143,7 @@ func (s *Simulator) extendLine(a ExtendLine) error {
 	}
 
 	line.Stations = append(line.Stations, a.StationID)
+	s.State.TopologyVersion++
 	return nil
 }
 
@@ -196,6 +209,7 @@ func (s *Simulator) removeLine(a RemoveLine) error {
 
 	line.Removed = true
 	s.State.Resources.Grant(RewardLine)
+	s.State.TopologyVersion++
 
 	// deactivate trains in this line and refund train and carriage resources
 	for i := range s.State.Trains {

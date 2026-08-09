@@ -8,6 +8,7 @@ type Observation struct {
 	TrainLoads           []int
 	Resources            ResourcePool
 	PendingRewardChoices []RewardType
+	AdjacencyList        map[int][]int // stationID → reachable neighbour station IDs
 	Score                int
 	Tick                 uint64
 }
@@ -35,6 +36,16 @@ func (s *Simulator) Observation() Observation {
 
 	obs.Score = s.State.Score
 	obs.Tick = s.State.Tick
+
+	// Copy the adjacency list so the caller cannot mutate the cached graph.
+	if len(s.State.Graph.Adj) > 0 {
+		obs.AdjacencyList = make(map[int][]int, len(s.State.Graph.Adj))
+		for k, v := range s.State.Graph.Adj {
+			neighbours := make([]int, len(v))
+			copy(neighbours, v)
+			obs.AdjacencyList[k] = neighbours
+		}
+	}
 
 	return obs
 }
