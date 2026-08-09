@@ -11,9 +11,10 @@ const (
 )
 
 type Station struct {
-	ID    int
-	Kind  StationKind
-	Pos   Pos
-	Queue []Passenger
-	Alive bool
+	ID           int
+	Kind         StationKind
+	Pos          Pos
+	Queue        []Passenger
+	Alive        bool
+	IsInterchange bool
 }

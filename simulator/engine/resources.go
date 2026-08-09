@@ -1,10 +1,11 @@
 package engine
 
 type ResourcePool struct {
-	Lines     int
-	Trains    int
-	Tunnels   int
-	Carriages int
+	Lines        int
+	Trains       int
+	Tunnels      int
+	Carriages    int
+	Interchanges int
 }
 
 func NewResourcePool() ResourcePool {
@@ -36,6 +37,8 @@ func (p *ResourcePool) Grant(r RewardType) {
 		p.Tunnels++
 	case RewardCarriage:
 		p.Carriages++
+	case RewardInterchange:
+		p.Interchanges++
 	}
 }
 
@@ -49,6 +52,8 @@ func (p *ResourcePool) CanSpend(r RewardType) bool {
 		return p.Tunnels > 0
 	case RewardCarriage:
 		return p.Carriages > 0
+	case RewardInterchange:
+		return p.Interchanges > 0
 	}
 	return false
 }
@@ -66,6 +71,8 @@ func (p *ResourcePool) Spend(r RewardType) bool {
 		p.Tunnels--
 	case RewardCarriage:
 		p.Carriages--
+	case RewardInterchange:
+		p.Interchanges--
 	}
 	return true
 }

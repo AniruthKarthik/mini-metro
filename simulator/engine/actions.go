@@ -38,3 +38,10 @@ type AddCarriage struct {
 }
 
 func (AddCarriage) isAction() {}
+
+// UpgradeInterchange spends one interchange token to mark a station as an interchange hub.
+type UpgradeInterchange struct {
+	StationID int
+}
+
+func (UpgradeInterchange) isAction() {}

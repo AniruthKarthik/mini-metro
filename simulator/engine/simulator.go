@@ -72,7 +72,7 @@ func (s *Simulator) offerReward() {
 	s.State.Resources.Grant(RewardTrain)
 	pool := []RewardType{RewardLine, RewardCarriage, RewardTunnel, RewardInterchange}
 	rand.Shuffle(len(pool), func(i, j int) { pool[i], pool[j] = pool[j], pool[i] })
-	s.State.PendingRewardChoices = pool[:2]
+	s.State.PendingRewardChoices = pool[:3]
 	s.State.Scheduler.Schedule(s.State.Tick+rewardInterval(), EventReward)
 }
 
@@ -93,6 +93,8 @@ func (s *Simulator) ApplyAction(a Action) error {
 		return s.chooseReward(v)
 	case AddCarriage:
 		return s.addCarriage(v)
+	case UpgradeInterchange:
+		return s.upgradeInterchange(v)
 	default:
 		return errors.New("unknown action type")
 	}
@@ -251,5 +253,24 @@ func (s *Simulator) chooseReward(a ChooseReward) error {
 
 	s.State.Resources.Grant(a.Choice)
 	s.State.PendingRewardChoices = nil
+	return nil
+}
+
+// upgradeInterchange spends one interchange token and marks the given station as an interchange hub.
+func (s *Simulator) upgradeInterchange(a UpgradeInterchange) error {
+	if a.StationID < 0 || a.StationID >= len(s.State.Stations) {
+		return errors.New("invalid station ID")
+	}
+	st := &s.State.Stations[a.StationID]
+	if !st.Alive {
+		return errors.New("station is not alive")
+	}
+	if st.IsInterchange {
+		return errors.New("station is already an interchange")
+	}
+	if !s.State.Resources.Spend(RewardInterchange) {
+		return errors.New("no interchange tokens available")
+	}
+	st.IsInterchange = true
 	return nil
 }
