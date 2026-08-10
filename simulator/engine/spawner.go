@@ -7,11 +7,16 @@ func spawnInterval() uint64 { return 200 }
 
 // stationWeights is the relative spawn probability for each StationKind.
 var stationWeights = map[StationKind]int{
-	Circle:   5,
-	Triangle: 4,
-	Square:   3,
+	Circle:   10,
+	Triangle: 8,
+	Square:   6,
 	Star:     2,
-	Pentagon: 1,
+	Pentagon: 2,
+	Gem:      1,
+	Sector:   1,
+	Cross:    1,
+	Drop:     1,
+	Oval:     1,
 }
 
 // weightedRandomKind returns a StationKind sampled proportionally to stationWeights.
@@ -21,7 +26,8 @@ func weightedRandomKind() StationKind {
 		total += w
 	}
 	r := rand.Intn(total)
-	for _, kind := range []StationKind{Circle, Triangle, Square, Star, Pentagon} {
+	allKinds := []StationKind{Circle, Triangle, Square, Star, Pentagon, Gem, Sector, Cross, Drop, Oval}
+	for _, kind := range allKinds {
 		r -= stationWeights[kind]
 		if r < 0 {
 			return kind

@@ -8,7 +8,39 @@ const (
 	Square
 	Star
 	Pentagon
+	Gem
+	Sector
+	Cross
+	Drop
+	Oval
 )
+
+func (k StationKind) String() string {
+	switch k {
+	case Circle:
+		return "Circle"
+	case Triangle:
+		return "Triangle"
+	case Square:
+		return "Square"
+	case Star:
+		return "Star"
+	case Pentagon:
+		return "Pentagon"
+	case Gem:
+		return "Gem"
+	case Sector:
+		return "Sector"
+	case Cross:
+		return "Cross"
+	case Drop:
+		return "Drop"
+	case Oval:
+		return "Oval"
+	default:
+		return "Unknown"
+	}
+}
 
 type Station struct {
 	ID                int

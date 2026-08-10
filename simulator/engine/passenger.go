@@ -20,7 +20,7 @@ func (s *Simulator) CurrentSpawnRate() float64 {
 	return rate
 }
 
-const numStationKinds = 5
+const numStationKinds = 10
 
 func randomOtherKind(kind StationKind) StationKind {
 	for {

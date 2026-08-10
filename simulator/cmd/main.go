@@ -8,20 +8,7 @@ import (
 )
 
 func kindName(k engine.StationKind) string {
-	switch k {
-	case engine.Circle:
-		return "Circle"
-	case engine.Triangle:
-		return "Triangle"
-	case engine.Square:
-		return "Square"
-	case engine.Star:
-		return "Star"
-	case engine.Pentagon:
-		return "Pentagon"
-	default:
-		return fmt.Sprintf("Unknown(%d)", k)
-	}
+	return k.String()
 }
 
 func sep() { fmt.Println(strings.Repeat("-", 60)) }
@@ -425,6 +412,30 @@ func main() {
 	// Remove line 0 and verify tunnel token is refunded
 	sim12.ApplyAction(engine.RemoveLine{LineID: 0})
 	check(sim12.State.Resources.Tunnels == 1, "tunnel token refunded upon line removal")
+
+	// --- 14. Expanded Station Kinds (Gem, Sector, Cross, Drop, Oval) ---
+	header("14. Expanded Station Kinds (Rare Shapes)")
+	sim13 := engine.NewSimulator([]engine.Station{
+		{ID: 0, Kind: engine.Circle, Pos: engine.Pos{X: 0, Y: 0}},
+		{ID: 1, Kind: engine.Gem, Pos: engine.Pos{X: 10, Y: 0}},
+		{ID: 2, Kind: engine.Sector, Pos: engine.Pos{X: 20, Y: 0}},
+		{ID: 3, Kind: engine.Cross, Pos: engine.Pos{X: 30, Y: 0}},
+		{ID: 4, Kind: engine.Drop, Pos: engine.Pos{X: 40, Y: 0}},
+		{ID: 5, Kind: engine.Oval, Pos: engine.Pos{X: 50, Y: 0}},
+	})
+	check(sim13.State.Stations[1].Kind.String() == "Gem", "Gem station kind initialized")
+	check(sim13.State.Stations[2].Kind.String() == "Sector", "Sector station kind initialized")
+	check(sim13.State.Stations[3].Kind.String() == "Cross", "Cross station kind initialized")
+	check(sim13.State.Stations[4].Kind.String() == "Drop", "Drop station kind initialized")
+	check(sim13.State.Stations[5].Kind.String() == "Oval", "Oval station kind initialized")
+
+	sim13.ApplyAction(engine.AddLine{Stations: []int{0, 1, 2, 3, 4, 5}})
+	sim13.Step(0.01)
+
+	rGem := engine.FindRoute(&sim13.State.Graph, &sim13.State, 0, engine.Gem)
+	check(rGem.Reachable, "route from Circle to Gem station reachable")
+	rOval := engine.FindRoute(&sim13.State.Graph, &sim13.State, 0, engine.Oval)
+	check(rOval.Reachable, "route from Circle to Oval station reachable")
 
 	// --- Summary ---
 	fmt.Println()
