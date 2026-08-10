@@ -320,6 +320,34 @@ func main() {
 	check(len(sim9.State.Trains[1].Passengers) == 1, "transferring passenger boarded Line 1 train")
 	check(len(sim9.State.Stations[1].Queue) == 0, "transfer station queue cleared")
 
+	// --- 11. Accelerating Passenger Spawn Rate ---
+	header("11. Accelerating Passenger Spawn Rate")
+	sim10 := engine.NewSimulator([]engine.Station{
+		{ID: 0, Kind: engine.Circle, Pos: engine.Pos{X: 0, Y: 0}},
+	})
+	initialRate := sim10.CurrentSpawnRate()
+	check(initialRate == 0.2, fmt.Sprintf("initial spawn rate = %.2f (want 0.20)", initialRate))
+
+	// Step 1000 ticks
+	for i := 0; i < 1000; i++ {
+		if len(sim10.State.PendingRewardChoices) > 0 {
+			sim10.ApplyAction(engine.ChooseReward{Choice: sim10.State.PendingRewardChoices[0]})
+		}
+		sim10.Step(0.01)
+	}
+	rateAfter1000 := sim10.CurrentSpawnRate()
+	check(rateAfter1000 > initialRate, fmt.Sprintf("spawn rate accelerated from %.2f to %.2f after 1000 ticks", initialRate, rateAfter1000))
+
+	// Step another 2000 ticks (total 3000 ticks)
+	for i := 0; i < 2000; i++ {
+		if len(sim10.State.PendingRewardChoices) > 0 {
+			sim10.ApplyAction(engine.ChooseReward{Choice: sim10.State.PendingRewardChoices[0]})
+		}
+		sim10.Step(0.01)
+	}
+	rateAfter3000 := sim10.CurrentSpawnRate()
+	check(rateAfter3000 > rateAfter1000, fmt.Sprintf("spawn rate accelerated further from %.2f to %.2f after 3000 ticks", rateAfter1000, rateAfter3000))
+
 	// --- Summary ---
 	fmt.Println()
 	fmt.Println(strings.Repeat("=", 60))

@@ -6,7 +6,7 @@
 - [x] fix weekly reward to offer 2 bonus choices not 3
 - [x] implement closed loop lines — last station connects to first, trains travel one-way with no bounce
 - [x] implement A* passenger routing with transfer penalty and capacity reservation replacing BFS
-- [ ] implement accelerating passenger spawn rate that increases over simulation time
+- [x] implement accelerating passenger spawn rate that increases over simulation time
 - [ ] add train repositioning action — move a train to a specific segment on its line
 - [ ] enforce max trains per line limit configurable per map
 - [ ] create gym-style reset and step api for ml agent integration
