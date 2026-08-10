@@ -13,7 +13,7 @@
 - [x] expand station types beyond 5 base kinds to include rare shapes (Gem, Sector, Cross, etc.)
 - [x] weight passenger destination demand toward rare station shapes instead of uniform random sampling
 - [x] support map/city geography definitions (e.g., London, NYC, Tokyo) with custom river layouts and line limits
-- [ ] implement smooth train acceleration/deceleration curves and track-curve slowdown physics
+- [x] implement smooth train acceleration/deceleration curves and track-curve slowdown physics
 
 TO BE DONE ONLY AFTER COMPLETING THE SIMULATOR ENGINE
 - [ ] create gym-style reset and step api for ml agent integration

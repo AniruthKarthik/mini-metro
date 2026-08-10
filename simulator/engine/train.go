@@ -1,5 +1,7 @@
 package engine
 
+import "math"
+
 const trainSpeed = 0.5
 const dwellTime = 2.0 // seconds a train pauses at each station for boarding/alighting
 
@@ -15,6 +17,88 @@ type Train struct {
 	Active         bool
 	JustArrived    bool
 	DwellRemaining float64
+}
+
+// velocityProfile returns a smooth acceleration/deceleration multiplier in [0.2, 1.0] based on segment progress p in [0, 1].
+func velocityProfile(p float64) float64 {
+	if p < 0.0 {
+		p = 0.0
+	}
+	if p > 1.0 {
+		p = 1.0
+	}
+	if p < 0.2 {
+		return 0.2 + 0.8*math.Sin((p/0.2)*(math.Pi/2.0))
+	}
+	if p > 0.8 {
+		return 0.2 + 0.8*math.Sin(((1.0-p)/0.2)*(math.Pi/2.0))
+	}
+	return 1.0
+}
+
+// trackCornerMultiplier calculates the turn angle slowdown factor in [0.4, 1.0] at stationIndex on line.
+func trackCornerMultiplier(state *GameState, line *Line, stationIndex int, dir int) float64 {
+	if line.Removed || len(line.Stations) < 3 {
+		return 1.0
+	}
+	N := len(line.Stations)
+	if stationIndex < 0 || stationIndex >= N {
+		return 1.0
+	}
+
+	var prevSeg, nextSeg int
+	if line.IsLoop {
+		prevSeg = (stationIndex - dir + N) % N
+		nextSeg = (stationIndex + dir + N) % N
+	} else {
+		prevSeg = stationIndex - dir
+		nextSeg = stationIndex + dir
+		if prevSeg < 0 || prevSeg >= N || nextSeg < 0 || nextSeg >= N {
+			return 0.5 // bounce endpoint turnaround slowdown
+		}
+	}
+
+	if prevSeg < 0 || prevSeg >= len(line.Stations) || nextSeg < 0 || nextSeg >= len(line.Stations) {
+		return 1.0
+	}
+
+	uSt := line.Stations[prevSeg]
+	cSt := line.Stations[stationIndex]
+	vSt := line.Stations[nextSeg]
+	if uSt < 0 || uSt >= len(state.Stations) || cSt < 0 || cSt >= len(state.Stations) || vSt < 0 || vSt >= len(state.Stations) {
+		return 1.0
+	}
+
+	pPrev := state.Stations[uSt].Pos
+	pCur := state.Stations[cSt].Pos
+	pNext := state.Stations[vSt].Pos
+
+	ux, uy := pCur.X-pPrev.X, pCur.Y-pPrev.Y
+	vx, vy := pNext.X-pCur.X, pNext.Y-pCur.Y
+
+	uLen := math.Sqrt(ux*ux + uy*uy)
+	vLen := math.Sqrt(vx*vx + vy*vy)
+
+	if uLen == 0 || vLen == 0 {
+		return 1.0
+	}
+
+	dot := (ux*vx + uy*vy) / (uLen * vLen)
+	if dot > 1.0 {
+		dot = 1.0
+	}
+	if dot < -1.0 {
+		dot = -1.0
+	}
+
+	mult := 0.6 + 0.4*dot
+	if mult < 0.4 {
+		mult = 0.4
+	}
+	if mult > 1.0 {
+		mult = 1.0
+	}
+	return mult
 }
 
 func (s *Simulator) moveTrains(dt float64) {
@@ -43,7 +127,33 @@ func (s *Simulator) moveTrains(dt float64) {
 			continue
 		}
 
-		tr.Progress += trainSpeed * dt
+		// Calculate segment distance and physics speed
+		st1ID := line.Stations[tr.Segment]
+		var nextSegIdx int
+		if line.IsLoop {
+			n := len(line.Stations)
+			nextSegIdx = (tr.Segment + tr.Direction + n) % n
+		} else {
+			nextSegIdx = tr.Segment + tr.Direction
+			if nextSegIdx < 0 {
+				nextSegIdx = 0
+			}
+			if nextSegIdx >= len(line.Stations) {
+				nextSegIdx = len(line.Stations) - 1
+			}
+		}
+		st2ID := line.Stations[nextSegIdx]
+		segLen := distance(s.State.Stations[st1ID].Pos, s.State.Stations[st2ID].Pos)
+		if segLen <= 0 {
+			segLen = 10.0
+		}
+
+		prof := velocityProfile(tr.Progress)
+		cornerMult := trackCornerMultiplier(&s.State, line, tr.Segment, tr.Direction)
+		effSpeed := trainSpeed * prof * cornerMult
+
+		progressDelta := (effSpeed * 10.0 / segLen) * dt
+		tr.Progress += progressDelta
 
 		// reached next station
 		for tr.Progress >= 1.0 {

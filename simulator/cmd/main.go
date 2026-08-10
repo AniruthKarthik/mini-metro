@@ -493,6 +493,27 @@ func main() {
 	check(err == nil, "AddLine across Thames River in London succeeds using 1 initial tunnel token")
 	check(simLondon.State.Resources.Tunnels == 0, "London tunnel token spent on Thames River crossing")
 
+	// --- 17. Train Physics (Acceleration, Deceleration & Track-Curve Slowdown) ---
+	header("17. Train Physics (Acceleration, Deceleration & Track-Curve Slowdown)")
+	simPhysics := engine.NewSimulator([]engine.Station{
+		{ID: 0, Kind: engine.Circle, Pos: engine.Pos{X: 0, Y: 0}},
+		{ID: 1, Kind: engine.Triangle, Pos: engine.Pos{X: 10, Y: 0}},
+		{ID: 2, Kind: engine.Square, Pos: engine.Pos{X: 20, Y: 0}},
+		{ID: 3, Kind: engine.Circle, Pos: engine.Pos{X: 0, Y: 0}},
+		{ID: 4, Kind: engine.Triangle, Pos: engine.Pos{X: 10, Y: 0}},
+		{ID: 5, Kind: engine.Square, Pos: engine.Pos{X: 10, Y: 10}}, // 90 degree sharp turn at station 4
+	})
+
+	simPhysics.ApplyAction(engine.AddLine{Stations: []int{0, 1, 2}})
+	simPhysics.ApplyAction(engine.AddLine{Stations: []int{3, 4, 5}})
+	simPhysics.ApplyAction(engine.AddTrain{LineID: 0})
+	simPhysics.ApplyAction(engine.AddTrain{LineID: 1})
+
+	// Step initial tick
+	simPhysics.Step(0.01)
+	check(simPhysics.State.Trains[0].Progress > 0, "straight track train accelerated out of station")
+	check(simPhysics.State.Trains[1].Progress > 0, "curved track train accelerated out of station")
+
 	// --- Summary ---
 	fmt.Println()
 	fmt.Println(strings.Repeat("=", 60))
