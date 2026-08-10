@@ -4,6 +4,8 @@ type GameState struct {
 	Stations             []Station
 	Lines                []Line
 	Trains               []Train
+	Rivers               []RiverSegment
+	WaterPolygons        []WaterPolygon
 	Resources            ResourcePool
 	Graph                NetworkGraph // cached adjacency graph; rebuilt when TopologyVersion changes
 	Scheduler            EventScheduler

@@ -379,6 +379,53 @@ func main() {
 	check(sim11.State.Trains[0].Segment == 2, "train 0 moved to segment 2")
 	check(sim11.State.Trains[0].Direction == -1, "train 0 direction updated to -1")
 
+	// --- 13. River Geometry & Water Crossings ---
+	header("13. River Geometry & Water Crossings (Thick Rivers & 2D Water Polygons)")
+	sim12 := engine.NewSimulatorWithWater(
+		[]engine.Station{
+			{ID: 0, Kind: engine.Circle, Pos: engine.Pos{X: 10, Y: 20}},   // South of river
+			{ID: 1, Kind: engine.Triangle, Pos: engine.Pos{X: 10, Y: 80}}, // North of river
+			{ID: 2, Kind: engine.Square, Pos: engine.Pos{X: 40, Y: 80}},   // North of river
+			{ID: 3, Kind: engine.Star, Pos: engine.Pos{X: 10, Y: 47}},     // Sits inside thick river channel (Y=50, width=10)
+			{ID: 4, Kind: engine.Pentagon, Pos: engine.Pos{X: 70, Y: 70}}, // Inside 2D Water Polygon (50..90, 50..90)
+		},
+		[]engine.RiverSegment{
+			{From: engine.Pos{X: 0, Y: 50}, To: engine.Pos{X: 100, Y: 50}, Width: 10.0},
+		},
+		[]engine.WaterPolygon{
+			{Vertices: []engine.Pos{
+				{X: 50, Y: 50}, {X: 90, Y: 50}, {X: 90, Y: 90}, {X: 50, Y: 90},
+			}},
+		},
+	)
+
+	// Segment 0->1 (10,20 -> 10,80) crosses Y=50 river; initial tunnels = 0
+	err = sim12.ApplyAction(engine.AddLine{Stations: []int{0, 1}})
+	check(err != nil, "AddLine across river rejected when pool has 0 tunnels")
+
+	// Grant 1 tunnel token
+	sim12.State.Resources.Grant(engine.RewardTunnel)
+	err = sim12.ApplyAction(engine.AddLine{Stations: []int{0, 1}})
+	check(err == nil, "AddLine across river succeeds after granting tunnel token")
+	check(sim12.State.Resources.Tunnels == 0, "tunnel token spent on water crossing segment")
+	check(sim12.State.Lines[0].TunnelAt[0], "line segment marked as tunnel crossing")
+
+	// Non-river crossing segment 1->2 (10,80 -> 40,80; both North of river at Y=80)
+	err = sim12.ApplyAction(engine.ExtendLine{LineID: 0, StationID: 2, UseTunnel: false})
+	check(err == nil, "ExtendLine not crossing river succeeds without tunnel token")
+
+	// Thick river channel test: Station 3 is at (10, 47), which is within Width=10/2 of center line Y=50
+	err = sim12.ApplyAction(engine.ExtendLine{LineID: 0, StationID: 3, UseTunnel: false})
+	check(err != nil, "ExtendLine into thick river channel requires tunnel token")
+
+	// 2D Water Polygon test: Station 4 is inside water polygon at (70, 70)
+	err = sim12.ApplyAction(engine.ExtendLine{LineID: 0, StationID: 4, UseTunnel: false})
+	check(err != nil, "ExtendLine into 2D water polygon requires tunnel token")
+
+	// Remove line 0 and verify tunnel token is refunded
+	sim12.ApplyAction(engine.RemoveLine{LineID: 0})
+	check(sim12.State.Resources.Tunnels == 1, "tunnel token refunded upon line removal")
+
 	// --- Summary ---
 	fmt.Println()
 	fmt.Println(strings.Repeat("=", 60))

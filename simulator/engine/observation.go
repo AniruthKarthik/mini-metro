@@ -8,6 +8,8 @@ type Observation struct {
 	TrainLineIDs         []int
 	TrainSegments        []int
 	TrainLoads           []int
+	Rivers               []RiverSegment
+	WaterPolygons        []WaterPolygon
 	Resources            ResourcePool
 	PendingRewardChoices []RewardType
 	AdjacencyList        map[int][]int
@@ -17,6 +19,8 @@ type Observation struct {
 
 func (s *Simulator) Observation() Observation {
 	obs := Observation{
+		Rivers:               append([]RiverSegment(nil), s.State.Rivers...),
+		WaterPolygons:        append([]WaterPolygon(nil), s.State.WaterPolygons...),
 		Resources:            s.State.Resources,
 		PendingRewardChoices: append([]RewardType(nil), s.State.PendingRewardChoices...),
 	}

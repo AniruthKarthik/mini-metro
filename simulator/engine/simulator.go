@@ -10,7 +10,7 @@ type Simulator struct {
 	graphVersion uint64 // tracks which TopologyVersion the cached Graph was built for
 }
 
-func NewSimulator(stations []Station) *Simulator {
+func NewSimulatorWithWater(stations []Station, rivers []RiverSegment, polygons []WaterPolygon) *Simulator {
 	for i := range stations {
 		stations[i].Alive = true
 		stations[i].OvercrowdingTimer = -1
@@ -23,6 +23,8 @@ func NewSimulator(stations []Station) *Simulator {
 			Stations:         stations,
 			Lines:            []Line{},
 			Trains:           []Train{},
+			Rivers:           rivers,
+			WaterPolygons:    polygons,
 			Resources:        NewResourcePool(),
 			Score:            0,
 			Tick:             0,
@@ -33,6 +35,17 @@ func NewSimulator(stations []Station) *Simulator {
 	sim.State.Scheduler.Schedule(rewardInterval(), EventReward)
 	sim.State.Scheduler.Schedule(spawnInterval(), EventSpawnStation)
 	return sim
+}
+
+func NewSimulatorWithRivers(stations []Station, rivers []RiverSegment) *Simulator {
+	return NewSimulatorWithWater(stations, rivers, nil)
+}
+
+func NewSimulator(stations []Station) *Simulator {
+	defaultRivers := []RiverSegment{
+		{From: Pos{X: 0, Y: 50}, To: Pos{X: 100, Y: 50}, Width: 4.0},
+	}
+	return NewSimulatorWithWater(stations, defaultRivers, nil)
 }
 
 // rebuildGraphIfNeeded rebuilds the cached NetworkGraph whenever the network
@@ -124,13 +137,30 @@ func (s *Simulator) addLine(a AddLine) error {
 		}
 	}
 
+	tunnelAt := make([]bool, len(a.Stations)-1)
+	tunnelsNeeded := 0
+	for i := 0; i+1 < len(a.Stations); i++ {
+		uPos := s.State.Stations[a.Stations[i]].Pos
+		vPos := s.State.Stations[a.Stations[i+1]].Pos
+		if CrossesWater(uPos, vPos, s.State.Rivers, s.State.WaterPolygons) {
+			tunnelAt[i] = true
+			tunnelsNeeded++
+		}
+	}
+
+	if tunnelsNeeded > 0 && s.State.Resources.Tunnels < tunnelsNeeded {
+		return errors.New("no tunnel tokens available")
+	}
+
 	if !s.State.Resources.Spend(RewardLine) {
 		return errors.New("no lines available")
 	}
 
+	for i := 0; i < tunnelsNeeded; i++ {
+		s.State.Resources.Spend(RewardTunnel)
+	}
+
 	id := len(s.State.Lines)
-	// initial segments are never tunnel crossings
-	tunnelAt := make([]bool, len(a.Stations)-1)
 
 	s.State.Lines = append(s.State.Lines, Line{
 		ID:       id,
@@ -162,11 +192,11 @@ func (s *Simulator) extendLine(a ExtendLine) error {
 		return errors.New("cannot extend line to the same station")
 	}
 
-	// check whether this segment crosses a tunnel threshold
+	// check whether this segment crosses a river / water body
 	lastID := line.Stations[len(line.Stations)-1]
 	lastPos := s.State.Stations[lastID].Pos
 	newPos := s.State.Stations[a.StationID].Pos
-	needsTunnel := distance(lastPos, newPos) > tunnelDistanceThreshold
+	needsTunnel := CrossesWater(lastPos, newPos, s.State.Rivers, s.State.WaterPolygons)
 
 	if needsTunnel && !a.UseTunnel {
 		return errors.New("tunnel token required for this segment")
@@ -263,6 +293,16 @@ func (s *Simulator) removeLine(a RemoveLine) error {
 	line.Removed = true
 	s.State.Resources.Grant(RewardLine)
 	s.State.TopologyVersion++
+
+	// refund tunnels used by this line
+	for _, isTunnel := range line.TunnelAt {
+		if isTunnel {
+			s.State.Resources.Grant(RewardTunnel)
+		}
+	}
+	if line.IsLoop && line.LoopTunnel {
+		s.State.Resources.Grant(RewardTunnel)
+	}
 
 	// deactivate trains in this line and refund train and carriage resources
 	for i := range s.State.Trains {
@@ -409,7 +449,7 @@ func (s *Simulator) closeLoop(a CloseLoop) error {
 	}
 	firstPos := s.State.Stations[line.Stations[0]].Pos
 	lastPos := s.State.Stations[line.Stations[len(line.Stations)-1]].Pos
-	needsTunnel := distance(lastPos, firstPos) > tunnelDistanceThreshold
+	needsTunnel := CrossesWater(lastPos, firstPos, s.State.Rivers, s.State.WaterPolygons)
 	if needsTunnel && !a.UseTunnel {
 		return errors.New("tunnel token required for this wrap-around segment")
 	}
