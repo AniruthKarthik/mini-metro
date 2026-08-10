@@ -437,6 +437,31 @@ func main() {
 	rOval := engine.FindRoute(&sim13.State.Graph, &sim13.State, 0, engine.Oval)
 	check(rOval.Reachable, "route from Circle to Oval station reachable")
 
+	// --- 15. Weighted Passenger Destination Sampling ---
+	header("15. Weighted Passenger Destination Sampling (Rare Station Magnet Effect)")
+	sim14 := engine.NewSimulator([]engine.Station{
+		{ID: 0, Kind: engine.Circle, Pos: engine.Pos{X: 0, Y: 0}},
+		{ID: 1, Kind: engine.Triangle, Pos: engine.Pos{X: 10, Y: 0}},
+		{ID: 2, Kind: engine.Star, Pos: engine.Pos{X: 20, Y: 0}},
+	})
+	rareDestinationSpawned := false
+	activeFilteredOnly := true
+	for i := 0; i < 500; i++ {
+		sim14.Step(0.01)
+		for _, st := range sim14.State.Stations {
+			for _, p := range st.Queue {
+				if p.Destination == engine.Star {
+					rareDestinationSpawned = true
+				}
+				if p.Destination != engine.Circle && p.Destination != engine.Triangle && p.Destination != engine.Star {
+					activeFilteredOnly = false
+				}
+			}
+		}
+	}
+	check(rareDestinationSpawned, "passengers spawned targeting rare active station (Star)")
+	check(activeFilteredOnly, "passengers spawned only for active station kinds present on the map")
+
 	// --- Summary ---
 	fmt.Println()
 	fmt.Println(strings.Repeat("=", 60))
