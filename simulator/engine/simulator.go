@@ -15,7 +15,7 @@ func NewSimulator(stations []Station) *Simulator {
 		stations[i].Alive = true
 		stations[i].OvercrowdingTimer = -1
 		if stations[i].Capacity == 0 {
-			stations[i].Capacity = defaultStationCapacity
+			stations[i].Capacity = 6
 		}
 	}
 	sim := &Simulator{
@@ -76,7 +76,7 @@ func (s *Simulator) offerReward() {
 	s.State.Resources.Grant(RewardTrain)
 	pool := []RewardType{RewardLine, RewardCarriage, RewardTunnel, RewardInterchange}
 	rand.Shuffle(len(pool), func(i, j int) { pool[i], pool[j] = pool[j], pool[i] })
-	s.State.PendingRewardChoices = pool[:3]
+	s.State.PendingRewardChoices = pool[:2]
 	s.State.Scheduler.Schedule(s.State.Tick+rewardInterval(), EventReward)
 }
 
@@ -300,7 +300,7 @@ func (s *Simulator) upgradeInterchange(a UpgradeInterchange) error {
 		return errors.New("no interchange tokens available")
 	}
 	st.IsInterchange = true
-	st.Capacity *= 2 // interchange stations handle twice the passenger load before overcrowding
+	st.Capacity = 18 // real Mini Metro interchange capacity (3× base 6)
 	return nil
 }
 

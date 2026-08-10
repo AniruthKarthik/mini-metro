@@ -66,9 +66,14 @@ func (s *Simulator) moveTrains(dt float64) {
 			tr.JustArrived = true
 		}
 
-		// pause at station to allow boarding/alighting
+		// pause at station; interchange stations board/alight faster
 		if tr.JustArrived {
-			tr.DwellRemaining = dwellTime
+			stID := line.Stations[tr.Segment]
+			if s.State.Stations[stID].IsInterchange {
+				tr.DwellRemaining = dwellTime / 2
+			} else {
+				tr.DwellRemaining = dwellTime
+			}
 		}
 	}
 }

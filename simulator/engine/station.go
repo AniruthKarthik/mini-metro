@@ -21,4 +21,4 @@ type Station struct {
 	OvercrowdingTimer float64 // ticks remaining before game over; -1 = no active timer
 }
 
-const defaultStationCapacity = 8
+const defaultStationCapacity = 6
