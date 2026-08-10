@@ -453,7 +453,15 @@ func main() {
 				if p.Destination == engine.Star {
 					rareDestinationSpawned = true
 				}
-				if p.Destination != engine.Circle && p.Destination != engine.Triangle && p.Destination != engine.Star {
+				// Verify passenger destination matches kind of an alive station on the map
+				foundActiveKind := false
+				for _, s := range sim14.State.Stations {
+					if s.Alive && s.Kind == p.Destination {
+						foundActiveKind = true
+						break
+					}
+				}
+				if !foundActiveKind {
 					activeFilteredOnly = false
 				}
 			}
@@ -461,6 +469,29 @@ func main() {
 	}
 	check(rareDestinationSpawned, "passengers spawned targeting rare active station (Star)")
 	check(activeFilteredOnly, "passengers spawned only for active station kinds present on the map")
+
+	// --- 16. City Map Presets ---
+	header("16. City Map Presets (London, NYC, Tokyo)")
+	simLondon := engine.NewSimulatorWithMap(engine.LondonMap())
+	check(simLondon.State.MapName == "London", "London map initialized with name 'London'")
+	check(len(simLondon.State.Rivers) == 3, "London map loaded River Thames geometry")
+	check(simLondon.State.Resources.Tunnels == 1, "London map initialized with 1 tunnel token")
+
+	simNYC := engine.NewSimulatorWithMap(engine.NYCMap())
+	check(simNYC.State.MapName == "New York City", "NYC map initialized with name 'New York City'")
+	check(len(simNYC.State.Rivers) == 2, "NYC map loaded Hudson and East Rivers")
+	check(len(simNYC.State.WaterPolygons) == 1, "NYC map loaded Upper New York Bay polygon")
+	check(simNYC.State.Resources.Tunnels == 2, "NYC map initialized with 2 tunnel tokens")
+
+	simTokyo := engine.NewSimulatorWithMap(engine.TokyoMap())
+	check(simTokyo.State.MapName == "Tokyo", "Tokyo map initialized with name 'Tokyo'")
+	check(len(simTokyo.State.Rivers) == 1, "Tokyo map loaded Sumida River geometry")
+	check(len(simTokyo.State.WaterPolygons) == 1, "Tokyo map loaded Tokyo Bay polygon")
+
+	// Test water crossing on London Thames: station 0 (20,25) to station 1 (50,60) crosses Thames
+	err = simLondon.ApplyAction(engine.AddLine{Stations: []int{0, 1}})
+	check(err == nil, "AddLine across Thames River in London succeeds using 1 initial tunnel token")
+	check(simLondon.State.Resources.Tunnels == 0, "London tunnel token spent on Thames River crossing")
 
 	// --- Summary ---
 	fmt.Println()

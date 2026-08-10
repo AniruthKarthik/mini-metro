@@ -20,8 +20,6 @@ func (s *Simulator) CurrentSpawnRate() float64 {
 	return rate
 }
 
-const numStationKinds = 10
-
 // destinationWeights defines passenger attraction demand for each station kind.
 // Rare/unique shapes (Star, Pentagon, Gem, etc.) have higher attraction demand
 // because fewer stations of those shapes exist on the map.

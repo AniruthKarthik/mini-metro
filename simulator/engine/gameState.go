@@ -1,6 +1,7 @@
 package engine
 
 type GameState struct {
+	MapName              string
 	Stations             []Station
 	Lines                []Line
 	Trains               []Train

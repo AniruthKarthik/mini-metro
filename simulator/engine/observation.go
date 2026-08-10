@@ -1,6 +1,7 @@
 package engine
 
 type Observation struct {
+	MapName              string
 	StationKinds         []StationKind
 	StationQueues        []int
 	StationCapacities    []int     // max queue per station
@@ -19,6 +20,7 @@ type Observation struct {
 
 func (s *Simulator) Observation() Observation {
 	obs := Observation{
+		MapName:              s.State.MapName,
 		Rivers:               append([]RiverSegment(nil), s.State.Rivers...),
 		WaterPolygons:        append([]WaterPolygon(nil), s.State.WaterPolygons...),
 		Resources:            s.State.Resources,
