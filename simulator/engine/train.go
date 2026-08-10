@@ -129,16 +129,28 @@ func (s *Simulator) boardAndAlight() {
 		}
 		tr.Passengers = remainingPassengers
 
-		// Board — interchange stations board any train; others check network reachability.
+		// Board — compute A* routes once per destKind per station visit, then filter by NextLineID.
+		// Capacity reservation is implicit: passengers only board the optimal line, not any reachable train.
 		totalCapacity := tr.Capacity
 		if tr.Carriages > 1 {
 			totalCapacity += (tr.Carriages - 1) * 6
 		}
 
+		routeCache := make(map[StationKind]RouteInfo)
+		getRoute := func(dest StationKind) RouteInfo {
+			if r, ok := routeCache[dest]; ok {
+				return r
+			}
+			r := FindOptimalRoute(&s.State.Graph, &s.State, stationID, dest)
+			routeCache[dest] = r
+			return r
+		}
+
 		remaining := st.Queue[:0]
 		for _, p := range st.Queue {
+			route := getRoute(p.Destination)
 			canBoard := len(tr.Passengers) < totalCapacity &&
-				(st.IsInterchange || CanReach(&s.State.Graph, &s.State, stationID, p.Destination))
+				(st.IsInterchange || (route.Reachable && route.NextLineID == tr.LineID))
 			if canBoard {
 				tr.Passengers = append(tr.Passengers, p)
 			} else {
