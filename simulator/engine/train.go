@@ -48,19 +48,26 @@ func (s *Simulator) moveTrains(dt float64) {
 		// reached next station
 		for tr.Progress >= 1.0 {
 			tr.Progress -= 1.0
-			tr.Segment += tr.Direction
 
-			last := len(line.Stations) - 1
+			if line.IsLoop {
+				// wrap around — no bounce, always one-way
+				n := len(line.Stations)
+				tr.Segment = (tr.Segment + tr.Direction + n) % n
+			} else {
+				tr.Segment += tr.Direction
 
-			// bounce at ends
-			if tr.Segment >= last {
-				tr.Segment = last
-				tr.Direction = -1
-			}
+				last := len(line.Stations) - 1
 
-			if tr.Segment <= 0 {
-				tr.Segment = 0
-				tr.Direction = 1
+				// bounce at ends
+				if tr.Segment >= last {
+					tr.Segment = last
+					tr.Direction = -1
+				}
+
+				if tr.Segment <= 0 {
+					tr.Segment = 0
+					tr.Direction = 1
+				}
 			}
 
 			tr.JustArrived = true

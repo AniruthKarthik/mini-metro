@@ -54,3 +54,18 @@ type ShortenLine struct {
 }
 
 func (ShortenLine) isAction() {}
+
+// CloseLoop closes a line into a loop by connecting the last station back to the first.
+type CloseLoop struct {
+	LineID    int
+	UseTunnel bool // set true if the wrap-around segment crosses the tunnel distance threshold
+}
+
+func (CloseLoop) isAction() {}
+
+// OpenLoop breaks a loop back into a linear line, refunding a tunnel token if the wrap-around used one.
+type OpenLoop struct {
+	LineID int
+}
+
+func (OpenLoop) isAction() {}

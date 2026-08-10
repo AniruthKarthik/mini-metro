@@ -27,6 +27,15 @@ func BuildGraph(state *GameState) NetworkGraph {
 			}
 			g.addEdge(u, v, line.ID)
 		}
+		// add the wrap-around edge for closed loop lines
+		if line.IsLoop && len(line.Stations) >= 2 {
+			u := line.Stations[len(line.Stations)-1]
+			v := line.Stations[0]
+			if u >= 0 && u < len(state.Stations) && state.Stations[u].Alive &&
+				v >= 0 && v < len(state.Stations) && state.Stations[v].Alive {
+				g.addEdge(u, v, line.ID)
+			}
+		}
 	}
 	return g
 }

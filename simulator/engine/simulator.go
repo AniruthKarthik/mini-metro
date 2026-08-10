@@ -101,6 +101,10 @@ func (s *Simulator) ApplyAction(a Action) error {
 		return s.upgradeInterchange(v)
 	case ShortenLine:
 		return s.shortenLine(v)
+	case CloseLoop:
+		return s.closeLoop(v)
+	case OpenLoop:
+		return s.openLoop(v)
 	default:
 		return errors.New("unknown action type")
 	}
@@ -316,6 +320,9 @@ func (s *Simulator) shortenLine(a ShortenLine) error {
 	if len(line.Stations) <= 2 {
 		return errors.New("line must keep at least 2 stations")
 	}
+	if line.IsLoop {
+		return errors.New("open the loop before shortening")
+	}
 
 	if a.FromFront {
 		// refund tunnel token if the first segment (stations[0]→stations[1]) was a tunnel
@@ -364,6 +371,78 @@ func (s *Simulator) shortenLine(a ShortenLine) error {
 		}
 	}
 
+	s.State.TopologyVersion++
+	return nil
+}
+
+// closeLoop connects the last station back to the first, making the line a one-way loop.
+func (s *Simulator) closeLoop(a CloseLoop) error {
+	if a.LineID < 0 || a.LineID >= len(s.State.Lines) {
+		return errors.New("invalid line ID")
+	}
+	line := &s.State.Lines[a.LineID]
+	if line.Removed {
+		return errors.New("line is removed")
+	}
+	if line.IsLoop {
+		return errors.New("line is already a loop")
+	}
+	if len(line.Stations) < 2 {
+		return errors.New("line needs at least 2 stations to form a loop")
+	}
+	firstPos := s.State.Stations[line.Stations[0]].Pos
+	lastPos := s.State.Stations[line.Stations[len(line.Stations)-1]].Pos
+	needsTunnel := distance(lastPos, firstPos) > tunnelDistanceThreshold
+	if needsTunnel && !a.UseTunnel {
+		return errors.New("tunnel token required for this wrap-around segment")
+	}
+	if a.UseTunnel && !needsTunnel {
+		return errors.New("tunnel not required for this wrap-around segment")
+	}
+	if a.UseTunnel {
+		if !s.State.Resources.Spend(RewardTunnel) {
+			return errors.New("no tunnel tokens available")
+		}
+	}
+	line.IsLoop = true
+	line.LoopTunnel = a.UseTunnel
+	s.State.TopologyVersion++
+	return nil
+}
+
+// openLoop breaks the loop back into a linear line and refunds the tunnel token if one was used.
+func (s *Simulator) openLoop(a OpenLoop) error {
+	if a.LineID < 0 || a.LineID >= len(s.State.Lines) {
+		return errors.New("invalid line ID")
+	}
+	line := &s.State.Lines[a.LineID]
+	if line.Removed {
+		return errors.New("line is removed")
+	}
+	if !line.IsLoop {
+		return errors.New("line is not a loop")
+	}
+	if line.LoopTunnel {
+		s.State.Resources.Grant(RewardTunnel)
+	}
+	line.IsLoop = false
+	line.LoopTunnel = false
+	// trains that were heading "through" the wrap-around now need a valid direction
+	for i := range s.State.Trains {
+		tr := &s.State.Trains[i]
+		if !tr.Active || tr.LineID != a.LineID {
+			continue
+		}
+		// normalise: trains already within bounds are fine; just ensure direction is legal
+		last := len(line.Stations) - 1
+		if tr.Segment >= last {
+			tr.Segment = last
+			tr.Direction = -1
+		} else if tr.Segment <= 0 {
+			tr.Segment = 0
+			tr.Direction = 1
+		}
+	}
 	s.State.TopologyVersion++
 	return nil
 }
