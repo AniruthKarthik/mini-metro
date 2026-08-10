@@ -131,9 +131,15 @@ func (s *Simulator) addLine(a AddLine) error {
 		return errors.New("insufficient stations to add a new line")
 	}
 
-	for _, stID := range a.Stations {
+	for i, stID := range a.Stations {
 		if stID < 0 || stID >= len(s.State.Stations) {
 			return errors.New("invalid station ID in line")
+		}
+		if !s.State.Stations[stID].Alive {
+			return errors.New("station is not alive")
+		}
+		if i+1 < len(a.Stations) && a.Stations[i] == a.Stations[i+1] {
+			return errors.New("cannot connect station to itself")
 		}
 	}
 
@@ -180,6 +186,10 @@ func (s *Simulator) extendLine(a ExtendLine) error {
 
 	if a.StationID < 0 || a.StationID >= len(s.State.Stations) {
 		return errors.New("invalid station ID")
+	}
+
+	if !s.State.Stations[a.StationID].Alive {
+		return errors.New("station is not alive")
 	}
 
 	line := &s.State.Lines[a.LineID]
@@ -397,7 +407,7 @@ func (s *Simulator) shortenLine(a ShortenLine) error {
 				continue
 			}
 			tr.Segment--
-			if tr.Segment < 0 {
+			if tr.Segment <= 0 {
 				tr.Segment = 0
 				tr.Progress = 0
 				tr.Direction = 1 // was heading toward the now-removed first station; reverse
@@ -527,8 +537,14 @@ func (s *Simulator) repositionTrain(a RepositionTrain) error {
 	dir := a.Direction
 	if line.IsLoop {
 		dir = 1
-	} else if dir != 1 && dir != -1 {
-		dir = 1
+	} else {
+		if a.Segment == 0 {
+			dir = 1
+		} else if a.Segment == len(line.Stations)-1 {
+			dir = -1
+		} else if dir != 1 && dir != -1 {
+			dir = 1
+		}
 	}
 
 	tr.Segment = a.Segment

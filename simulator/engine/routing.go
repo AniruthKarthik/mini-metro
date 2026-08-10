@@ -80,18 +80,13 @@ func getSegmentDirection(line *Line, u, v int) int {
 	if line.IsLoop {
 		return 1
 	}
-	uIdx := -1
-	vIdx := -1
-	for idx, stID := range line.Stations {
-		if uIdx == -1 && stID == u {
-			uIdx = idx
+	for i := 0; i+1 < len(line.Stations); i++ {
+		if line.Stations[i] == u && line.Stations[i+1] == v {
+			return 1
 		}
-		if vIdx == -1 && stID == v {
-			vIdx = idx
+		if line.Stations[i] == v && line.Stations[i+1] == u {
+			return -1
 		}
-	}
-	if uIdx != -1 && vIdx != -1 && vIdx < uIdx {
-		return -1
 	}
 	return 1
 }

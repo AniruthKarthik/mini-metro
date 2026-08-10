@@ -446,8 +446,8 @@ func main() {
 	})
 	rareDestinationSpawned := false
 	activeFilteredOnly := true
-	for i := 0; i < 500; i++ {
-		sim14.Step(0.01)
+	for i := 0; i < 1500; i++ {
+		sim14.Step(0.05)
 		for _, st := range sim14.State.Stations {
 			for _, p := range st.Queue {
 				if p.Destination == engine.Star {

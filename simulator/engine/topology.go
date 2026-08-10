@@ -43,7 +43,9 @@ func BuildGraph(state *GameState) NetworkGraph {
 // addEdge adds an undirected edge between u and v attributed to lineID.
 func (g *NetworkGraph) addEdge(u, v, lineID int) {
 	key := edgeKey(u, v)
-	g.EdgeLines[key] = append(g.EdgeLines[key], lineID)
+	if !contains(g.EdgeLines[key], lineID) {
+		g.EdgeLines[key] = append(g.EdgeLines[key], lineID)
+	}
 	if !contains(g.Adj[u], v) {
 		g.Adj[u] = append(g.Adj[u], v)
 	}

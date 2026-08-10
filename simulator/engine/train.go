@@ -229,7 +229,7 @@ func (s *Simulator) boardAndAlight() {
 		}
 
 		// Alight
-		remainingPassengers := tr.Passengers[:0]
+		remainingPassengers := make([]Passenger, 0, len(tr.Passengers))
 		for _, p := range tr.Passengers {
 			if p.Destination == st.Kind {
 				s.State.Score++
@@ -260,7 +260,7 @@ func (s *Simulator) boardAndAlight() {
 			return r
 		}
 
-		remaining := st.Queue[:0]
+		remaining := make([]Passenger, 0, len(st.Queue))
 		for _, p := range st.Queue {
 			route := getRoute(p.Destination)
 			canBoard := len(tr.Passengers) < totalCapacity &&
