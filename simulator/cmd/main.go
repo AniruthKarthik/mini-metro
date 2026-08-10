@@ -223,6 +223,103 @@ func main() {
 	}
 	check(hasReward, "reward event rescheduled after firing")
 
+	// --- 10. True A* Mini Metro Routing Verification ---
+	header("10. True A* Mini Metro Routing (Direction, Transfers, Travel Time)")
+	
+	// Test Direction-Aware Boarding
+	sim8 := engine.NewSimulator([]engine.Station{
+		{ID: 0, Kind: engine.Circle, Pos: engine.Pos{X: 0, Y: 0}},
+		{ID: 1, Kind: engine.Triangle, Pos: engine.Pos{X: 10, Y: 0}},
+		{ID: 2, Kind: engine.Square, Pos: engine.Pos{X: 20, Y: 0}},
+	})
+	sim8.ApplyAction(engine.AddLine{Stations: []int{0, 1, 2}})
+	sim8.Step(0.01)
+
+	rDir := engine.FindRoute(&sim8.State.Graph, &sim8.State, 1, engine.Circle)
+	check(rDir.Reachable, "station 1 can reach Circle")
+	check(rDir.NextLineID == 0, "next line is Line 0")
+	check(rDir.NextDirection == -1, "next direction is -1 (towards Station 0)")
+
+	// Seed Station 1 queue with passenger wanting Circle
+	sim8.State.Stations[1].Queue = append(sim8.State.Stations[1].Queue, engine.Passenger{
+		Origin:      1,
+		Destination: engine.Circle,
+	})
+
+	// Train on Line 0 at Station 1 heading +1 (away from Circle)
+	sim8.State.Trains = append(sim8.State.Trains, engine.Train{
+		ID:          0,
+		LineID:      0,
+		Segment:     1,
+		Direction:   1, // moving toward Square, away from Circle
+		Capacity:    6,
+		Active:      true,
+		JustArrived: true,
+	})
+	sim8.Step(0.01) // triggers boardAndAlight
+
+	// Passenger should NOT board train heading in wrong direction (+1)
+	check(len(sim8.State.Trains[0].Passengers) == 0, "passenger did not board train moving away from destination (-1 required, train moving +1)")
+	check(len(sim8.State.Stations[1].Queue) == 1, "passenger remains in station queue")
+
+	// Train on Line 0 at Station 1 heading -1 (toward Circle)
+	sim8.State.Trains = append(sim8.State.Trains, engine.Train{
+		ID:          1,
+		LineID:      0,
+		Segment:     1,
+		Direction:   -1, // moving toward Circle
+		Capacity:    6,
+		Active:      true,
+		JustArrived: true,
+	})
+	sim8.Step(0.01) // triggers boardAndAlight
+
+	check(len(sim8.State.Trains[1].Passengers) == 1, "passenger boarded train moving in correct direction (-1)")
+	check(len(sim8.State.Stations[1].Queue) == 0, "station queue emptied after boarding")
+
+	// Test Transfer Alighting
+	sim9 := engine.NewSimulator([]engine.Station{
+		{ID: 0, Kind: engine.Circle, Pos: engine.Pos{X: 0, Y: 0}},
+		{ID: 1, Kind: engine.Triangle, Pos: engine.Pos{X: 10, Y: 0}},
+		{ID: 2, Kind: engine.Square, Pos: engine.Pos{X: 20, Y: 0}},
+	})
+	sim9.ApplyAction(engine.AddLine{Stations: []int{0, 1}})
+	sim9.ApplyAction(engine.AddLine{Stations: []int{1, 2}})
+	sim9.Step(0.01)
+
+	// Train 0 on Line 0 carries passenger wanting Square (Station 2)
+	sim9.State.Trains = append(sim9.State.Trains, engine.Train{
+		ID:          0,
+		LineID:      0,
+		Segment:     1, // arriving at transfer Station 1
+		Direction:   1,
+		Capacity:    6,
+		Active:      true,
+		JustArrived: true,
+		Passengers: []engine.Passenger{
+			{Origin: 0, Destination: engine.Square},
+		},
+	})
+	sim9.Step(0.01) // boardAndAlight triggers at Station 1
+
+	check(len(sim9.State.Trains[0].Passengers) == 0, "passenger alighted from Line 0 train at transfer station")
+	check(len(sim9.State.Stations[1].Queue) == 1, "alighted passenger joined transfer station queue")
+
+	// Train 1 on Line 1 arrives at Station 1
+	sim9.State.Trains = append(sim9.State.Trains, engine.Train{
+		ID:          1,
+		LineID:      1,
+		Segment:     0, // Station 1 on Line 1 (1->2)
+		Direction:   1,
+		Capacity:    6,
+		Active:      true,
+		JustArrived: true,
+	})
+	sim9.Step(0.01)
+
+	check(len(sim9.State.Trains[1].Passengers) == 1, "transferring passenger boarded Line 1 train")
+	check(len(sim9.State.Stations[1].Queue) == 0, "transfer station queue cleared")
+
 	// --- Summary ---
 	fmt.Println()
 	fmt.Println(strings.Repeat("=", 60))

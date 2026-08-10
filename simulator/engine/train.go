@@ -124,13 +124,17 @@ func (s *Simulator) boardAndAlight() {
 			if p.Destination == st.Kind {
 				s.State.Score++
 			} else {
-				remainingPassengers = append(remainingPassengers, p)
+				route := FindOptimalRoute(&s.State.Graph, &s.State, stationID, p.Destination)
+				if route.Reachable && route.NextLineID == tr.LineID && (route.NextDirection == 0 || route.NextDirection == tr.Direction) {
+					remainingPassengers = append(remainingPassengers, p)
+				} else {
+					st.Queue = append(st.Queue, p)
+				}
 			}
 		}
 		tr.Passengers = remainingPassengers
 
-		// Board — compute A* routes once per destKind per station visit, then filter by NextLineID.
-		// Capacity reservation is implicit: passengers only board the optimal line, not any reachable train.
+		// Board — compute A* routes once per destKind per station visit, then filter by NextLineID & NextDirection.
 		totalCapacity := tr.Capacity
 		if tr.Carriages > 1 {
 			totalCapacity += (tr.Carriages - 1) * 6
@@ -150,7 +154,9 @@ func (s *Simulator) boardAndAlight() {
 		for _, p := range st.Queue {
 			route := getRoute(p.Destination)
 			canBoard := len(tr.Passengers) < totalCapacity &&
-				(st.IsInterchange || (route.Reachable && route.NextLineID == tr.LineID))
+				route.Reachable &&
+				route.NextLineID == tr.LineID &&
+				(route.NextDirection == 0 || route.NextDirection == tr.Direction)
 			if canBoard {
 				tr.Passengers = append(tr.Passengers, p)
 			} else {
