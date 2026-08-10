@@ -348,6 +348,37 @@ func main() {
 	rateAfter3000 := sim10.CurrentSpawnRate()
 	check(rateAfter3000 > rateAfter1000, fmt.Sprintf("spawn rate accelerated further from %.2f to %.2f after 3000 ticks", rateAfter1000, rateAfter3000))
 
+	// --- 12. Train Repositioning & Max Trains Per Line Limit ---
+	header("12. Train Repositioning & Max Trains Per Line Limit")
+	sim11 := engine.NewSimulator([]engine.Station{
+		{ID: 0, Kind: engine.Circle, Pos: engine.Pos{X: 0, Y: 0}},
+		{ID: 1, Kind: engine.Triangle, Pos: engine.Pos{X: 10, Y: 0}},
+		{ID: 2, Kind: engine.Square, Pos: engine.Pos{X: 20, Y: 0}},
+	})
+	sim11.State.MaxTrainsPerLine = 2 // configurable per map limit
+	sim11.ApplyAction(engine.AddLine{Stations: []int{0, 1, 2}})
+
+	// Add 2 trains to Line 0
+	err = sim11.ApplyAction(engine.AddTrain{LineID: 0})
+	check(err == nil, "1st train added to Line 0")
+	err = sim11.ApplyAction(engine.AddTrain{LineID: 0})
+	check(err == nil, "2nd train added to Line 0")
+
+	// Try adding 3rd train to Line 0 (MaxTrainsPerLine is 2)
+	err = sim11.ApplyAction(engine.AddTrain{LineID: 0})
+	check(err != nil, "3rd train rejected because line reached MaxTrainsPerLine limit (2)")
+
+	// Test RepositionTrain
+	check(sim11.State.Trains[0].Segment == 0, "train 0 initially at segment 0")
+	err = sim11.ApplyAction(engine.RepositionTrain{
+		TrainID:   0,
+		Segment:   2,
+		Direction: -1,
+	})
+	check(err == nil, "RepositionTrain executed successfully")
+	check(sim11.State.Trains[0].Segment == 2, "train 0 moved to segment 2")
+	check(sim11.State.Trains[0].Direction == -1, "train 0 direction updated to -1")
+
 	// --- Summary ---
 	fmt.Println()
 	fmt.Println(strings.Repeat("=", 60))

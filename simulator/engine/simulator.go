@@ -20,13 +20,14 @@ func NewSimulator(stations []Station) *Simulator {
 	}
 	sim := &Simulator{
 		State: GameState{
-			Stations:  stations,
-			Lines:     []Line{},
-			Trains:    []Train{},
-			Resources: NewResourcePool(),
-			Score:     0,
-			Tick:      0,
-			Alive:     true,
+			Stations:         stations,
+			Lines:            []Line{},
+			Trains:           []Train{},
+			Resources:        NewResourcePool(),
+			Score:            0,
+			Tick:             0,
+			Alive:            true,
+			MaxTrainsPerLine: 4,
 		},
 	}
 	sim.State.Scheduler.Schedule(rewardInterval(), EventReward)
@@ -105,6 +106,8 @@ func (s *Simulator) ApplyAction(a Action) error {
 		return s.closeLoop(v)
 	case OpenLoop:
 		return s.openLoop(v)
+	case RepositionTrain:
+		return s.repositionTrain(v)
 	default:
 		return errors.New("unknown action type")
 	}
@@ -192,6 +195,20 @@ func (s *Simulator) addTrain(a AddTrain) error {
 
 	if line.Removed || len(line.Stations) < 2 {
 		return errors.New("invalid or removed line")
+	}
+
+	activeCount := 0
+	for _, tr := range s.State.Trains {
+		if tr.Active && tr.LineID == a.LineID {
+			activeCount++
+		}
+	}
+	maxLimit := s.State.MaxTrainsPerLine
+	if maxLimit <= 0 {
+		maxLimit = 4
+	}
+	if activeCount >= maxLimit {
+		return errors.New("max trains per line limit reached")
 	}
 
 	if !s.State.Resources.Spend(RewardTrain) {
@@ -446,3 +463,40 @@ func (s *Simulator) openLoop(a OpenLoop) error {
 	s.State.TopologyVersion++
 	return nil
 }
+
+// repositionTrain moves an active train to a specific station segment on its line.
+func (s *Simulator) repositionTrain(a RepositionTrain) error {
+	if a.TrainID < 0 || a.TrainID >= len(s.State.Trains) {
+		return errors.New("invalid train ID")
+	}
+	tr := &s.State.Trains[a.TrainID]
+	if !tr.Active {
+		return errors.New("train is inactive")
+	}
+	if tr.LineID < 0 || tr.LineID >= len(s.State.Lines) {
+		return errors.New("invalid line ID")
+	}
+	line := &s.State.Lines[tr.LineID]
+	if line.Removed || len(line.Stations) < 2 {
+		return errors.New("invalid or removed line")
+	}
+	if a.Segment < 0 || a.Segment >= len(line.Stations) {
+		return errors.New("invalid segment station index")
+	}
+
+	dir := a.Direction
+	if line.IsLoop {
+		dir = 1
+	} else if dir != 1 && dir != -1 {
+		dir = 1
+	}
+
+	tr.Segment = a.Segment
+	tr.Progress = 0
+	tr.Direction = dir
+	tr.JustArrived = true
+	tr.DwellRemaining = 0
+
+	return nil
+}
+

@@ -69,3 +69,13 @@ type OpenLoop struct {
 }
 
 func (OpenLoop) isAction() {}
+
+// RepositionTrain moves an active train to a specific station segment on its line.
+type RepositionTrain struct {
+	TrainID   int
+	Segment   int // target station index on line.Stations
+	Direction int // optional: 1 or -1 (default 1 if 0)
+}
+
+func (RepositionTrain) isAction() {}
+

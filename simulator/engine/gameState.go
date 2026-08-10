@@ -12,4 +12,6 @@ type GameState struct {
 	Score                int
 	Tick                 uint64
 	Alive                bool
+	MaxTrainsPerLine     int // max trains allowed per line (default 4)
 }
+
