@@ -13,6 +13,7 @@ func (AddLine) isAction() {}
 type ExtendLine struct {
 	LineID    int
 	StationID int
+	UseTunnel bool // set true to spend a tunnel token for a long-distance segment
 }
 
 func (ExtendLine) isAction() {}
@@ -45,3 +46,11 @@ type UpgradeInterchange struct {
 }
 
 func (UpgradeInterchange) isAction() {}
+
+// ShortenLine removes one station from a line endpoint. FromFront=true removes the first station; false removes the last.
+type ShortenLine struct {
+	LineID    int
+	FromFront bool
+}
+
+func (ShortenLine) isAction() {}

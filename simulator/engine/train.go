@@ -117,7 +117,7 @@ func (s *Simulator) boardAndAlight() {
 		}
 		tr.Passengers = remainingPassengers
 
-		// Board - skip passengers whose destination is unreachable via the current network.
+		// Board — interchange stations board any train; others check network reachability.
 		totalCapacity := tr.Capacity
 		if tr.Carriages > 1 {
 			totalCapacity += (tr.Carriages - 1) * 6
@@ -125,7 +125,9 @@ func (s *Simulator) boardAndAlight() {
 
 		remaining := st.Queue[:0]
 		for _, p := range st.Queue {
-			if len(tr.Passengers) < totalCapacity && CanReach(&s.State.Graph, &s.State, stationID, p.Destination) {
+			canBoard := len(tr.Passengers) < totalCapacity &&
+				(st.IsInterchange || CanReach(&s.State.Graph, &s.State, stationID, p.Destination))
+			if canBoard {
 				tr.Passengers = append(tr.Passengers, p)
 			} else {
 				remaining = append(remaining, p)

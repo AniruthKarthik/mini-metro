@@ -99,6 +99,8 @@ func (s *Simulator) ApplyAction(a Action) error {
 		return s.addCarriage(v)
 	case UpgradeInterchange:
 		return s.upgradeInterchange(v)
+	case ShortenLine:
+		return s.shortenLine(v)
 	default:
 		return errors.New("unknown action type")
 	}
@@ -120,10 +122,13 @@ func (s *Simulator) addLine(a AddLine) error {
 	}
 
 	id := len(s.State.Lines)
+	// initial segments are never tunnel crossings
+	tunnelAt := make([]bool, len(a.Stations)-1)
 
 	s.State.Lines = append(s.State.Lines, Line{
 		ID:       id,
 		Stations: append([]int(nil), a.Stations...),
+		TunnelAt: tunnelAt,
 		Removed:  false,
 	})
 
@@ -150,7 +155,26 @@ func (s *Simulator) extendLine(a ExtendLine) error {
 		return errors.New("cannot extend line to the same station")
 	}
 
+	// check whether this segment crosses a tunnel threshold
+	lastID := line.Stations[len(line.Stations)-1]
+	lastPos := s.State.Stations[lastID].Pos
+	newPos := s.State.Stations[a.StationID].Pos
+	needsTunnel := distance(lastPos, newPos) > tunnelDistanceThreshold
+
+	if needsTunnel && !a.UseTunnel {
+		return errors.New("tunnel token required for this segment")
+	}
+	if a.UseTunnel && !needsTunnel {
+		return errors.New("tunnel not required for this segment")
+	}
+	if a.UseTunnel {
+		if !s.State.Resources.Spend(RewardTunnel) {
+			return errors.New("no tunnel tokens available")
+		}
+	}
+
 	line.Stations = append(line.Stations, a.StationID)
+	line.TunnelAt = append(line.TunnelAt, a.UseTunnel)
 	s.State.TopologyVersion++
 	return nil
 }
@@ -276,5 +300,70 @@ func (s *Simulator) upgradeInterchange(a UpgradeInterchange) error {
 		return errors.New("no interchange tokens available")
 	}
 	st.IsInterchange = true
+	st.Capacity *= 2 // interchange stations handle twice the passenger load before overcrowding
+	return nil
+}
+
+// shortenLine removes one station from either endpoint of a line.
+func (s *Simulator) shortenLine(a ShortenLine) error {
+	if a.LineID < 0 || a.LineID >= len(s.State.Lines) {
+		return errors.New("invalid line ID")
+	}
+	line := &s.State.Lines[a.LineID]
+	if line.Removed {
+		return errors.New("line is removed")
+	}
+	if len(line.Stations) <= 2 {
+		return errors.New("line must keep at least 2 stations")
+	}
+
+	if a.FromFront {
+		// refund tunnel token if the first segment (stations[0]→stations[1]) was a tunnel
+		if len(line.TunnelAt) > 0 && line.TunnelAt[0] {
+			s.State.Resources.Grant(RewardTunnel)
+		}
+		line.Stations = line.Stations[1:]
+		if len(line.TunnelAt) > 0 {
+			line.TunnelAt = line.TunnelAt[1:]
+		}
+		// all train segments shift down by 1 since every station index decreased by 1
+		for i := range s.State.Trains {
+			tr := &s.State.Trains[i]
+			if !tr.Active || tr.LineID != a.LineID {
+				continue
+			}
+			tr.Segment--
+			if tr.Segment < 0 {
+				tr.Segment = 0
+				tr.Progress = 0
+				tr.Direction = 1 // was heading toward the now-removed first station; reverse
+			}
+		}
+	} else {
+		// refund tunnel token if the last segment (stations[n-2]→stations[n-1]) was a tunnel
+		lastSeg := len(line.TunnelAt) - 1
+		if lastSeg >= 0 && line.TunnelAt[lastSeg] {
+			s.State.Resources.Grant(RewardTunnel)
+		}
+		line.Stations = line.Stations[:len(line.Stations)-1]
+		if len(line.TunnelAt) > 0 {
+			line.TunnelAt = line.TunnelAt[:len(line.TunnelAt)-1]
+		}
+		// clamp trains that were at or past the now-removed last station
+		newLast := len(line.Stations) - 1
+		for i := range s.State.Trains {
+			tr := &s.State.Trains[i]
+			if !tr.Active || tr.LineID != a.LineID {
+				continue
+			}
+			if tr.Segment > newLast {
+				tr.Segment = newLast
+				tr.Progress = 0
+				tr.Direction = -1 // bounce back from the new end
+			}
+		}
+	}
+
+	s.State.TopologyVersion++
 	return nil
 }
