@@ -209,15 +209,20 @@ export class HUDManager {
     this.fastBtn.classList.toggle('active', mode === 'fast');
   }
 
+  private currentRewardChoicesKey: string = '';
+
   public updateState(snap: StateSnapshot): void {
+    // 1. Score
     this.scoreText.innerText = String(snap.score);
 
+    // 2. Day & Clock (1 day = 100 ticks)
     const dayIdx = Math.floor(snap.tick / 100) % 7;
     this.dayText.innerText = DAYS[dayIdx];
 
     const clockAngle = ((snap.tick % 100) / 100) * 360;
     this.clockHand.setAttribute('transform', `rotate(${clockAngle} 18 18)`);
 
+    // 3. Speed status
     if (snap.paused) {
       this.updateSpeedButtons('pause');
     } else if (snap.tps > 40) {
@@ -226,6 +231,7 @@ export class HUDManager {
       this.updateSpeedButtons('play');
     }
 
+    // 4. Resources Dock
     this.trainCount.innerText = String(snap.resources.trains || 0);
     this.carriageCount.innerText = String(snap.resources.carriages || 0);
     this.tunnelCount.innerText = String(snap.resources.tunnels || 0);
@@ -234,14 +240,23 @@ export class HUDManager {
     this.carriageToken.classList.toggle('disabled', snap.resources.carriages <= 0);
     this.tunnelToken.classList.toggle('disabled', snap.resources.tunnels <= 0);
 
+    // 5. Line Inventory Stack
     this.renderLineStack(snap);
 
+    // 6. Weekly Reward Modal
     if (snap.pending_reward_choices && snap.pending_reward_choices.length > 0) {
-      this.showRewardModal(snap.pending_reward_choices);
+      const choicesKey = snap.pending_reward_choices.join(',');
+      if (choicesKey !== this.currentRewardChoicesKey) {
+        this.currentRewardChoicesKey = choicesKey;
+        this.showRewardModal(snap.pending_reward_choices);
+      }
+      this.rewardModal.classList.remove('hidden');
     } else {
+      this.currentRewardChoicesKey = '';
       this.rewardModal.classList.add('hidden');
     }
 
+    // 7. Game Over Modal
     if (!snap.alive) {
       document.getElementById('gameover-score')!.innerText = String(snap.score);
       this.gameOverModal.classList.remove('hidden');

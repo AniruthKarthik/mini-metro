@@ -1,7 +1,7 @@
 import type { TrainDTO, LineDTO, StationDTO, Pos } from '../types';
 import { getX, getY } from '../types';
 import { Viewport } from './viewport';
-import { getLineColor } from './lines';
+import { getLineColor, generateOctilinearPath } from './lines';
 import { DARK_CHARCOAL, WHITE_FILL } from './shapes';
 
 export class TrainInterpolator {
@@ -80,20 +80,57 @@ function computeTrainPosition(
   const st2 = stationMap.get(st2Id);
   if (!st1 || !st2) return null;
 
-  const p1 = viewport.mapToScreen({ x: st1.x, y: st1.y });
-  const p2 = viewport.mapToScreen({ x: st2.x, y: st2.y });
+  const p1 = viewport.mapToScreen({ x: getX(st1), y: getY(st1) });
+  const p2 = viewport.mapToScreen({ x: getX(st2), y: getY(st2) });
 
-  const p1x = getX(p1), p1y = getY(p1);
-  const p2x = getX(p2), p2y = getY(p2);
+  // Generate 45° octilinear path for this segment
+  const octilinearPts = generateOctilinearPath([p1, p2]);
+  if (octilinearPts.length < 2) {
+    return { pos: p1, angle: 0 };
+  }
+
+  // Calculate segment lengths along octilinear path
+  const segLengths: number[] = [];
+  let totalLength = 0;
+
+  for (let i = 0; i < octilinearPts.length - 1; i++) {
+    const a = octilinearPts[i];
+    const b = octilinearPts[i + 1];
+    const dx = getX(b) - getX(a);
+    const dy = getY(b) - getY(a);
+    const len = Math.sqrt(dx * dx + dy * dy);
+    segLengths.push(len);
+    totalLength += len;
+  }
+
+  if (totalLength === 0) {
+    return { pos: p1, angle: 0 };
+  }
 
   const prog = Math.max(0, Math.min(1, tr.progress));
+  let targetDist = prog * totalLength;
 
-  const x = p1x + (p2x - p1x) * prog;
-  const y = p1y + (p2y - p1y) * prog;
+  // Interpolate position and angle along octilinear path
+  for (let i = 0; i < octilinearPts.length - 1; i++) {
+    const len = segLengths[i];
+    const a = octilinearPts[i];
+    const b = octilinearPts[i + 1];
 
-  const angle = Math.atan2(p2y - p1y, p2x - p1x);
+    const ax = getX(a), ay = getY(a);
+    const bx = getX(b), by = getY(b);
+    const angle = Math.atan2(by - ay, bx - ax);
 
-  return { pos: { x, y }, angle };
+    if (targetDist <= len || i === octilinearPts.length - 2) {
+      const frac = len > 0 ? Math.max(0, Math.min(1, targetDist / len)) : 0;
+      const x = ax + (bx - ax) * frac;
+      const y = ay + (by - ay) * frac;
+      return { pos: { x, y }, angle };
+    }
+
+    targetDist -= len;
+  }
+
+  return { pos: p2, angle: 0 };
 }
 
 function renderTrainCar(

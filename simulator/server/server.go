@@ -225,7 +225,12 @@ func (s *Server) actionDispatcher() {
 	for raw := range s.actionCh {
 		action, cmd, err := ParseAction(raw)
 		if err != nil {
-			log.Printf("action parse error: %v (raw: %s)", err, raw)
+			log.Printf("❌ Action parse error: %v (raw: %s)", err, raw)
+			errMsg, _ := json.Marshal(ErrorMessage{
+				Type:  "action_error",
+				Error: err.Error(),
+			})
+			s.hub.Broadcast(errMsg)
 			continue
 		}
 		if cmd != "" {
@@ -233,14 +238,14 @@ func (s *Server) actionDispatcher() {
 			continue
 		}
 		if err := s.sim.ApplyAction(action); err != nil {
-			log.Printf("action apply error: %v (raw: %s)", err, raw)
-			// TODO: route the error back to the originating client.
-			// For now broadcast an error event so any listener can display it.
+			log.Printf("❌ Action apply error: %v (raw: %s)", err, raw)
 			errMsg, _ := json.Marshal(ErrorMessage{
 				Type:  "action_error",
 				Error: err.Error(),
 			})
 			s.hub.Broadcast(errMsg)
+		} else {
+			log.Printf("✅ Action applied successfully: %s", string(raw))
 		}
 	}
 }

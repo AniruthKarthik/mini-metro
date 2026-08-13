@@ -1,4 +1,5 @@
 import type { StationDTO, StationKind } from '../types';
+import { getX, getY } from '../types';
 import { Viewport } from './viewport';
 import { drawStationShape, drawPassengerShape, DARK_CHARCOAL, WHITE_FILL } from './shapes';
 
@@ -13,9 +14,21 @@ export function renderStations(
   for (const st of stations) {
     if (!st.alive) continue;
 
-    const screenPos = viewport.mapToScreen({ x: st.x, y: st.y });
+    const screenPos = viewport.mapToScreen({ x: getX(st), y: getY(st) });
     const isHovered = st.id === hoveredStationId;
     const baseRadius = isHovered ? 16 : 14;
+
+    // Magnetic Snap Ring Halo on Hover / Drag Target
+    if (isHovered) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(screenPos.x, screenPos.y, baseRadius + 9, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(34, 37, 42, 0.45)';
+      ctx.lineWidth = 2.5;
+      ctx.setLineDash([6, 4]);
+      ctx.stroke();
+      ctx.restore();
+    }
 
     if (st.overcrowding_timer > 0) {
       renderOvercrowdingTimer(ctx, screenPos.x, screenPos.y, baseRadius + 10, st.overcrowding_timer);
