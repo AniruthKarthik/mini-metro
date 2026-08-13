@@ -87,8 +87,9 @@ func (s *Simulator) Step(dt float64) {
 }
 
 func (s *Simulator) offerReward() {
+	s.State.Resources.Grant(RewardLine)
 	s.State.Resources.Grant(RewardTrain)
-	pool := []RewardType{RewardLine, RewardCarriage, RewardTunnel, RewardInterchange}
+	pool := []RewardType{RewardTrain, RewardCarriage, RewardTunnel, RewardInterchange}
 	rand.Shuffle(len(pool), func(i, j int) { pool[i], pool[j] = pool[j], pool[i] })
 	s.State.PendingRewardChoices = pool[:2]
 	s.State.Scheduler.Schedule(s.State.Tick+rewardInterval(), EventReward)
@@ -376,19 +377,26 @@ func (s *Simulator) chooseReward(a ChooseReward) error {
 		return errors.New("no pending reward choice available")
 	}
 
-	valid := false
-	for _, choice := range s.State.PendingRewardChoices {
-		if choice == a.Choice {
-			valid = true
+	var chosenType RewardType = -1
+
+	// Check if a.Choice matches enum value directly
+	for _, c := range s.State.PendingRewardChoices {
+		if c == a.Choice {
+			chosenType = c
 			break
 		}
 	}
 
-	if !valid {
+	// Fallback check if a.Choice is index into PendingRewardChoices (0 <= index < len)
+	if chosenType == -1 && int(a.Choice) >= 0 && int(a.Choice) < len(s.State.PendingRewardChoices) {
+		chosenType = s.State.PendingRewardChoices[int(a.Choice)]
+	}
+
+	if chosenType == -1 {
 		return errors.New("invalid reward choice")
 	}
 
-	s.State.Resources.Grant(a.Choice)
+	s.State.Resources.Grant(chosenType)
 	s.State.PendingRewardChoices = nil
 	return nil
 }
@@ -498,17 +506,19 @@ func (s *Simulator) closeLoop(a CloseLoop) error {
 	firstPos := s.State.Stations[line.Stations[0]].Pos
 	lastPos := s.State.Stations[line.Stations[len(line.Stations)-1]].Pos
 	needsTunnel := CrossesWater(lastPos, firstPos, s.State.Rivers, s.State.WaterPolygons)
-	if needsTunnel && !a.UseTunnel {
-		return errors.New("tunnel token required for this wrap-around segment")
-	}
-	if a.UseTunnel && !needsTunnel {
-		return errors.New("tunnel not required for this wrap-around segment")
-	}
-	if a.UseTunnel {
+
+	if needsTunnel {
+		if !a.UseTunnel && s.State.Resources.CanSpend(RewardTunnel) {
+			a.UseTunnel = true
+		}
+		if !a.UseTunnel {
+			return errors.New("tunnel token required for this wrap-around segment")
+		}
 		if !s.State.Resources.Spend(RewardTunnel) {
 			return errors.New("no tunnel tokens available")
 		}
 	}
+
 	line.IsLoop = true
 	line.LoopTunnel = a.UseTunnel
 	s.State.TopologyVersion++

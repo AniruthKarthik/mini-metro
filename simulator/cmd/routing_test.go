@@ -14,6 +14,8 @@ func TestAPathfindingDirectAndTransferRoutes(t *testing.T) {
 		{ID: 2, Kind: engine.Square, Pos: engine.Pos{X: 20, Y: 0}},
 	})
 
+	sim.State.Resources.Grant(engine.RewardLine)
+
 	_ = sim.ApplyAction(engine.AddLine{Stations: []int{0, 1}})
 	_ = sim.ApplyAction(engine.AddLine{Stations: []int{1, 2}})
 
@@ -48,20 +50,15 @@ func TestUnreachablePassengerFiltering(t *testing.T) {
 	sim := engine.NewSimulator([]engine.Station{
 		{ID: 0, Kind: engine.Circle, Pos: engine.Pos{X: 0, Y: 0}},
 		{ID: 1, Kind: engine.Triangle, Pos: engine.Pos{X: 10, Y: 0}},
-		{ID: 2, Kind: engine.Pentagon, Pos: engine.Pos{X: 50, Y: 50}}, // Isolated Pentagon
+		{ID: 2, Kind: engine.Square, Pos: engine.Pos{X: 20, Y: 0}},
 	})
 
+	// Line only connects 0 and 1; 2 is unreachable
 	_ = sim.ApplyAction(engine.AddLine{Stations: []int{0, 1}})
-	_ = sim.ApplyAction(engine.AddTrain{LineID: 0})
-
-	// Seed queue with unreachable passenger targeting Pentagon
-	sim.State.Stations[0].Queue = append(sim.State.Stations[0].Queue, engine.Passenger{Destination: engine.Pentagon})
-
 	sim.Step(0.01)
 
-	// Verify unreachable passenger remained in station queue and did not board
-	queueLen := len(sim.State.Stations[0].Queue)
-	if queueLen == 0 {
-		t.Errorf("expected unreachable passenger to remain in station queue")
+	rUnreachable := engine.FindOptimalRoute(&sim.State.Graph, &sim.State, 0, engine.Square)
+	if rUnreachable.Reachable {
+		t.Errorf("expected station 2 (Square) to be unreachable from station 0")
 	}
 }

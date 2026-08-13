@@ -2,7 +2,7 @@ import type { StationDTO, LineDTO, Pos, DragState } from '../types';
 import { getX, getY } from '../types';
 import { Viewport } from '../renderer/viewport';
 import { GameWSClient } from '../ws/client';
-import { getLineColor } from '../renderer/lines';
+import { getLineColor, generateOctilinearPath, getTerminalCapPosition, buildSharedEdgeMap, getSegmentParallelOffset } from '../renderer/lines';
 
 const NEW_LINE_GUIDE_COLOR = '#888888';
 
@@ -125,6 +125,126 @@ export class DragHandler {
     return points.length >= 2 ? { points, color } : null;
   }
 
+  public renderDragOverlay(ctx: CanvasRenderingContext2D): void {
+    if (!this.dragState) return;
+
+    const px = getX(this.dragState.currentPos);
+    const py = getY(this.dragState.currentPos);
+    const sourceType = (this.dragState.source as any).type;
+
+    ctx.save();
+
+    if (sourceType === 'add_train') {
+      // Floating Locomotive Icon under cursor
+      const width = 34;
+      const height = 20;
+
+      ctx.save();
+      ctx.translate(px, py);
+
+      ctx.fillStyle = 'rgba(0,0,0,0.25)';
+      ctx.beginPath();
+      ctx.roundRect(-width / 2 + 3, -height / 2 + 4, width, height, 5);
+      ctx.fill();
+
+      ctx.fillStyle = '#22252a';
+      ctx.beginPath();
+      ctx.roundRect(-width / 2, -height / 2, width, height, 5);
+      ctx.fill();
+
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.arc(-8, 7, 2.5, 0, Math.PI * 2);
+      ctx.arc(8, 7, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.restore();
+    } else if (sourceType === 'add_carriage') {
+      // Floating Carriage Icon under cursor
+      const width = 26;
+      const height = 16;
+
+      ctx.save();
+      ctx.translate(px, py);
+
+      ctx.fillStyle = 'rgba(0,0,0,0.2)';
+      ctx.beginPath();
+      ctx.roundRect(-width / 2 + 2, -height / 2 + 3, width, height, 4);
+      ctx.fill();
+
+      ctx.fillStyle = '#444850';
+      ctx.beginPath();
+      ctx.roundRect(-width / 2, -height / 2, width, height, 4);
+      ctx.fill();
+
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      ctx.restore();
+    } else if (sourceType === 'upgrade_interchange') {
+      // Floating Interchange Hub Icon under cursor
+      const r = 12;
+
+      ctx.save();
+      ctx.translate(px, py);
+
+      ctx.fillStyle = 'rgba(0,0,0,0.2)';
+      ctx.beginPath();
+      ctx.arc(2, 3, r + 4, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Double capsule ring
+      ctx.beginPath();
+      ctx.arc(0, 0, r + 4, 0, Math.PI * 2);
+      ctx.strokeStyle = '#22252a';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(0, 0, r, 0, Math.PI * 2);
+      ctx.fillStyle = '#ffffff';
+      ctx.fill();
+      ctx.strokeStyle = '#22252a';
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+
+      ctx.restore();
+    } else {
+      // Floating line drag token cursor indicator
+      ctx.save();
+      ctx.translate(px, py);
+
+      const color = sourceType === 'new_line'
+        ? getLineColor((this.dragState.source as any).lineIndex)
+        : sourceType === 'extend_line'
+        ? getLineColor((this.dragState.source as any).lineId)
+        : '#22252a';
+
+      ctx.fillStyle = 'rgba(0,0,0,0.18)';
+      ctx.beginPath();
+      ctx.arc(2, 3, 11, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(0, 0, 10, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+
+      ctx.restore();
+    }
+
+    ctx.restore();
+  }
+
   private findStationAt(pos: Pos, stations: StationDTO[], threshold: number = 55): StationDTO | null {
     if (!stations) return null;
     const px = getX(pos);
@@ -152,33 +272,69 @@ export class DragHandler {
     const stationMap = new Map<number, StationDTO>();
     for (const st of stations) stationMap.set(st.id, st);
 
+    const sharedEdgeMap = buildSharedEdgeMap(lines);
+
     const px = getX(pos), py = getY(pos);
-    const threshold = 40;
+    let bestMatch: { lineId: number; stationId: number; fromFront: boolean; dist: number } | null = null;
 
     for (const line of lines) {
-      if (line.removed || !line.stations || line.stations.length === 0) continue;
+      if (line.removed || !line.stations || line.stations.length < 2 || line.is_loop) continue;
 
       const firstStId = line.stations[0];
+      const secondStId = line.stations[1];
+
       const lastStId = line.stations[line.stations.length - 1];
+      const secondLastStId = line.stations[line.stations.length - 2];
 
       const firstSt = stationMap.get(firstStId);
+      const secondSt = stationMap.get(secondStId);
+
       const lastSt = stationMap.get(lastStId);
+      const secondLastSt = stationMap.get(secondLastStId);
 
-      if (lastSt) {
+      // 1. Back terminal end-cap T-bar
+      if (lastSt && secondLastSt) {
         const lastP = this.viewport.mapToScreen({ x: getX(lastSt), y: getY(lastSt) });
-        const dx = lastP.x - px, dy = lastP.y - py;
-        if (Math.sqrt(dx * dx + dy * dy) <= threshold) {
-          return { lineId: line.id, stationId: lastStId, fromFront: false };
+        const prevP = this.viewport.mapToScreen({ x: getX(secondLastSt), y: getY(secondLastSt) });
+
+        const { p1Offset, p2Offset } = getSegmentParallelOffset(lastP, prevP, lastStId, secondLastStId, line.id, sharedEdgeMap, 8.0);
+        const capInfo = getTerminalCapPosition(p1Offset, p2Offset, 18);
+        const capX = getX(capInfo.capPos), capY = getY(capInfo.capPos);
+
+        const dx = capX - px, dy = capY - py;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+
+        // Check distance to T-bar extending handle (within 35px radius)
+        if (dist <= 35) {
+          if (!bestMatch || dist < bestMatch.dist) {
+            bestMatch = { lineId: line.id, stationId: lastStId, fromFront: false, dist };
+          }
         }
       }
 
-      if (firstSt) {
+      // 2. Front terminal end-cap T-bar
+      if (firstSt && secondSt) {
         const firstP = this.viewport.mapToScreen({ x: getX(firstSt), y: getY(firstSt) });
-        const dx = firstP.x - px, dy = firstP.y - py;
-        if (Math.sqrt(dx * dx + dy * dy) <= threshold) {
-          return { lineId: line.id, stationId: firstStId, fromFront: true };
+        const nextP = this.viewport.mapToScreen({ x: getX(secondSt), y: getY(secondSt) });
+
+        const { p1Offset, p2Offset } = getSegmentParallelOffset(firstP, nextP, firstStId, secondStId, line.id, sharedEdgeMap, 8.0);
+        const capInfo = getTerminalCapPosition(p1Offset, p2Offset, 18);
+        const capX = getX(capInfo.capPos), capY = getY(capInfo.capPos);
+
+        const dx = capX - px, dy = capY - py;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+
+        // Check distance to T-bar extending handle (within 35px radius)
+        if (dist <= 35) {
+          if (!bestMatch || dist < bestMatch.dist) {
+            bestMatch = { lineId: line.id, stationId: firstStId, fromFront: true, dist };
+          }
         }
       }
+    }
+
+    if (bestMatch) {
+      return { lineId: bestMatch.lineId, stationId: bestMatch.stationId, fromFront: bestMatch.fromFront };
     }
 
     return null;
@@ -189,6 +345,8 @@ export class DragHandler {
     const stationMap = new Map<number, StationDTO>();
     for (const st of stations) stationMap.set(st.id, st);
 
+    const sharedEdgeMap = buildSharedEdgeMap(lines);
+
     const threshold = 35;
     const px = getX(pos);
     const py = getY(pos);
@@ -197,21 +355,30 @@ export class DragHandler {
       if (line.removed || !line.stations || line.stations.length < 2) continue;
 
       for (let i = 0; i < line.stations.length - 1; i++) {
-        const st1 = stationMap.get(line.stations[i]);
-        const st2 = stationMap.get(line.stations[i + 1]);
+        const st1Id = line.stations[i];
+        const st2Id = line.stations[i + 1];
+
+        const st1 = stationMap.get(st1Id);
+        const st2 = stationMap.get(st2Id);
         if (!st1 || !st2) continue;
 
         const p1 = this.viewport.mapToScreen({ x: getX(st1), y: getY(st1) });
         const p2 = this.viewport.mapToScreen({ x: getX(st2), y: getY(st2) });
 
-        const dist = distToSegment({ x: px, y: py }, p1, p2);
-        if (dist <= threshold) {
-          return {
-            lineId: line.id,
-            insertIndex: i + 1,
-            fromStationAId: line.stations[i],
-            toStationBId: line.stations[i + 1],
-          };
+        // Generate exact parallel 45° octilinear path matching rendered track line geometry
+        const { p1Offset, p2Offset } = getSegmentParallelOffset(p1, p2, st1Id, st2Id, line.id, sharedEdgeMap, 8.0);
+        const octPts = generateOctilinearPath([p1Offset, p2Offset]);
+
+        for (let k = 0; k < octPts.length - 1; k++) {
+          const dist = distToSegment({ x: px, y: py }, octPts[k], octPts[k + 1]);
+          if (dist <= threshold) {
+            return {
+              lineId: line.id,
+              insertIndex: i + 1,
+              fromStationAId: st1Id,
+              toStationBId: st2Id,
+            };
+          }
         }
       }
     }
@@ -260,6 +427,14 @@ export class DragHandler {
     };
   }
 
+  public startDragInterchange(startPos: Pos): void {
+    this.dragState = {
+      source: { type: 'upgrade_interchange' } as any,
+      currentPos: startPos,
+      targetStationId: null,
+    };
+  }
+
   private onPointerDown(e: MouseEvent): void {
     const pos = this.getEventPos(e);
     const snap = this.wsClient.getSnapshot();
@@ -267,8 +442,10 @@ export class DragHandler {
 
     const stations = snap.stations || [];
     const lines = snap.lines || [];
+    const res = (snap.resources || {}) as any;
+    const availableLines = res.lines ?? res.Lines ?? 0;
 
-    // 1. Check line terminal extension hit box
+    // 1. Check line terminal extension hit box (extending T-bar handles)
     const terminalHit = this.findTerminalToExtend(pos, lines, stations);
     if (terminalHit) {
       this.dragState = {
@@ -280,73 +457,42 @@ export class DragHandler {
       return;
     }
 
-    // 2. Check station hit box
+    // 2. Check station node hit box -> DRAFT A NEW LINE FROM THIS STATION
     const st = this.findStationAt(pos, stations, 55);
-    if (!st) {
-      // 3. Check line track segment hit box to insert station in between
-      const segHit = this.findSegmentToInsert(pos, lines, stations);
-      if (segHit) {
+    if (st) {
+      if (availableLines > 0) {
+        const nextLineIdx = this.getNextLineIndex(lines);
         this.dragState = {
-          source: {
-            type: 'insert_station',
-            lineId: segHit.lineId,
-            insertIndex: segHit.insertIndex,
-            fromStationAId: segHit.fromStationAId,
-            toStationBId: segHit.toStationBId,
-          } as any,
+          source: { type: 'new_line', lineIndex: nextLineIdx, firstStationId: st.id } as any,
           currentPos: pos,
           targetStationId: null,
         };
-        this.selectedStationId = null;
-        return;
+      } else {
+        console.warn('⚠️ [FRONTEND] No available line tokens in resource pool');
       }
-
       this.selectedStationId = null;
       return;
     }
 
-    // Click-to-connect support
-    if (this.selectedStationId !== null && this.selectedStationId !== st.id) {
-      const srcStId = this.selectedStationId;
-      this.selectedStationId = null;
-
-      for (const line of lines) {
-        if (line.removed || !line.stations || line.stations.length === 0) continue;
-        if (line.stations[0] === srcStId) {
-          this.wsClient.sendAction({
-            type: 'extend_line',
-            payload: { line_id: line.id, station_id: st.id, use_tunnel: false, from_front: true },
-          });
-          return;
-        }
-        if (line.stations[line.stations.length - 1] === srcStId) {
-          this.wsClient.sendAction({
-            type: 'extend_line',
-            payload: { line_id: line.id, station_id: st.id, use_tunnel: false, from_front: false },
-          });
-          return;
-        }
-      }
-
-      this.wsClient.sendAction({
-        type: 'add_line',
-        payload: { stations: [srcStId, st.id] },
-      });
-      return;
-    }
-
-    this.selectedStationId = st.id;
-
-    const res = snap.resources || { lines: 0 };
-    if (res.lines > 0) {
+    // 3. Check line track segment hit box -> INSERT INTERMEDIATE STATION
+    const segHit = this.findSegmentToInsert(pos, lines, stations);
+    if (segHit) {
       this.dragState = {
-        source: { type: 'extend_line', lineId: -1, fromStationId: st.id, fromFront: false },
+        source: {
+          type: 'insert_station',
+          lineId: segHit.lineId,
+          insertIndex: segHit.insertIndex,
+          fromStationAId: segHit.fromStationAId,
+          toStationBId: segHit.toStationBId,
+        } as any,
         currentPos: pos,
         targetStationId: null,
       };
-    } else {
-      console.warn('⚠️ [FRONTEND] No available lines in resource pool');
+      this.selectedStationId = null;
+      return;
     }
+
+    this.selectedStationId = null;
   }
 
   private onPointerMove(e: MouseEvent): void {
@@ -424,13 +570,27 @@ export class DragHandler {
             }
           } else {
             const line = lines.find((l) => l.id === source.lineId);
-            if (line && line.stations.length > 2 && line.stations[0] === targetStId) {
-              this.wsClient.sendAction({
-                type: 'close_loop',
-                payload: { line_id: line.id, use_tunnel: false },
-              });
-              this.selectedStationId = null;
-            } else if (source.fromStationId !== targetStId) {
+            if (line && !line.is_loop && line.stations.length >= 2) {
+              const firstStId = line.stations[0];
+              const lastStId = line.stations[line.stations.length - 1];
+
+              const isOppositeTerminal =
+                (source.fromStationId === firstStId && targetStId === lastStId) ||
+                (source.fromStationId === lastStId && targetStId === firstStId);
+
+              if (isOppositeTerminal) {
+                console.log(`🔄 [FRONTEND] Closing loop for line ${line.id}`);
+                this.wsClient.sendAction({
+                  type: 'close_loop',
+                  payload: { line_id: line.id, use_tunnel: false },
+                });
+                this.selectedStationId = null;
+                this.dragState = null;
+                return;
+              }
+            }
+
+            if (line && !line.stations.includes(targetStId) && source.fromStationId !== targetStId) {
               this.wsClient.sendAction({
                 type: 'extend_line',
                 payload: { line_id: source.lineId, station_id: targetStId, use_tunnel: false, from_front: source.fromFront },
@@ -456,6 +616,14 @@ export class DragHandler {
           this.wsClient.sendAction({
             type: 'add_carriage',
             payload: { train_id: train.id },
+          });
+        }
+      } else if ((source as any).type === 'upgrade_interchange') {
+        if (targetStId !== null) {
+          console.log(`🌟 [FRONTEND] Dispatching upgrade_interchange for Station ${targetStId}`);
+          this.wsClient.sendAction({
+            type: 'upgrade_interchange',
+            payload: { station_id: targetStId },
           });
         }
       }

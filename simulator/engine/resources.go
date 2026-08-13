@@ -1,17 +1,17 @@
 package engine
 
 type ResourcePool struct {
-	Lines        int
-	Trains       int
-	Tunnels      int
-	Carriages    int
-	Interchanges int
+	Lines        int `json:"lines"`
+	Trains       int `json:"trains"`
+	Tunnels      int `json:"tunnels"`
+	Carriages    int `json:"carriages"`
+	Interchanges int `json:"interchanges"`
 }
 
 func NewResourcePool() ResourcePool {
 	return ResourcePool{
-		Lines:     3,
-		Trains:    3,
+		Lines:     1,
+		Trains:    1,
 		Tunnels:   0,
 		Carriages: 0,
 	}

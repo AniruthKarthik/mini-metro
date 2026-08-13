@@ -19,21 +19,23 @@ type Train struct {
 	DwellRemaining float64
 }
 
-// velocityProfile returns a smooth acceleration/deceleration multiplier in [0.4, 1.0] based on segment progress p in [0, 1].
-func velocityProfile(p float64) float64 {
+// velocityProfile returns a smooth acceleration/deceleration multiplier in [0.35, 1.0] based on segment progress p in [0, 1].
+func velocityProfile(p float64, accelFromStart bool, decelAtEnd bool) float64 {
 	if p < 0.0 {
 		p = 0.0
 	}
 	if p > 1.0 {
 		p = 1.0
 	}
-	if p < 0.2 {
-		return 0.4 + 0.6*math.Sin((p/0.2)*(math.Pi/2.0))
+
+	mult := 1.0
+	if accelFromStart && p < 0.25 {
+		mult = math.Min(mult, 0.35+0.65*math.Sin((p/0.25)*(math.Pi/2.0)))
 	}
-	if p > 0.8 {
-		return 0.4 + 0.6*math.Sin(((1.0-p)/0.2)*(math.Pi/2.0))
+	if decelAtEnd && p > 0.75 {
+		mult = math.Min(mult, 0.35+0.65*math.Sin(((1.0-p)/0.25)*(math.Pi/2.0)))
 	}
-	return 1.0
+	return mult
 }
 
 // trackCornerMultiplier calculates the turn angle slowdown factor in [0.6, 1.0] at stationIndex on line.
@@ -147,7 +149,11 @@ func (s *Simulator) moveTrains(dt float64) {
 			segLen = 10.0
 		}
 
-		prof := velocityProfile(tr.Progress)
+		// Terminal station or loop end-point acceleration/deceleration check
+		isStartTerminal := !line.IsLoop && (tr.Segment == 0 || tr.Segment == len(line.Stations)-1)
+		isNextTerminal := !line.IsLoop && (nextSegIdx == 0 || nextSegIdx == len(line.Stations)-1)
+
+		prof := velocityProfile(tr.Progress, isStartTerminal, isNextTerminal)
 		cornerMult := trackCornerMultiplier(&s.State, line, tr.Segment, tr.Direction)
 		effSpeed := trainSpeed * prof * cornerMult
 

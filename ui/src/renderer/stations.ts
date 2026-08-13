@@ -1,5 +1,5 @@
 import type { StationDTO, StationKind } from '../types';
-import { StationKind as StationKindValue, getX, getY } from '../types';
+import { getX, getY } from '../types';
 import { Viewport } from './viewport';
 import { drawStationShape, drawPassengerShape, DARK_CHARCOAL, WHITE_FILL } from './shapes';
 
@@ -7,7 +7,7 @@ export function renderStations(
   ctx: CanvasRenderingContext2D,
   viewport: Viewport,
   stations: StationDTO[],
-  hoveredStationId: number | null = null
+  hoveredStationId: number | null
 ): void {
   ctx.save();
 
@@ -16,31 +16,39 @@ export function renderStations(
 
     const screenPos = viewport.mapToScreen({ x: getX(st), y: getY(st) });
     const isHovered = st.id === hoveredStationId;
-    const baseRadius = isHovered ? 15 : 13;
+    const baseRadius = isHovered ? 13 : 11;
 
-    // Magnetic Snap Ring Halo on Hover / Drag Target
+    // Magnetic station snap target halo
     if (isHovered) {
       ctx.save();
       ctx.beginPath();
-      ctx.arc(screenPos.x, screenPos.y, baseRadius + 8, 0, Math.PI * 2);
-      ctx.strokeStyle = 'rgba(37, 37, 37, 0.22)';
-      ctx.lineWidth = 2;
+      ctx.arc(screenPos.x, screenPos.y, baseRadius + 10, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.25)';
+      ctx.lineWidth = 2.5;
+      ctx.setLineDash([5, 4]);
       ctx.stroke();
       ctx.restore();
     }
 
+    // Overcrowding progress ring
     if (st.overcrowding_timer > 0) {
-      renderOvercrowdingTimer(ctx, screenPos.x, screenPos.y, baseRadius + 10, st.overcrowding_timer);
+      renderOvercrowdingTimer(ctx, screenPos.x, screenPos.y, baseRadius + 5, st.overcrowding_timer);
     }
 
+    // Interchange Hub double outer capsule ring
     if (st.is_interchange) {
+      ctx.save();
       ctx.beginPath();
-      ctx.arc(screenPos.x, screenPos.y, baseRadius + 7, 0, Math.PI * 2);
-      ctx.fillStyle = WHITE_FILL;
-      ctx.fill();
+      ctx.arc(screenPos.x, screenPos.y, baseRadius + 6.5, 0, Math.PI * 2);
       ctx.strokeStyle = DARK_CHARCOAL;
       ctx.lineWidth = 3.5;
       ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(screenPos.x, screenPos.y, baseRadius + 4.0, 0, Math.PI * 2);
+      ctx.fillStyle = WHITE_FILL;
+      ctx.fill();
+      ctx.restore();
     }
 
     drawStationShape(
@@ -94,29 +102,42 @@ function renderOvercrowdingTimer(
 
 function renderPassengerQueue(
   ctx: CanvasRenderingContext2D,
-  stationX: number,
-  stationY: number,
-  stationRadius: number,
+  stX: number,
+  stY: number,
+  stRadius: number,
   destinations: StationKind[],
   queueSize: number
 ): void {
+  const shapeSize = 4.2;
+  const spacing = 11;
+  const startOffsetX = stRadius + 9;
+  const startOffsetY = -stRadius + 2;
+
+  const countToDraw = Math.min(destinations.length, 8);
+
   ctx.save();
 
-  const startX = stationX + stationRadius + 12;
-  const startY = stationY - 4;
-  const spacing = 10;
-  const maxPerRow = 6;
-  const total = Math.min(queueSize, 18);
+  for (let i = 0; i < countToDraw; i++) {
+    const kind = destinations[i];
+    const px = stX + startOffsetX + (i % 4) * spacing;
+    const py = stY + startOffsetY + Math.floor(i / 4) * spacing;
 
-  for (let i = 0; i < total; i++) {
-    const col = i % maxPerRow;
-    const row = Math.floor(i / maxPerRow);
+    drawPassengerShape(
+      ctx,
+      kind,
+      px,
+      py,
+      shapeSize,
+      DARK_CHARCOAL
+    );
+  }
 
-    const px = startX + col * spacing;
-    const py = startY + row * spacing;
-
-    const destination = destinations[i] ?? StationKindValue.Circle;
-    drawPassengerShape(ctx, destination, px, py, 3.7, DARK_CHARCOAL);
+  if (queueSize > 8) {
+    ctx.fillStyle = DARK_CHARCOAL;
+    ctx.font = '600 10px Avenir Next, Inter, sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(`+${queueSize - 8}`, stX + startOffsetX + 4 * spacing, stY + startOffsetY + 5);
   }
 
   ctx.restore();

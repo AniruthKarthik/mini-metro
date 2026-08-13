@@ -132,7 +132,7 @@ func (s *Server) gameLoop() {
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
-		dt := 1.0 / float64(tps)
+		dt := 1.0 / 30.0 // Standard 30 TPS simulation step quantum
 		s.sim.Step(dt)
 		s.broadcastState(false)
 		time.Sleep(time.Duration(float64(time.Second) / float64(tps)))

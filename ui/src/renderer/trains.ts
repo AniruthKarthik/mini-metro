@@ -1,7 +1,8 @@
 import type { TrainDTO, LineDTO, StationDTO, Pos, StationKind } from '../types';
 import { getX, getY } from '../types';
 import { Viewport } from './viewport';
-import { getLineColor, generateOctilinearPath } from './lines';
+import { getLineColor, generateOctilinearPath, buildSharedEdgeMap, getSegmentParallelOffset } from './lines';
+import type { SharedEdgeMap } from './lines';
 import { drawPassengerShape, DARK_CHARCOAL, WHITE_FILL } from './shapes';
 
 export class TrainInterpolator {
@@ -24,30 +25,37 @@ export class TrainInterpolator {
       lineMap.set(l.id, l);
     }
 
+    const sharedEdgeMap = buildSharedEdgeMap(lines);
+
     for (const tr of trains) {
       const line = lineMap.get(tr.line_id);
       if (!line || line.removed || !line.stations || line.stations.length < 2) {
         continue;
       }
 
-      const trainPos = computeTrainPosition(tr, line, stationMap, viewport);
+      const trainPos = computeTrainPosition(tr, line, stationMap, viewport, sharedEdgeMap);
       if (!trainPos) continue;
 
       const color = getLineColor(tr.line_id);
-      const passengers = tr.passengers || [];
+      const allPassengers = tr.passengers || [];
 
-      renderTrainCar(ctx, trainPos.pos, trainPos.angle, color, passengers);
+      // Locomotive takes up to 6 passengers; attached carriages take remainder
+      const locoPassengers = allPassengers.slice(0, 6);
+      renderTrainCar(ctx, trainPos.pos, trainPos.angle, color, locoPassengers);
 
       if (tr.carriages > 1) {
+        const carriageCap = 4;
         for (let c = 1; c < tr.carriages; c++) {
-          const trailDist = c * 24;
+          const trailDist = c * 26;
           const trainX = getX(trainPos.pos);
           const trainY = getY(trainPos.pos);
           const trailPos = {
             x: trainX - Math.cos(trainPos.angle) * trailDist,
             y: trainY - Math.sin(trainPos.angle) * trailDist,
           };
-          renderCarriageCar(ctx, trailPos, trainPos.angle, color);
+          const startIdx = 6 + (c - 1) * carriageCap;
+          const carriagePassengers = allPassengers.slice(startIdx, startIdx + carriageCap);
+          renderCarriageCar(ctx, trailPos, trainPos.angle, color, carriagePassengers);
         }
       }
     }
@@ -60,7 +68,8 @@ function computeTrainPosition(
   tr: TrainDTO,
   line: LineDTO,
   stationMap: Map<number, StationDTO>,
-  viewport: Viewport
+  viewport: Viewport,
+  edgeMap: SharedEdgeMap
 ): { pos: Pos; angle: number } | null {
   const n = line.stations.length;
   if (tr.segment < 0 || tr.segment >= n) return null;
@@ -85,15 +94,17 @@ function computeTrainPosition(
   const p1 = viewport.mapToScreen({ x: getX(st1), y: getY(st1) });
   const p2 = viewport.mapToScreen({ x: getX(st2), y: getY(st2) });
 
-  // Order endpoints canonically to match exact track line geometry drawn by lines.ts
+  const { p1Offset, p2Offset } = getSegmentParallelOffset(p1, p2, st1Id, st2Id, tr.line_id, edgeMap, 8.0);
+
+  // Order endpoints canonically to match exact parallel track line geometry drawn by lines.ts
   const isForward = st1Idx <= st2Idx;
-  const startP = isForward ? p1 : p2;
-  const endP = isForward ? p2 : p1;
+  const startP = isForward ? p1Offset : p2Offset;
+  const endP = isForward ? p2Offset : p1Offset;
 
   // Generate the EXACT canonical 45° octilinear track path
   const octilinearPts = generateOctilinearPath([startP, endP]);
   if (octilinearPts.length < 2) {
-    return { pos: p1, angle: 0 };
+    return { pos: p1Offset, angle: 0 };
   }
 
   // Calculate segment lengths along canonical octilinear path
@@ -111,7 +122,7 @@ function computeTrainPosition(
   }
 
   if (totalLength === 0) {
-    return { pos: p1, angle: 0 };
+    return { pos: p1Offset, angle: 0 };
   }
 
   const rawProg = Math.max(0, Math.min(1, tr.progress));
@@ -143,7 +154,7 @@ function computeTrainPosition(
     targetDist -= len;
   }
 
-  return { pos: isForward ? p2 : p1, angle: 0 };
+  return { pos: isForward ? p2Offset : p1Offset, angle: 0 };
 }
 
 function renderTrainCar(
@@ -153,8 +164,8 @@ function renderTrainCar(
   color: string,
   passengers: StationKind[]
 ): void {
-  const width = 26;
-  const height = 15;
+  const width = 28;
+  const height = 17;
   const px = getX(pos), py = getY(pos);
 
   ctx.save();
@@ -177,16 +188,35 @@ function renderTrainCar(
   ctx.lineWidth = 2;
   ctx.stroke();
 
-  // Onboard passenger destination shapes (Triangle, Square, Circle, Star...)
-  if (passengers && passengers.length > 0) {
-    const maxShown = Math.min(4, passengers.length);
-    const startX = -width / 3.2;
-    const spacing = (width * 0.65) / Math.max(1, maxShown - 1);
+  // Render all onboard passenger shapes (up to max capacity with 2-row layout if > 4)
+  const count = passengers ? passengers.length : 0;
+  if (count > 0) {
+    if (count <= 4) {
+      const startX = -width * 0.32;
+      const spacing = (width * 0.64) / Math.max(1, count - 1);
+      for (let i = 0; i < count; i++) {
+        const dotX = count === 1 ? 0 : startX + i * spacing;
+        drawPassengerShape(ctx, passengers[i], dotX, 0, 3.0, WHITE_FILL);
+      }
+    } else {
+      const topCount = Math.min(4, Math.ceil(count / 2));
+      const bottomCount = count - topCount;
 
-    for (let i = 0; i < maxShown; i++) {
-      const dotX = maxShown === 1 ? 0 : startX + i * spacing;
-      const kind = passengers[i];
-      drawPassengerShape(ctx, kind, dotX, 0, 3.2, WHITE_FILL);
+      // Top row
+      const startXTop = -width * 0.3;
+      const spacingTop = (width * 0.6) / Math.max(1, topCount - 1);
+      for (let i = 0; i < topCount; i++) {
+        const dotX = topCount === 1 ? 0 : startXTop + i * spacingTop;
+        drawPassengerShape(ctx, passengers[i], dotX, -3.6, 2.3, WHITE_FILL);
+      }
+
+      // Bottom row
+      const startXBot = -width * 0.3;
+      const spacingBot = (width * 0.6) / Math.max(1, bottomCount - 1);
+      for (let j = 0; j < bottomCount; j++) {
+        const dotX = bottomCount === 1 ? 0 : startXBot + j * spacingBot;
+        drawPassengerShape(ctx, passengers[topCount + j], dotX, 3.6, 2.3, WHITE_FILL);
+      }
     }
   }
 
@@ -197,10 +227,11 @@ function renderCarriageCar(
   ctx: CanvasRenderingContext2D,
   pos: Pos,
   angle: number,
-  color: string
+  color: string,
+  passengers: StationKind[]
 ): void {
-  const width = 17;
-  const height = 13;
+  const width = 22;
+  const height = 15;
   const px = getX(pos), py = getY(pos);
 
   ctx.save();
@@ -215,6 +246,33 @@ function renderCarriageCar(
   ctx.strokeStyle = DARK_CHARCOAL;
   ctx.lineWidth = 1.8;
   ctx.stroke();
+
+  const count = passengers ? passengers.length : 0;
+  if (count > 0) {
+    if (count <= 4) {
+      const startX = -width * 0.3;
+      const spacing = (width * 0.6) / Math.max(1, count - 1);
+      for (let i = 0; i < count; i++) {
+        const dotX = count === 1 ? 0 : startX + i * spacing;
+        drawPassengerShape(ctx, passengers[i], dotX, 0, 2.6, WHITE_FILL);
+      }
+    } else {
+      const topCount = Math.min(4, Math.ceil(count / 2));
+      const bottomCount = count - topCount;
+      const startXTop = -width * 0.28;
+      const spacingTop = (width * 0.56) / Math.max(1, topCount - 1);
+      for (let i = 0; i < topCount; i++) {
+        const dotX = topCount === 1 ? 0 : startXTop + i * spacingTop;
+        drawPassengerShape(ctx, passengers[i], dotX, -3.2, 2.1, WHITE_FILL);
+      }
+      const startXBot = -width * 0.28;
+      const spacingBot = (width * 0.56) / Math.max(1, bottomCount - 1);
+      for (let j = 0; j < bottomCount; j++) {
+        const dotX = bottomCount === 1 ? 0 : startXBot + j * spacingBot;
+        drawPassengerShape(ctx, passengers[topCount + j], dotX, 3.2, 2.1, WHITE_FILL);
+      }
+    }
+  }
 
   ctx.restore();
 }

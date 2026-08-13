@@ -1,23 +1,30 @@
-import type { StateSnapshot } from '../types';
-import { RewardType } from '../types';
-import { GameWSClient } from '../ws/client';
-import { LINE_COLORS } from '../renderer/shapes';
+import type { StateSnapshot, RewardType } from '../types';
 import { DragHandler } from '../interaction/dragHandler';
+import { GameWSClient } from '../ws/client';
+import { getLineColor } from '../renderer/lines';
 
 const DAYS = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
 
-export class HUDManager {
+const REWARD_LABELS: Record<number, string> = {
+  0: 'Line',
+  1: 'Locomotive',
+  2: 'Tunnel',
+  3: 'Carriage',
+  4: 'Interchange',
+};
+
+export class HUD {
   private container: HTMLElement;
   private wsClient: GameWSClient;
   private dragHandler: DragHandler | null = null;
 
-  // DOM Elements
-  private dayText!: HTMLElement;
   private scoreText!: HTMLElement;
+  private dayText!: HTMLElement;
   private clockHand!: SVGLineElement;
-  private pauseBtn!: HTMLElement;
-  private playBtn!: HTMLElement;
-  private fastBtn!: HTMLElement;
+
+  private pauseBtn!: HTMLButtonElement;
+  private playBtn!: HTMLButtonElement;
+  private fastBtn!: HTMLButtonElement;
 
   private linesStack!: HTMLElement;
   private trainToken!: HTMLElement;
@@ -26,17 +33,20 @@ export class HUDManager {
   private carriageCount!: HTMLElement;
   private tunnelToken!: HTMLElement;
   private tunnelCount!: HTMLElement;
+  private interchangeToken!: HTMLElement;
+  private interchangeCount!: HTMLElement;
 
   private rewardModal!: HTMLElement;
+  private rewardOptions!: HTMLElement;
   private gameOverModal!: HTMLElement;
-  private errorToast!: HTMLElement;
+  private toastEl!: HTMLElement;
 
   constructor(container: HTMLElement, wsClient: GameWSClient) {
     this.container = container;
     this.wsClient = wsClient;
 
     this.createDomElements();
-    this.attachListeners();
+    this.attachEventListeners();
   }
 
   public setDragHandler(handler: DragHandler): void {
@@ -47,10 +57,10 @@ export class HUDManager {
     this.container.innerHTML = `
       <!-- Top Left Bar -->
       <div class="hud-top-left">
-        <button id="hud-back-btn" class="hud-icon-btn" title="Back">
+        <button id="hud-reset-btn" class="hud-icon-btn" title="Reset Game">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="19" y1="12" x2="5" y2="12"></line>
-            <polyline points="12 19 5 12 12 5"></polyline>
+            <polyline points="23 4 23 10 17 10"></polyline>
+            <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
           </svg>
         </button>
       </div>
@@ -93,7 +103,7 @@ export class HUDManager {
         </div>
       </div>
 
-      <!-- Far Left Resource Dock (Train, Carriage, Tunnel) -->
+      <!-- Far Left Resource Dock (Train, Carriage, Tunnel, Interchange) -->
       <div id="hud-left-dock" class="hud-left-dock">
         <div id="hud-train-token" class="hud-resource-btn" title="Locomotive">
           <svg width="30" height="22" viewBox="0 0 30 22" fill="none">
@@ -117,6 +127,14 @@ export class HUDManager {
             <line x1="4" y1="17" x2="26" y2="17" />
           </svg>
           <span id="hud-tunnel-count" class="hud-badge">0</span>
+        </div>
+
+        <div id="hud-interchange-token" class="hud-resource-btn" title="Interchange Hub">
+          <svg width="30" height="22" viewBox="0 0 30 22" fill="none">
+            <circle cx="15" cy="11" r="6" fill="#ffffff" stroke="currentColor" stroke-width="2.5" />
+            <circle cx="15" cy="11" r="9" stroke="currentColor" stroke-width="1.8" stroke-dasharray="3 2" />
+          </svg>
+          <span id="hud-interchange-count" class="hud-badge">0</span>
         </div>
       </div>
 
@@ -150,9 +168,9 @@ export class HUDManager {
     this.scoreText = document.getElementById('hud-score-text')!;
     this.clockHand = document.getElementById('hud-clock-hand') as any;
 
-    this.pauseBtn = document.getElementById('hud-pause-btn')!;
-    this.playBtn = document.getElementById('hud-play-btn')!;
-    this.fastBtn = document.getElementById('hud-fast-btn')!;
+    this.pauseBtn = document.getElementById('hud-pause-btn') as HTMLButtonElement;
+    this.playBtn = document.getElementById('hud-play-btn') as HTMLButtonElement;
+    this.fastBtn = document.getElementById('hud-fast-btn') as HTMLButtonElement;
 
     this.linesStack = document.getElementById('hud-lines-stack')!;
     this.trainToken = document.getElementById('hud-train-token')!;
@@ -161,13 +179,16 @@ export class HUDManager {
     this.carriageCount = document.getElementById('hud-carriage-count')!;
     this.tunnelToken = document.getElementById('hud-tunnel-token')!;
     this.tunnelCount = document.getElementById('hud-tunnel-count')!;
+    this.interchangeToken = document.getElementById('hud-interchange-token')!;
+    this.interchangeCount = document.getElementById('hud-interchange-count')!;
 
     this.rewardModal = document.getElementById('hud-reward-modal')!;
+    this.rewardOptions = document.getElementById('hud-reward-options')!;
     this.gameOverModal = document.getElementById('hud-gameover-modal')!;
-    this.errorToast = document.getElementById('hud-toast')!;
+    this.toastEl = document.getElementById('hud-toast')!;
   }
 
-  private attachListeners(): void {
+  private attachEventListeners(): void {
     this.pauseBtn.addEventListener('click', () => {
       this.wsClient.sendAction({ type: 'pause' });
       this.updateSpeedButtons('pause');
@@ -181,7 +202,7 @@ export class HUDManager {
 
     this.fastBtn.addEventListener('click', () => {
       this.wsClient.sendAction({ type: 'resume' });
-      this.wsClient.sendAction({ type: 'set_speed', payload: { tps: 60 } });
+      this.wsClient.sendAction({ type: 'set_speed', payload: { tps: 75 } });
       this.updateSpeedButtons('fast');
     });
 
@@ -195,6 +216,16 @@ export class HUDManager {
       if (this.dragHandler && !this.carriageToken.classList.contains('disabled')) {
         this.dragHandler.startDragCarriage({ x: event.clientX, y: event.clientY });
       }
+    });
+
+    this.interchangeToken.addEventListener('mousedown', (event) => {
+      if (this.dragHandler && !this.interchangeToken.classList.contains('disabled')) {
+        this.dragHandler.startDragInterchange({ x: event.clientX, y: event.clientY });
+      }
+    });
+
+    document.getElementById('hud-reset-btn')?.addEventListener('click', () => {
+      this.wsClient.sendAction({ type: 'restart' });
     });
 
     document.getElementById('hud-restart-btn')?.addEventListener('click', () => {
@@ -234,13 +265,21 @@ export class HUDManager {
     }
 
     // 4. Resources Dock
-    this.trainCount.innerText = String(snap.resources.trains || 0);
-    this.carriageCount.innerText = String(snap.resources.carriages || 0);
-    this.tunnelCount.innerText = String(snap.resources.tunnels || 0);
+    const res = (snap.resources || {}) as any;
+    const trains = res.trains ?? res.Trains ?? 0;
+    const carriages = res.carriages ?? res.Carriages ?? 0;
+    const tunnels = res.tunnels ?? res.Tunnels ?? 0;
+    const interchanges = res.interchanges ?? res.Interchanges ?? 0;
 
-    this.trainToken.classList.toggle('disabled', snap.resources.trains <= 0);
-    this.carriageToken.classList.toggle('disabled', snap.resources.carriages <= 0);
-    this.tunnelToken.classList.toggle('disabled', snap.resources.tunnels <= 0);
+    this.trainCount.innerText = String(trains);
+    this.carriageCount.innerText = String(carriages);
+    this.tunnelCount.innerText = String(tunnels);
+    this.interchangeCount.innerText = String(interchanges);
+
+    this.trainToken.classList.toggle('disabled', trains <= 0);
+    this.carriageToken.classList.toggle('disabled', carriages <= 0);
+    this.tunnelToken.classList.toggle('disabled', tunnels <= 0);
+    this.interchangeToken.classList.toggle('disabled', interchanges <= 0);
 
     // 5. Line Inventory Stack
     this.renderLineStack(snap);
@@ -268,78 +307,84 @@ export class HUDManager {
   }
 
   private renderLineStack(snap: StateSnapshot): void {
-    const totalLinesAvailable = (snap.lines ? snap.lines.filter((l) => !l.removed).length : 0) + (snap.resources.lines || 0);
-    const maxVisibleLines = Math.max(3, totalLinesAvailable);
+    this.linesStack.innerHTML = '';
+    const res = (snap.resources || {}) as any;
+    const availableLines = res.lines ?? res.Lines ?? 0;
+    const activeLines = (snap.lines || []).filter((l) => !l.removed);
 
-    let html = '';
-    for (let i = 0; i < maxVisibleLines; i++) {
-      const color = LINE_COLORS[i % LINE_COLORS.length];
-      const isUsed = snap.lines && snap.lines.some((l) => l.id === i && !l.removed);
-      const isAvailable = !isUsed && i < totalLinesAvailable;
+    const activeIds = new Set(activeLines.map((l) => l.id));
+    const nextLineIndex = (() => {
+      for (let i = 0; i < (snap.lines || []).length + 8; i++) {
+        if (!activeIds.has(i)) return i;
+      }
+      return activeLines.length;
+    })();
 
-      const classes = ['hud-line-token'];
-      if (isUsed) classes.push('used');
-      if (isAvailable) classes.push('available');
+    for (let i = 0; i < availableLines; i++) {
+      const color = getLineColor(nextLineIndex + i);
+      const token = document.createElement('div');
+      token.className = 'hud-line-token';
+      token.style.setProperty('--line-color', color);
 
-      html += `<div class="${classes.join(' ')}" style="--line-color: ${color};" data-line-index="${i}"></div>`;
-    }
-
-    this.linesStack.innerHTML = html;
-
-    const circles = this.linesStack.querySelectorAll('.hud-line-token.available');
-    circles.forEach((el) => {
-      el.addEventListener('mousedown', () => {
-        const idx = parseInt(el.getAttribute('data-line-index') || '0', 10);
+      token.addEventListener('mousedown', (e) => {
         if (this.dragHandler) {
-          const rect = el.getBoundingClientRect();
-          this.dragHandler.startDragNewLine(idx, { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
+          this.dragHandler.startDragNewLine(nextLineIndex + i, { x: e.clientX, y: e.clientY });
         }
       });
-    });
+
+      this.linesStack.appendChild(token);
+    }
   }
 
   private showRewardModal(choices: RewardType[]): void {
-    this.rewardModal.classList.remove('hidden');
-    const optsContainer = document.getElementById('hud-reward-options')!;
+    this.rewardOptions.innerHTML = '';
+    choices.forEach((choice) => {
+      const card = document.createElement('div');
+      card.className = 'hud-reward-card';
 
-    const labels: Record<number, { title: string; icon: string }> = {
-      [RewardType.RewardLine]: { title: 'Line', icon: 'line' },
-      [RewardType.RewardTrain]: { title: 'Locomotive', icon: 'train' },
-      [RewardType.RewardTunnel]: { title: 'Tunnel', icon: 'tunnel' },
-      [RewardType.RewardCarriage]: { title: 'Carriage', icon: 'carriage' },
-      [RewardType.RewardInterchange]: { title: 'Interchange', icon: 'interchange' },
-    };
-
-    let html = '';
-    for (const choice of choices) {
-      const info = labels[choice] || { title: 'Upgrade', icon: 'interchange' };
-      html += `
-        <button class="hud-reward-card" data-choice="${choice}">
-          <span class="hud-reward-icon ${info.icon}"></span>
-          <span class="hud-reward-title">${info.title}</span>
-        </button>
+      const label = REWARD_LABELS[choice] || 'Upgrade';
+      card.innerHTML = `
+        <div class="reward-icon">${this.getRewardIconSvg(choice)}</div>
+        <span class="reward-title">${label}</span>
       `;
-    }
-    optsContainer.innerHTML = html;
 
-    const cards = optsContainer.querySelectorAll('.hud-reward-card');
-    cards.forEach((card) => {
       card.addEventListener('click', () => {
-        const choice = parseInt(card.getAttribute('data-choice') || '0', 10);
         this.wsClient.sendAction({
           type: 'choose_reward',
-          payload: { choice },
+          payload: { choice: choice },
         });
         this.rewardModal.classList.add('hidden');
       });
+
+      this.rewardOptions.appendChild(card);
     });
   }
 
-  private showToast(msg: string): void {
-    this.errorToast.innerText = msg;
-    this.errorToast.classList.remove('hidden');
+  private getRewardIconSvg(type: RewardType): string {
+    switch (type) {
+      case 0: // Line
+        return `<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#252525" stroke-width="3"><line x1="4" y1="12" x2="20" y2="12"/><circle cx="4" cy="12" r="3" fill="#ffffff"/><circle cx="20" cy="12" r="3" fill="#ffffff"/></svg>`;
+      case 1: // Train
+        return `<svg width="32" height="32" viewBox="0 0 30 22" fill="none"><rect x="3" y="6" width="24" height="10" rx="3" fill="#ffffff" stroke="#252525" stroke-width="3"/><circle cx="9" cy="17" r="1.7" fill="#252525"/><circle cx="21" cy="17" r="1.7" fill="#252525"/></svg>`;
+      case 2: // Tunnel
+        return `<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#252525" stroke-width="3" stroke-linecap="round"><path d="M6 17V12C6 7 10 4 15 4C20 4 24 7 24 12V17"/><line x1="4" y1="17" x2="26" y2="17"/></svg>`;
+      case 3: // Carriage
+        return `<svg width="32" height="32" viewBox="0 0 30 22" fill="none"><rect x="4" y="7" width="22" height="9" rx="3" fill="#ffffff" stroke="#252525" stroke-width="3"/></svg>`;
+      case 4: // Interchange
+        return `<svg width="32" height="32" viewBox="0 0 30 22" fill="none"><circle cx="15" cy="11" r="6" fill="#ffffff" stroke="#252525" stroke-width="2.5"/><circle cx="15" cy="11" r="9" stroke="#252525" stroke-width="1.8" stroke-dasharray="3 2"/></svg>`;
+      default:
+        return ``;
+    }
+  }
+
+  private showToast(message: string): void {
+    console.warn(`[HUD Toast] ${message}`);
+    this.toastEl.innerText = message;
+    this.toastEl.classList.remove('hidden');
     setTimeout(() => {
-      this.errorToast.classList.add('hidden');
-    }, 3000);
+      this.toastEl.classList.add('hidden');
+    }, 2800);
   }
 }
+
+export { HUD as HUDManager };

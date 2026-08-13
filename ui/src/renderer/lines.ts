@@ -1,4 +1,4 @@
-import type { LineDTO, StationDTO, Pos } from '../types';
+import type { LineDTO, StationDTO, Pos, RiverSegment } from '../types';
 import { getX, getY } from '../types';
 import { Viewport } from './viewport';
 import { LINE_COLORS } from './shapes';
@@ -7,14 +7,102 @@ export function getLineColor(lineId: number): string {
   return LINE_COLORS[lineId % LINE_COLORS.length];
 }
 
-// Converts raw station coordinates into a 45-degree octilinear path
+export type SharedEdgeKey = string;
+
+export function getSharedEdgeKey(stA: number, stB: number): SharedEdgeKey {
+  return stA < stB ? `${stA}-${stB}` : `${stB}-${stA}`;
+}
+
+export type SharedEdgeMap = Map<SharedEdgeKey, number[]>;
+
+export function buildSharedEdgeMap(lines: LineDTO[]): SharedEdgeMap {
+  const map: SharedEdgeMap = new Map();
+
+  for (const line of lines) {
+    if (line.removed || !line.stations || line.stations.length < 2) continue;
+
+    for (let i = 0; i < line.stations.length - 1; i++) {
+      const st1 = line.stations[i];
+      const st2 = line.stations[i + 1];
+      const key = getSharedEdgeKey(st1, st2);
+
+      if (!map.has(key)) {
+        map.set(key, []);
+      }
+      const lineList = map.get(key)!;
+      if (!lineList.includes(line.id)) {
+        lineList.push(line.id);
+      }
+    }
+
+    if (line.is_loop && line.stations.length >= 2) {
+      const st1 = line.stations[line.stations.length - 1];
+      const st2 = line.stations[0];
+      const key = getSharedEdgeKey(st1, st2);
+
+      if (!map.has(key)) {
+        map.set(key, []);
+      }
+      const lineList = map.get(key)!;
+      if (!lineList.includes(line.id)) {
+        lineList.push(line.id);
+      }
+    }
+  }
+
+  return map;
+}
+
+export function getSegmentParallelOffset(
+  p1: Pos,
+  p2: Pos,
+  st1Id: number,
+  st2Id: number,
+  lineId: number,
+  sharedEdgeMap: SharedEdgeMap,
+  trackLineWidth: number = 8.0
+): { p1Offset: Pos; p2Offset: Pos } {
+  const key = getSharedEdgeKey(st1Id, st2Id);
+  const sharingLines = sharedEdgeMap.get(key) || [lineId];
+
+  const totalLinesOnSegment = sharingLines.length;
+  if (totalLinesOnSegment <= 1) {
+    return { p1Offset: p1, p2Offset: p2 };
+  }
+
+  const sortedLines = [...sharingLines].sort((a, b) => a - b);
+  const indexOnSegment = sortedLines.indexOf(lineId);
+  if (indexOnSegment === -1) {
+    return { p1Offset: p1, p2Offset: p2 };
+  }
+
+  const dx = getX(p2) - getX(p1);
+  const dy = getY(p2) - getY(p1);
+  const len = Math.sqrt(dx * dx + dy * dy);
+
+  if (len === 0) {
+    return { p1Offset: p1, p2Offset: p2 };
+  }
+
+  const nx = -dy / len;
+  const ny = dx / len;
+
+  const shiftMultiplier = indexOnSegment - (totalLinesOnSegment - 1) / 2;
+  const shiftAmount = shiftMultiplier * trackLineWidth;
+
+  return {
+    p1Offset: { x: getX(p1) + nx * shiftAmount, y: getY(p1) + ny * shiftAmount },
+    p2Offset: { x: getX(p2) + nx * shiftAmount, y: getY(p2) + ny * shiftAmount },
+  };
+}
+
 export function generateOctilinearPath(points: Pos[]): Pos[] {
   if (points.length < 2) return points;
 
   const result: Pos[] = [points[0]];
 
   for (let i = 0; i < points.length - 1; i++) {
-    const p1 = result[result.length - 1];
+    const p1 = points[i];
     const p2 = points[i + 1];
 
     const x1 = getX(p1), y1 = getY(p1);
@@ -23,13 +111,11 @@ export function generateOctilinearPath(points: Pos[]): Pos[] {
     const dx = Math.abs(x2 - x1);
     const dy = Math.abs(y2 - y1);
 
-    // If already horizontal, vertical, or 45-degree diagonal
     if (dx < 4 || dy < 4 || Math.abs(dx - dy) < 4) {
       result.push(p2);
       continue;
     }
 
-    // Calculate intermediate 45-degree chamfer corner point
     let mx: number, my: number;
     const signX = x2 > x1 ? 1 : -1;
     const signY = y2 > y1 ? 1 : -1;
@@ -54,7 +140,8 @@ export function renderMetroLines(
   viewport: Viewport,
   lines: LineDTO[],
   stations: StationDTO[],
-  activeDragLinePreview?: { points: Pos[]; color: string }
+  activeDragLinePreview?: { points: Pos[]; color: string },
+  rivers?: RiverSegment[]
 ): void {
   ctx.save();
 
@@ -63,48 +150,87 @@ export function renderMetroLines(
     stationMap.set(st.id, st);
   }
 
-  // Draw active metro lines
+  const sharedEdgeMap = buildSharedEdgeMap(lines);
+
   for (const line of lines) {
     if (line.removed || !line.stations || line.stations.length < 2) {
       continue;
     }
 
     const color = getLineColor(line.id);
-    const rawScreenPoints: Pos[] = [];
+    const numSegs = line.stations.length - 1;
 
-    for (const stId of line.stations) {
-      const st = stationMap.get(stId);
-      if (st) {
-        rawScreenPoints.push(viewport.mapToScreen({ x: getX(st), y: getY(st) }));
+    for (let i = 0; i < numSegs; i++) {
+      const st1Id = line.stations[i];
+      const st2Id = line.stations[i + 1];
+      const st1 = stationMap.get(st1Id);
+      const st2 = stationMap.get(st2Id);
+      if (!st1 || !st2) continue;
+
+      const p1 = viewport.mapToScreen({ x: getX(st1), y: getY(st1) });
+      const p2 = viewport.mapToScreen({ x: getX(st2), y: getY(st2) });
+
+      const { p1Offset, p2Offset } = getSegmentParallelOffset(p1, p2, st1Id, st2Id, line.id, sharedEdgeMap, 8.0);
+      const octSeg = generateOctilinearPath([p1Offset, p2Offset]);
+
+      drawOctilinearTrack(ctx, octSeg, color, 8.0);
+
+      // Tunnel / Bridge marker at exact river crossing intersection
+      if (line.tunnel_at && line.tunnel_at[i]) {
+        const riverHit = findRiverIntersection(st1, st2, rivers || []);
+        const markerScreenPos = riverHit
+          ? viewport.mapToScreen(riverHit)
+          : { x: (getX(p1Offset) + getX(p2Offset)) / 2, y: (getY(p1Offset) + getY(p2Offset)) / 2 };
+
+        drawBridgeMarkerAt(ctx, markerScreenPos, p1Offset, p2Offset);
       }
     }
 
-    if (line.is_loop && rawScreenPoints.length > 2) {
-      rawScreenPoints.push(rawScreenPoints[0]);
-    }
+    // Closed loop wrap-around segment
+    if (line.is_loop && line.stations.length >= 2) {
+      const stFirstId = line.stations[0];
+      const stLastId = line.stations[line.stations.length - 1];
+      const stFirst = stationMap.get(stFirstId);
+      const stLast = stationMap.get(stLastId);
+      if (stFirst && stLast) {
+        const pLast = viewport.mapToScreen({ x: getX(stLast), y: getY(stLast) });
+        const pFirst = viewport.mapToScreen({ x: getX(stFirst), y: getY(stFirst) });
 
-    if (rawScreenPoints.length < 2) continue;
+        const { p1Offset, p2Offset } = getSegmentParallelOffset(pLast, pFirst, stLastId, stFirstId, line.id, sharedEdgeMap, 8.0);
+        const octSeg = generateOctilinearPath([p1Offset, p2Offset]);
+        drawOctilinearTrack(ctx, octSeg, color, 8.0);
 
-    // Convert straight segments to octilinear 45° paths
-    const octilinearPoints = generateOctilinearPath(rawScreenPoints);
+        if (line.loop_tunnel) {
+          const riverHit = findRiverIntersection(stLast, stFirst, rivers || []);
+          const markerScreenPos = riverHit
+            ? viewport.mapToScreen(riverHit)
+            : { x: (getX(p1Offset) + getX(p2Offset)) / 2, y: (getY(p1Offset) + getY(p2Offset)) / 2 };
 
-    // Draw main track line with smooth rounded corners
-    drawOctilinearTrack(ctx, octilinearPoints, color, 9.0);
-
-    // Draw Tunnel / Bridge markers where tunnel_at is true
-    if (line.tunnel_at) {
-      for (let i = 0; i < line.tunnel_at.length; i++) {
-        if (line.tunnel_at[i] && i < rawScreenPoints.length - 1) {
-          drawBridgeMarker(ctx, rawScreenPoints[i], rawScreenPoints[i + 1]);
+          drawBridgeMarkerAt(ctx, markerScreenPos, p1Offset, p2Offset);
         }
       }
     }
 
-    // Draw T-bar end caps for non-loop line terminals
-    if (!line.is_loop && rawScreenPoints.length >= 2) {
-      drawTerminalEndCap(ctx, rawScreenPoints[0], rawScreenPoints[1], color, 9.0);
-      const lastIdx = rawScreenPoints.length - 1;
-      drawTerminalEndCap(ctx, rawScreenPoints[lastIdx], rawScreenPoints[lastIdx - 1], color, 9.0);
+    // Terminal extending T-bar handle caps
+    if (!line.is_loop && line.stations.length >= 2) {
+      const st0 = stationMap.get(line.stations[0]);
+      const st1 = stationMap.get(line.stations[1]);
+      if (st0 && st1) {
+        const p0 = viewport.mapToScreen({ x: getX(st0), y: getY(st0) });
+        const p1 = viewport.mapToScreen({ x: getX(st1), y: getY(st1) });
+        const { p1Offset, p2Offset } = getSegmentParallelOffset(p0, p1, line.stations[0], line.stations[1], line.id, sharedEdgeMap, 8.0);
+        drawTerminalEndCap(ctx, p1Offset, p2Offset, color, 8.0);
+      }
+
+      const lastIdx = line.stations.length - 1;
+      const stEnd = stationMap.get(line.stations[lastIdx]);
+      const stPrev = stationMap.get(line.stations[lastIdx - 1]);
+      if (stEnd && stPrev) {
+        const pEnd = viewport.mapToScreen({ x: getX(stEnd), y: getY(stEnd) });
+        const pPrev = viewport.mapToScreen({ x: getX(stPrev), y: getY(stPrev) });
+        const { p1Offset, p2Offset } = getSegmentParallelOffset(pEnd, pPrev, line.stations[lastIdx], line.stations[lastIdx - 1], line.id, sharedEdgeMap, 8.0);
+        drawTerminalEndCap(ctx, p1Offset, p2Offset, color, 8.0);
+      }
     }
   }
 
@@ -121,7 +247,7 @@ export function drawOctilinearTrack(
   ctx: CanvasRenderingContext2D,
   points: Pos[],
   color: string,
-  lineWidth: number = 9.0,
+  lineWidth: number = 8.0,
   isDashed: boolean = false
 ): void {
   if (points.length < 2) return;
@@ -173,75 +299,157 @@ export function drawOctilinearTrack(
   ctx.lineJoin = 'round';
 
   if (isDashed) {
-    ctx.setLineDash([8, 6]);
+    ctx.setLineDash([10, 6]);
   }
 
   ctx.stroke();
   ctx.restore();
 }
 
-function drawTerminalEndCap(
+export function getTerminalCapPosition(
+  terminal: Pos,
+  nextPt: Pos,
+  capOffsetLength: number = 18
+): { capPos: Pos; nx: number; ny: number } {
+  const tx = getX(terminal), ty = getY(terminal);
+  const nx = getX(nextPt), ny = getY(nextPt);
+
+  const dx = tx - nx;
+  const dy = ty - ny;
+  const len = Math.sqrt(dx * dx + dy * dy);
+
+  if (len === 0) {
+    return { capPos: terminal, nx: 0, ny: 1 };
+  }
+
+  const ux = dx / len;
+  const uy = dy / len;
+
+  const capX = tx + ux * capOffsetLength;
+  const capY = ty + uy * capOffsetLength;
+
+  const perpX = -uy;
+  const perpY = ux;
+
+  return {
+    capPos: { x: capX, y: capY },
+    nx: perpX,
+    ny: perpY,
+  };
+}
+
+export function drawTerminalEndCap(
   ctx: CanvasRenderingContext2D,
   terminal: Pos,
   nextPt: Pos,
   color: string,
   lineWidth: number
 ): void {
+  const { capPos, nx, ny } = getTerminalCapPosition(terminal, nextPt, 18);
   const termX = getX(terminal), termY = getY(terminal);
-  const nextX = getX(nextPt), nextY = getY(nextPt);
+  const capX = getX(capPos), capY = getY(capPos);
 
-  const dx = nextX - termX;
-  const dy = nextY - termY;
-  const len = Math.sqrt(dx * dx + dy * dy);
-  if (len === 0) return;
-
-  const nx = -dy / len;
-  const ny = dx / len;
-
-  const capWidth = lineWidth * 1.6;
+  const capWidth = lineWidth * 1.85;
 
   ctx.save();
+
   ctx.beginPath();
-  ctx.moveTo(termX - nx * capWidth, termY - ny * capWidth);
-  ctx.lineTo(termX + nx * capWidth, termY + ny * capWidth);
+  ctx.moveTo(termX, termY);
+  ctx.lineTo(capX, capY);
   ctx.strokeStyle = color;
-  ctx.lineWidth = lineWidth * 0.95;
-  ctx.lineCap = 'butt';
+  ctx.lineWidth = lineWidth * 0.85;
   ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(capX - nx * capWidth, capY - ny * capWidth);
+  ctx.lineTo(capX + nx * capWidth, capY + ny * capWidth);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = lineWidth * 1.3;
+  ctx.lineCap = 'round';
+  ctx.stroke();
+
+  ctx.strokeStyle = 'rgba(34, 37, 42, 0.45)';
+  ctx.lineWidth = 1.8;
+  ctx.stroke();
+
   ctx.restore();
 }
 
-function drawBridgeMarker(ctx: CanvasRenderingContext2D, p1: Pos, p2: Pos): void {
+function drawBridgeMarkerAt(ctx: CanvasRenderingContext2D, centerPos: Pos, p1: Pos, p2: Pos): void {
+  const cx = getX(centerPos), cy = getY(centerPos);
   const p1x = getX(p1), p1y = getY(p1);
   const p2x = getX(p2), p2y = getY(p2);
-
-  const midX = (p1x + p2x) / 2;
-  const midY = (p1y + p2y) / 2;
 
   const dx = p2x - p1x;
   const dy = p2y - p1y;
   const len = Math.sqrt(dx * dx + dy * dy);
   if (len === 0) return;
 
-  const nx = -dy / len;
-  const ny = dx / len;
+  const ux = dx / len;
+  const uy = dy / len;
+  const nx = -uy;
+  const ny = ux;
 
   const bridgeW = 11;
-  const gap = 4;
+  const gap = 4.5;
 
   ctx.save();
   ctx.strokeStyle = '#22252a';
-  ctx.lineWidth = 2.8;
+  ctx.lineWidth = 3.0;
 
   ctx.beginPath();
-  ctx.moveTo(midX - (dx / len) * gap - nx * bridgeW, midY - (dy / len) * gap - ny * bridgeW);
-  ctx.lineTo(midX - (dx / len) * gap + nx * bridgeW, midY - (dy / len) * gap + ny * bridgeW);
+  ctx.moveTo(cx - ux * gap - nx * bridgeW, cy - uy * gap - ny * bridgeW);
+  ctx.lineTo(cx - ux * gap + nx * bridgeW, cy - uy * gap + ny * bridgeW);
   ctx.stroke();
 
   ctx.beginPath();
-  ctx.moveTo(midX + (dx / len) * gap - nx * bridgeW, midY + (dy / len) * gap - ny * bridgeW);
-  ctx.lineTo(midX + (dx / len) * gap + nx * bridgeW, midY + (dy / len) * gap + ny * bridgeW);
+  ctx.moveTo(cx + ux * gap - nx * bridgeW, cy + uy * gap - ny * bridgeW);
+  ctx.lineTo(cx + ux * gap + nx * bridgeW, cy + uy * gap + ny * bridgeW);
   ctx.stroke();
 
   ctx.restore();
+}
+
+export function findRiverIntersection(
+  st1: Pos,
+  st2: Pos,
+  rivers: RiverSegment[]
+): Pos | null {
+  if (!rivers || rivers.length === 0) return null;
+
+  const p1x = getX(st1), p1y = getY(st1);
+  const p2x = getX(st2), p2y = getY(st2);
+
+  for (const r of rivers) {
+    const from = r.from ?? r.From;
+    const to = r.to ?? r.To;
+    if (!from || !to) continue;
+
+    const rx1 = getX(from), ry1 = getY(from);
+    const rx2 = getX(to), ry2 = getY(to);
+
+    const hit = lineIntersection(p1x, p1y, p2x, p2y, rx1, ry1, rx2, ry2);
+    if (hit) return hit;
+  }
+
+  return null;
+}
+
+function lineIntersection(
+  x1: number, y1: number, x2: number, y2: number,
+  x3: number, y3: number, x4: number, y4: number
+): Pos | null {
+  const denom = (y4 - y3) * (x2 - x1) - (x4 - x3) * (y2 - y1);
+  if (denom === 0) return null;
+
+  const ua = ((x4 - x3) * (y1 - y3) - (y4 - y3) * (x1 - x3)) / denom;
+  const ub = ((x2 - x1) * (y1 - y3) - (y2 - y1) * (x1 - x3)) / denom;
+
+  if (ua >= 0 && ua <= 1 && ub >= 0 && ub <= 1) {
+    return {
+      x: x1 + ua * (x2 - x1),
+      y: y1 + ua * (y2 - y1),
+    };
+  }
+  return null;
 }

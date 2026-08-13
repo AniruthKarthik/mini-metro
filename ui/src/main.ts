@@ -100,7 +100,8 @@ class MiniMetroApp {
       this.viewport,
       snap.lines || [],
       snap.stations || [],
-      activeDragPreview || undefined
+      activeDragPreview || undefined,
+      snap.rivers || []
     );
 
     const hoveredStId = this.dragHandler.getHoveredStationId();
@@ -118,6 +119,8 @@ class MiniMetroApp {
       snap.lines || [],
       snap.stations || []
     );
+
+    this.dragHandler.renderDragOverlay(this.ctx);
   }
 
   private renderConnectingScreen(w: number, h: number): void {
