@@ -38,6 +38,7 @@ func ServeWs(hub *Hub, actionCh chan<- []byte, w http.ResponseWriter, r *http.Re
 		log.Printf("ws upgrade error: %v", err)
 		return
 	}
+	log.Printf("🔌 WebSocket client connected from %s", r.RemoteAddr)
 
 	client := &Client{
 		hub:      hub,
@@ -55,6 +56,7 @@ func ServeWs(hub *Hub, actionCh chan<- []byte, w http.ResponseWriter, r *http.Re
 // readPump pumps incoming WebSocket messages (JSON action payloads) into actionCh.
 func (c *Client) readPump() {
 	defer func() {
+		log.Println("🔌 WebSocket client disconnected")
 		c.hub.unregister <- c
 		c.conn.Close()
 	}()
@@ -78,6 +80,7 @@ func (c *Client) readPump() {
 		// Forward raw JSON to the action dispatcher (non-blocking drop if full).
 		select {
 		case c.actionCh <- msg:
+			log.Printf("📥 Action received from client: %s", string(msg))
 		default:
 			log.Println("action channel full, dropping message")
 		}

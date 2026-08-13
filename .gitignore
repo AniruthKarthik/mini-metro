@@ -1,0 +1,46 @@
+# Dependencies
+node_modules/
+ui/node_modules/
+
+# Production builds
+dist/
+ui/dist/
+dist-ssr/
+ui/dist-ssr/
+
+# Go binaries and temp builds
+*.exe
+*.exe?
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+bin/
+server
+cmd/server/server
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE & OS files
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+.gemini/
