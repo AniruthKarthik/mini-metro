@@ -89,6 +89,26 @@ export class DragHandler {
       if (fromSt) {
         points.push(this.viewport.mapToScreen({ x: getX(fromSt), y: getY(fromSt) }));
       }
+    } else if ((this.dragState.source as any).type === 'insert_station') {
+      const src = this.dragState.source as any;
+      const line = lines.find((l) => l.id === src.lineId);
+      if (line) color = getLineColor(line.id);
+
+      const stA = stations.find((s) => s.id === src.fromStationAId);
+      const stB = stations.find((s) => s.id === src.toStationBId);
+
+      const currentScreen = this.dragState.targetStationId !== null
+        ? (() => {
+            const st = stations.find((s) => s.id === this.dragState!.targetStationId);
+            return st ? this.viewport.mapToScreen({ x: getX(st), y: getY(st) }) : this.dragState!.currentPos;
+          })()
+        : this.dragState.currentPos;
+
+      if (stA && stB) {
+        const pA = this.viewport.mapToScreen({ x: getX(stA), y: getY(stA) });
+        const pB = this.viewport.mapToScreen({ x: getX(stB), y: getY(stB) });
+        return { points: [pA, currentScreen, pB], color };
+      }
     }
 
     const currentScreen = this.dragState.targetStationId !== null
@@ -164,7 +184,7 @@ export class DragHandler {
     return null;
   }
 
-  private findLineNear(pos: Pos, lines: LineDTO[], stations: StationDTO[]): LineDTO | null {
+  private findSegmentToInsert(pos: Pos, lines: LineDTO[], stations: StationDTO[]): { lineId: number; insertIndex: number; fromStationAId: number; toStationBId: number } | null {
     if (!lines || !stations) return null;
     const stationMap = new Map<number, StationDTO>();
     for (const st of stations) stationMap.set(st.id, st);
@@ -186,11 +206,22 @@ export class DragHandler {
 
         const dist = distToSegment({ x: px, y: py }, p1, p2);
         if (dist <= threshold) {
-          return line;
+          return {
+            lineId: line.id,
+            insertIndex: i + 1,
+            fromStationAId: line.stations[i],
+            toStationBId: line.stations[i + 1],
+          };
         }
       }
     }
     return null;
+  }
+
+  private findLineNear(pos: Pos, lines: LineDTO[], stations: StationDTO[]): LineDTO | null {
+    const seg = this.findSegmentToInsert(pos, lines, stations);
+    if (!seg) return null;
+    return lines.find((l) => l.id === seg.lineId) || null;
   }
 
   private getNextLineIndex(lines: LineDTO[]): number {
@@ -249,8 +280,27 @@ export class DragHandler {
       return;
     }
 
+    // 2. Check station hit box
     const st = this.findStationAt(pos, stations, 55);
     if (!st) {
+      // 3. Check line track segment hit box to insert station in between
+      const segHit = this.findSegmentToInsert(pos, lines, stations);
+      if (segHit) {
+        this.dragState = {
+          source: {
+            type: 'insert_station',
+            lineId: segHit.lineId,
+            insertIndex: segHit.insertIndex,
+            fromStationAId: segHit.fromStationAId,
+            toStationBId: segHit.toStationBId,
+          } as any,
+          currentPos: pos,
+          targetStationId: null,
+        };
+        this.selectedStationId = null;
+        return;
+      }
+
       this.selectedStationId = null;
       return;
     }
@@ -340,7 +390,17 @@ export class DragHandler {
     const source = this.dragState.source;
 
     if (snap) {
-      if (source.type === 'new_line') {
+      if ((source as any).type === 'insert_station') {
+        const src = source as any;
+        if (targetStId !== null && targetStId !== src.fromStationAId && targetStId !== src.toStationBId) {
+          console.log(`📤 [FRONTEND] Dispatching insert_station: Line ${src.lineId} Station ${targetStId} at index ${src.insertIndex}`);
+          this.wsClient.sendAction({
+            type: 'insert_station',
+            payload: { line_id: src.lineId, station_id: targetStId, index: src.insertIndex, use_tunnel: false },
+          });
+          this.selectedStationId = null;
+        }
+      } else if (source.type === 'new_line') {
         const src = source as any;
         const firstStId = src.firstStationId;
         const secondStId = targetStId;

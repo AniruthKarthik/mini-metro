@@ -19,6 +19,15 @@ type ExtendLine struct {
 
 func (ExtendLine) isAction() {}
 
+type InsertStation struct {
+	LineID    int
+	StationID int
+	Index     int  // index in line.Stations where StationID will be inserted
+	UseTunnel bool
+}
+
+func (InsertStation) isAction() {}
+
 type AddTrain struct {
 	LineID int
 }

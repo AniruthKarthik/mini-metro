@@ -63,6 +63,18 @@ func ParseAction(raw []byte) (engine.Action, string, error) {
 		}
 		return engine.ExtendLine{LineID: p.LineID, StationID: p.StationID, UseTunnel: p.UseTunnel, FromFront: p.FromFront}, "", nil
 
+	case "insert_station":
+		var p struct {
+			LineID    int  `json:"line_id"`
+			StationID int  `json:"station_id"`
+			Index     int  `json:"index"`
+			UseTunnel bool `json:"use_tunnel"`
+		}
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return nil, "", err
+		}
+		return engine.InsertStation{LineID: p.LineID, StationID: p.StationID, Index: p.Index, UseTunnel: p.UseTunnel}, "", nil
+
 	case "add_train":
 		var p struct {
 			LineID int `json:"line_id"`

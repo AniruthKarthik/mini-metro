@@ -103,6 +103,8 @@ func (s *Simulator) ApplyAction(a Action) error {
 		return s.addLine(v)
 	case ExtendLine:
 		return s.extendLine(v)
+	case InsertStation:
+		return s.insertStation(v)
 	case AddTrain:
 		return s.addTrain(v)
 	case RemoveLine:
@@ -589,5 +591,92 @@ func (s *Simulator) repositionTrain(a RepositionTrain) error {
 	tr.JustArrived = true
 	tr.DwellRemaining = 0
 
+	return nil
+}
+
+func (s *Simulator) insertStation(a InsertStation) error {
+	if a.LineID < 0 || a.LineID >= len(s.State.Lines) {
+		return errors.New("invalid line ID")
+	}
+	if a.StationID < 0 || a.StationID >= len(s.State.Stations) {
+		return errors.New("invalid station ID")
+	}
+	if !s.State.Stations[a.StationID].Alive {
+		return errors.New("station is not alive")
+	}
+
+	line := &s.State.Lines[a.LineID]
+	if line.Removed {
+		return errors.New("line is removed")
+	}
+
+	for _, stID := range line.Stations {
+		if stID == a.StationID {
+			return errors.New("station is already on this line")
+		}
+	}
+
+	n := len(line.Stations)
+	if a.Index < 1 || a.Index >= n {
+		a.Index = n - 1
+	}
+
+	stPrev := s.State.Stations[line.Stations[a.Index-1]].Pos
+	stNext := s.State.Stations[line.Stations[a.Index]].Pos
+	stNew := s.State.Stations[a.StationID].Pos
+
+	tunnelsNeeded := 0
+	cross1 := CrossesWater(stPrev, stNew, s.State.Rivers, s.State.WaterPolygons)
+	cross2 := CrossesWater(stNew, stNext, s.State.Rivers, s.State.WaterPolygons)
+	if cross1 {
+		tunnelsNeeded++
+	}
+	if cross2 {
+		tunnelsNeeded++
+	}
+
+	origTunnel := false
+	if a.Index-1 < len(line.TunnelAt) && line.TunnelAt[a.Index-1] {
+		origTunnel = true
+	}
+
+	netTunnels := tunnelsNeeded
+	if origTunnel {
+		netTunnels--
+	}
+
+	if netTunnels > 0 {
+		if !s.State.Resources.CanSpend(RewardTunnel) {
+			return errors.New("no tunnel tokens available")
+		}
+		for i := 0; i < netTunnels; i++ {
+			s.State.Resources.Spend(RewardTunnel)
+		}
+	} else if netTunnels < 0 {
+		s.State.Resources.Grant(RewardTunnel)
+	}
+
+	// Insert station ID into line.Stations at Index
+	line.Stations = append(line.Stations[:a.Index], append([]int{a.StationID}, line.Stations[a.Index:]...)...)
+
+	// Update tunnel flags
+	if a.Index-1 < len(line.TunnelAt) {
+		line.TunnelAt[a.Index-1] = cross1
+		line.TunnelAt = append(line.TunnelAt[:a.Index], append([]bool{cross2}, line.TunnelAt[a.Index:]...)...)
+	} else {
+		line.TunnelAt = append(line.TunnelAt, cross1)
+	}
+
+	// Update active trains running on this line
+	for i := range s.State.Trains {
+		tr := &s.State.Trains[i]
+		if tr.LineID == a.LineID && tr.Active {
+			if tr.Segment >= a.Index {
+				tr.Segment++
+			}
+		}
+	}
+
+	s.State.Graph = BuildGraph(&s.State)
 	return nil
 }

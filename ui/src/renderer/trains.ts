@@ -1,8 +1,8 @@
-import type { TrainDTO, LineDTO, StationDTO, Pos } from '../types';
+import type { TrainDTO, LineDTO, StationDTO, Pos, StationKind } from '../types';
 import { getX, getY } from '../types';
 import { Viewport } from './viewport';
 import { getLineColor, generateOctilinearPath } from './lines';
-import { DARK_CHARCOAL, WHITE_FILL } from './shapes';
+import { drawPassengerShape, DARK_CHARCOAL, WHITE_FILL } from './shapes';
 
 export class TrainInterpolator {
   public renderTrains(
@@ -34,12 +34,13 @@ export class TrainInterpolator {
       if (!trainPos) continue;
 
       const color = getLineColor(tr.line_id);
+      const passengers = tr.passengers || [];
 
-      renderTrainCar(ctx, trainPos.pos, trainPos.angle, color, tr.load);
+      renderTrainCar(ctx, trainPos.pos, trainPos.angle, color, passengers);
 
       if (tr.carriages > 1) {
         for (let c = 1; c < tr.carriages; c++) {
-          const trailDist = c * 22;
+          const trailDist = c * 24;
           const trainX = getX(trainPos.pos);
           const trainY = getY(trainPos.pos);
           const trailPos = {
@@ -84,7 +85,7 @@ function computeTrainPosition(
   const p1 = viewport.mapToScreen({ x: getX(st1), y: getY(st1) });
   const p2 = viewport.mapToScreen({ x: getX(st2), y: getY(st2) });
 
-  // Order endpoints canonically to match the exact track line geometry drawn by lines.ts
+  // Order endpoints canonically to match exact track line geometry drawn by lines.ts
   const isForward = st1Idx <= st2Idx;
   const startP = isForward ? p1 : p2;
   const endP = isForward ? p2 : p1;
@@ -150,21 +151,23 @@ function renderTrainCar(
   pos: Pos,
   angle: number,
   color: string,
-  loadCount: number
+  passengers: StationKind[]
 ): void {
-  const width = 24;
-  const height = 14;
+  const width = 26;
+  const height = 15;
   const px = getX(pos), py = getY(pos);
 
   ctx.save();
   ctx.translate(px, py);
   ctx.rotate(angle);
 
+  // Train shadow
   ctx.fillStyle = 'rgba(0,0,0,0.15)';
   ctx.beginPath();
   ctx.roundRect(-width / 2 + 2, -height / 2 + 2, width, height, 4);
   ctx.fill();
 
+  // Train body
   ctx.fillStyle = color;
   ctx.beginPath();
   ctx.roundRect(-width / 2, -height / 2, width, height, 4);
@@ -174,14 +177,16 @@ function renderTrainCar(
   ctx.lineWidth = 2;
   ctx.stroke();
 
-  if (loadCount > 0) {
-    const dots = Math.min(4, loadCount);
-    ctx.fillStyle = WHITE_FILL;
-    for (let i = 0; i < dots; i++) {
-      const dotX = -width / 4 + (i * width) / 5;
-      ctx.beginPath();
-      ctx.arc(dotX, 0, 2, 0, Math.PI * 2);
-      ctx.fill();
+  // Onboard passenger destination shapes (Triangle, Square, Circle, Star...)
+  if (passengers && passengers.length > 0) {
+    const maxShown = Math.min(4, passengers.length);
+    const startX = -width / 3.2;
+    const spacing = (width * 0.65) / Math.max(1, maxShown - 1);
+
+    for (let i = 0; i < maxShown; i++) {
+      const dotX = maxShown === 1 ? 0 : startX + i * spacing;
+      const kind = passengers[i];
+      drawPassengerShape(ctx, kind, dotX, 0, 3.2, WHITE_FILL);
     }
   }
 
@@ -194,8 +199,8 @@ function renderCarriageCar(
   angle: number,
   color: string
 ): void {
-  const width = 16;
-  const height = 12;
+  const width = 17;
+  const height = 13;
   const px = getX(pos), py = getY(pos);
 
   ctx.save();
