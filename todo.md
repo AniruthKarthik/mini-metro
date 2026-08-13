@@ -14,7 +14,23 @@
 - [x] weight passenger destination demand toward rare station shapes instead of uniform random sampling
 - [x] support map/city geography definitions (e.g., London, NYC, Tokyo) with custom river layouts and line limits
 - [x] implement smooth train acceleration/deceleration curves and track-curve slowdown physics
-
-TO BE DONE ONLY AFTER COMPLETING THE SIMULATOR ENGINE
-- [ ] create gym-style reset and step api for ml agent integration
-- [ ] expose JSON or C-Go IPC bindings for external python RL frameworks
+- [ ] build Go WebSocket server in simulator/server — stream simulation state and accept JSON action messages
+- [ ] initialize React + TypeScript + Vite app in ui/ with Vanilla CSS styling
+- [ ] setup WebSocket client hook and state store for real-time simulator synchronization
+- [ ] implement HTML5 Canvas renderer with high-DPI scaling, viewport panning, and zoom controls
+- [ ] render 10 station shapes with active status, interchange hub styling, and overcrowding timer clock UI
+- [ ] render metro lines with smooth Bezier splines, line colors, underwater tunnel dashes, and loop curves
+- [ ] render trains with carriages, passenger load counts, direction indicators, and smooth movement
+- [ ] render station passenger queues with shape icons and boarding/alighting sliding animations
+- [ ] render river channels and 2D water bodies as canvas background layers
+- [ ] implement interactive drag-and-drop line creation and extension with auto-tunnel detection
+- [ ] implement line editing handles for line shortening, deletion, and loop closing
+- [ ] implement drag-and-drop train and carriage placement onto metro tracks
+- [ ] implement station interchange upgrade tool using interchange tokens
+- [ ] build HUD top bar with passenger score, weekday wheel, simulation speed controls, and map selector
+- [ ] build HUD bottom bar displaying line tokens, trains, carriages, tunnels, and interchange tokens
+- [ ] build weekly reward pop-up modal offering 2 bonus choices and pausing simulation until selected
+- [ ] build game over modal with score summary, days survived, line stats, and restart button
+- [ ] implement A* passenger routing debug visualizer overlay showing pathing, transfers, and wait penalties
+- [ ] implement ML agent live inspector panel showing policy probabilities, Q-values, and reward graphs
+- [ ] set up ml/ folder blueprint with Python Gymnasium environment wrapper for WebSocket IPC
