@@ -55,7 +55,7 @@ class MiniMetroApp {
     this.canvas.style.width = `${w}px`;
     this.canvas.style.height = `${h}px`;
 
-    this.ctx.scale(dpr, dpr);
+    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     this.viewport.updateSize(w, h);
   }
 
@@ -82,7 +82,7 @@ class MiniMetroApp {
     const w = window.innerWidth;
     const h = window.innerHeight;
 
-    this.ctx.fillStyle = '#f4f3f0';
+    this.ctx.fillStyle = '#f5f2ec';
     this.ctx.fillRect(0, 0, w, h);
 
     if (!this.latestSnapshot) {
@@ -122,11 +122,11 @@ class MiniMetroApp {
 
   private renderConnectingScreen(w: number, h: number): void {
     this.ctx.save();
-    this.ctx.fillStyle = '#22252a';
-    this.ctx.font = '700 20px Inter, sans-serif';
+    this.ctx.fillStyle = '#252525';
+    this.ctx.font = '600 18px Avenir Next, Inter, sans-serif';
     this.ctx.textAlign = 'center';
     this.ctx.textBaseline = 'middle';
-    this.ctx.fillText('🚇 Connecting to Mini Metro Server...', w / 2, h / 2);
+    this.ctx.fillText('Connecting to simulator...', w / 2, h / 2);
     this.ctx.restore();
   }
 }

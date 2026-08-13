@@ -33,7 +33,7 @@ func NewSimulatorWithWater(stations []Station, rivers []RiverSegment, polygons [
 		},
 	}
 	sim.State.Scheduler.Schedule(rewardInterval(), EventReward)
-	sim.State.Scheduler.Schedule(spawnInterval(), EventSpawnStation)
+	sim.State.Scheduler.Schedule(initialSpawnInterval(), EventSpawnStation)
 	return sim
 }
 
@@ -591,4 +591,3 @@ func (s *Simulator) repositionTrain(a RepositionTrain) error {
 
 	return nil
 }
-

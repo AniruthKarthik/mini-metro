@@ -69,6 +69,7 @@ export interface StationDTO {
   x: number;
   y: number;
   queue_size: number;
+  queue_destinations?: StationKind[];
   capacity: number;
   overcrowding_timer: number; // -1 = no timer
   is_interchange: boolean;
@@ -93,6 +94,7 @@ export interface TrainDTO {
   capacity: number;
   carriages: number;
   load: number;
+  passengers?: StationKind[];
 }
 
 export interface StateSnapshot {

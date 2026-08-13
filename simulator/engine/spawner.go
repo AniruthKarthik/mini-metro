@@ -1,9 +1,13 @@
 package engine
 
-import "math/rand"
+import (
+	"math/rand"
+)
 
 // spawnInterval returns how many ticks between automatic station spawns.
-func spawnInterval() uint64 { return 200 }
+func spawnInterval() uint64 { return 450 }
+
+func initialSpawnInterval() uint64 { return 450 }
 
 // stationWeights is the relative spawn probability for each StationKind.
 var stationWeights = map[StationKind]int{
@@ -39,10 +43,44 @@ func weightedRandomKind() StationKind {
 // spawnStation appends a new alive station with a weighted random kind and schedules the next spawn.
 func (s *Simulator) spawnStation() {
 	id := len(s.State.Stations)
+
+	var spawnPos Pos
+	found := false
+	const minDist = 12.0
+
+	for attempt := 0; attempt < 100; attempt++ {
+		cand := Pos{
+			X: 12.0 + rand.Float64()*76.0,
+			Y: 12.0 + rand.Float64()*76.0,
+		}
+
+		if PosInWater(cand, s.State.Rivers, s.State.WaterPolygons, 4.0) {
+			continue
+		}
+
+		tooClose := false
+		for i := range s.State.Stations {
+			if s.State.Stations[i].Alive && distance(cand, s.State.Stations[i].Pos) < minDist {
+				tooClose = true
+				break
+			}
+		}
+
+		if !tooClose {
+			spawnPos = cand
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		spawnPos = Pos{X: 15.0 + rand.Float64()*70.0, Y: 15.0 + rand.Float64()*70.0}
+	}
+
 	s.State.Stations = append(s.State.Stations, Station{
 		ID:                id,
 		Kind:              weightedRandomKind(),
-		Pos:               Pos{X: rand.Float64() * 100.0, Y: rand.Float64() * 100.0},
+		Pos:               spawnPos,
 		Capacity:          defaultStationCapacity,
 		Alive:             true,
 		OvercrowdingTimer: -1,

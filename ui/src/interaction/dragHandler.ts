@@ -4,6 +4,8 @@ import { Viewport } from '../renderer/viewport';
 import { GameWSClient } from '../ws/client';
 import { getLineColor } from '../renderer/lines';
 
+const NEW_LINE_GUIDE_COLOR = '#888888';
+
 export class DragHandler {
   private canvas: HTMLCanvasElement;
   private viewport: Viewport;
@@ -60,7 +62,7 @@ export class DragHandler {
               return hSt ? this.viewport.mapToScreen({ x: getX(hSt), y: getY(hSt) }) : p1;
             })()
           : p1;
-        return { points: [p1, p2], color: '#f53649' };
+        return { points: [p1, p2], color: NEW_LINE_GUIDE_COLOR };
       }
     }
 
@@ -81,6 +83,7 @@ export class DragHandler {
     } else if (this.dragState.source.type === 'extend_line') {
       const line = lines.find((l) => l.id === (this.dragState!.source as any).lineId);
       if (line) color = getLineColor(line.id);
+      if ((this.dragState.source as any).lineId === -1) color = getLineColor(this.getNextLineIndex(lines));
 
       const fromSt = stations.find((s) => s.id === (this.dragState!.source as any).fromStationId);
       if (fromSt) {
@@ -130,7 +133,7 @@ export class DragHandler {
     for (const st of stations) stationMap.set(st.id, st);
 
     const px = getX(pos), py = getY(pos);
-    const threshold = 40; // 40px terminal end cap hit box
+    const threshold = 40;
 
     for (const line of lines) {
       if (line.removed || !line.stations || line.stations.length === 0) continue;
@@ -190,29 +193,38 @@ export class DragHandler {
     return null;
   }
 
+  private getNextLineIndex(lines: LineDTO[]): number {
+    const activeIds = new Set(lines.filter((line) => !line.removed).map((line) => line.id));
+    for (let i = 0; i < lines.length + 8; i++) {
+      if (!activeIds.has(i)) return i;
+    }
+    return lines.length;
+  }
+
   public startDragNewLine(lineIndex: number, startPos: Pos): void {
-    console.log(`✨ [FRONTEND] Drag started for New Line index ${lineIndex} from token`);
+    const snap = this.wsClient.getSnapshot();
+    const stations = snap ? snap.stations || [] : [];
+    const st = this.findStationAt(startPos, stations, 120);
+
     this.dragState = {
-      source: { type: 'new_line', lineIndex, firstStationId: null } as any,
+      source: { type: 'new_line', lineIndex, firstStationId: st ? st.id : null } as any,
       currentPos: startPos,
       targetStationId: null,
     };
   }
 
-  public startDragTrain(): void {
-    console.log('🚂 [FRONTEND] Drag started for Locomotive/Train token');
+  public startDragTrain(startPos: Pos): void {
     this.dragState = {
       source: { type: 'add_train' },
-      currentPos: { x: this.viewport.width / 2, y: this.viewport.height / 2 },
+      currentPos: startPos,
       targetStationId: null,
     };
   }
 
-  public startDragCarriage(): void {
-    console.log('🚃 [FRONTEND] Drag started for Carriage token');
+  public startDragCarriage(startPos: Pos): void {
     this.dragState = {
       source: { type: 'add_carriage' },
-      currentPos: { x: this.viewport.width / 2, y: this.viewport.height / 2 },
+      currentPos: startPos,
       targetStationId: null,
     };
   }
@@ -228,7 +240,6 @@ export class DragHandler {
     // 1. Check line terminal extension hit box
     const terminalHit = this.findTerminalToExtend(pos, lines, stations);
     if (terminalHit) {
-      console.log(`✏️ [FRONTEND] Extending Line ${terminalHit.lineId} from station ${terminalHit.stationId} (front=${terminalHit.fromFront})`);
       this.dragState = {
         source: { type: 'extend_line', lineId: terminalHit.lineId, fromStationId: terminalHit.stationId, fromFront: terminalHit.fromFront },
         currentPos: pos,
@@ -244,18 +255,14 @@ export class DragHandler {
       return;
     }
 
-    console.log(`🖱️ [FRONTEND] Mouse down at station ID ${st.id} (${st.kind_name})`);
-
     // Click-to-connect support
     if (this.selectedStationId !== null && this.selectedStationId !== st.id) {
       const srcStId = this.selectedStationId;
       this.selectedStationId = null;
 
-      // Check if srcStId is a terminal of an existing line
       for (const line of lines) {
         if (line.removed || !line.stations || line.stations.length === 0) continue;
         if (line.stations[0] === srcStId) {
-          console.log(`✏️ [FRONTEND] Extending Line ${line.id} from front station ${srcStId} -> ${st.id}`);
           this.wsClient.sendAction({
             type: 'extend_line',
             payload: { line_id: line.id, station_id: st.id, use_tunnel: false, from_front: true },
@@ -263,7 +270,6 @@ export class DragHandler {
           return;
         }
         if (line.stations[line.stations.length - 1] === srcStId) {
-          console.log(`✏️ [FRONTEND] Extending Line ${line.id} from end station ${srcStId} -> ${st.id}`);
           this.wsClient.sendAction({
             type: 'extend_line',
             payload: { line_id: line.id, station_id: st.id, use_tunnel: false, from_front: false },
@@ -272,8 +278,6 @@ export class DragHandler {
         }
       }
 
-      // Otherwise create a new line
-      console.log(`🔗 [FRONTEND] Creating new line: [${srcStId}, ${st.id}]`);
       this.wsClient.sendAction({
         type: 'add_line',
         payload: { stations: [srcStId, st.id] },
@@ -283,10 +287,8 @@ export class DragHandler {
 
     this.selectedStationId = st.id;
 
-    // Draft a new line from station if unused line tokens exist
     const res = snap.resources || { lines: 0 };
     if (res.lines > 0) {
-      console.log(`✏️ [FRONTEND] Starting new line draft from Station ${st.id}`);
       this.dragState = {
         source: { type: 'extend_line', lineId: -1, fromStationId: st.id, fromFront: false },
         currentPos: pos,
@@ -308,16 +310,18 @@ export class DragHandler {
 
     if (this.dragState) {
       this.dragState.currentPos = pos;
-      this.dragState.targetStationId = this.hoveredStationId;
 
       if (this.dragState.source.type === 'new_line') {
         const src = this.dragState.source as any;
         if (st && src.firstStationId === null) {
-          console.log(`📌 [FRONTEND] New line token snapped to first station ${st.id}`);
           src.firstStationId = st.id;
         } else if (st && src.firstStationId !== null && st.id !== src.firstStationId) {
           this.dragState.targetStationId = st.id;
+        } else if (!st) {
+          this.dragState.targetStationId = null;
         }
+      } else {
+        this.dragState.targetStationId = this.hoveredStationId;
       }
     }
   }
@@ -335,8 +339,6 @@ export class DragHandler {
     const targetStId = endSt ? endSt.id : this.dragState.targetStationId;
     const source = this.dragState.source;
 
-    console.log('👆 [FRONTEND] Mouse up - Action check:', source, 'Target station:', targetStId);
-
     if (snap) {
       if (source.type === 'new_line') {
         const src = source as any;
@@ -344,7 +346,6 @@ export class DragHandler {
         const secondStId = targetStId;
 
         if (firstStId !== null && secondStId !== null && firstStId !== secondStId) {
-          console.log(`📤 [FRONTEND] Dispatching add_line from Token: [${firstStId}, ${secondStId}]`);
           this.wsClient.sendAction({
             type: 'add_line',
             payload: { stations: [firstStId, secondStId] },
@@ -355,7 +356,6 @@ export class DragHandler {
         if (targetStId !== null) {
           if (source.lineId === -1) {
             if (source.fromStationId !== targetStId) {
-              console.log(`📤 [FRONTEND] Dispatching add_line: [${source.fromStationId}, ${targetStId}]`);
               this.wsClient.sendAction({
                 type: 'add_line',
                 payload: { stations: [source.fromStationId, targetStId] },
@@ -365,14 +365,12 @@ export class DragHandler {
           } else {
             const line = lines.find((l) => l.id === source.lineId);
             if (line && line.stations.length > 2 && line.stations[0] === targetStId) {
-              console.log(`📤 [FRONTEND] Dispatching close_loop for Line ${line.id}`);
               this.wsClient.sendAction({
                 type: 'close_loop',
                 payload: { line_id: line.id, use_tunnel: false },
               });
               this.selectedStationId = null;
             } else if (source.fromStationId !== targetStId) {
-              console.log(`📤 [FRONTEND] Dispatching extend_line for Line ${source.lineId} -> Station ${targetStId}`);
               this.wsClient.sendAction({
                 type: 'extend_line',
                 payload: { line_id: source.lineId, station_id: targetStId, use_tunnel: false, from_front: source.fromFront },
@@ -387,18 +385,14 @@ export class DragHandler {
           : this.findLineNear(currentPos, lines, stations);
 
         if (line) {
-          console.log(`📤 [FRONTEND] Dispatching add_train to Line ${line.id}`);
           this.wsClient.sendAction({
             type: 'add_train',
             payload: { line_id: line.id },
           });
-        } else {
-          console.warn('⚠️ [FRONTEND] Cannot add train: Drop target is not on any active metro line');
         }
       } else if (source.type === 'add_carriage') {
         const train = trains.length > 0 ? trains[0] : null;
         if (train) {
-          console.log(`📤 [FRONTEND] Dispatching add_carriage to Train ${train.id}`);
           this.wsClient.sendAction({
             type: 'add_carriage',
             payload: { train_id: train.id },

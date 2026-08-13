@@ -5,9 +5,9 @@ import (
 )
 
 const (
-	baseSpawnRate     = 0.03   // 1 passenger every ~33 seconds per station
-	spawnAccelPerTick = 0.000005 // gradual acceleration over game ticks
-	maxSpawnRate      = 0.3    // max spawn rate cap
+	baseSpawnRate     = 0.04    // 1 passenger every ~25 seconds per station
+	spawnAccelPerTick = 0.000015 // gentle acceleration over game ticks
+	maxSpawnRate      = 0.4     // max spawn rate cap
 )
 
 // CurrentSpawnRate returns the passenger spawn rate (passengers/sec per station),

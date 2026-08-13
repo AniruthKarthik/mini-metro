@@ -1,17 +1,17 @@
 import { StationKind } from '../types';
 
 export const LINE_COLORS = [
-  '#f53649', // Red
-  '#1b68db', // Blue
-  '#10b981', // Green
-  '#f59e0b', // Yellow
-  '#ec4899', // Pink
-  '#06b6d4', // Cyan
-  '#8b5cf6', // Purple
-  '#92400e', // Brown
+  '#e64b3c', // Red
+  '#2f78bf', // Blue
+  '#22a36f', // Green
+  '#f0b323', // Yellow
+  '#d64f8f', // Pink
+  '#3aa7b6', // Cyan
+  '#8964a8', // Violet
+  '#8f6b45', // Brown
 ];
 
-export const DARK_CHARCOAL = '#22252a';
+export const DARK_CHARCOAL = '#252525';
 export const WHITE_FILL = '#ffffff';
 
 export function drawStationShape(

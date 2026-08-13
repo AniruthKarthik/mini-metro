@@ -37,16 +37,17 @@ type StateSnapshot struct {
 
 // StationDTO carries the full station state for the renderer.
 type StationDTO struct {
-	ID                int                `json:"id"`
-	Kind              engine.StationKind `json:"kind"`
-	KindName          string             `json:"kind_name"`
-	X                 float64            `json:"x"`
-	Y                 float64            `json:"y"`
-	QueueSize         int                `json:"queue_size"`
-	Capacity          int                `json:"capacity"`
-	OvercrowdingTimer float64            `json:"overcrowding_timer"` // -1 = no timer
-	IsInterchange     bool               `json:"is_interchange"`
-	Alive             bool               `json:"alive"`
+	ID                int                  `json:"id"`
+	Kind              engine.StationKind   `json:"kind"`
+	KindName          string               `json:"kind_name"`
+	X                 float64              `json:"x"`
+	Y                 float64              `json:"y"`
+	QueueSize         int                  `json:"queue_size"`
+	QueueDestinations []engine.StationKind `json:"queue_destinations"`
+	Capacity          int                  `json:"capacity"`
+	OvercrowdingTimer float64              `json:"overcrowding_timer"` // -1 = no timer
+	IsInterchange     bool                 `json:"is_interchange"`
+	Alive             bool                 `json:"alive"`
 }
 
 // LineDTO carries full line topology for the renderer to draw Bezier curves.
@@ -61,14 +62,15 @@ type LineDTO struct {
 
 // TrainDTO carries per-train state for smooth interpolation on the client.
 type TrainDTO struct {
-	ID        int     `json:"id"`
-	LineID    int     `json:"line_id"`
-	Segment   int     `json:"segment"`
-	Progress  float64 `json:"progress"`
-	Direction int     `json:"direction"`
-	Capacity  int     `json:"capacity"`
-	Carriages int     `json:"carriages"`
-	Load      int     `json:"load"` // number of passengers on board
+	ID         int                  `json:"id"`
+	LineID     int                  `json:"line_id"`
+	Segment    int                  `json:"segment"`
+	Progress   float64              `json:"progress"`
+	Direction  int                  `json:"direction"`
+	Capacity   int                  `json:"capacity"`
+	Carriages  int                  `json:"carriages"`
+	Load       int                  `json:"load"` // number of passengers on board
+	Passengers []engine.StationKind `json:"passengers"`
 }
 
 // ErrorMessage is sent back to a specific client when an action fails.
@@ -165,6 +167,10 @@ func (s *Server) buildSnapshot(paused bool) StateSnapshot {
 	}
 	// Stations
 	for _, station := range st.Stations {
+		queueDestinations := make([]engine.StationKind, 0, len(station.Queue))
+		for _, passenger := range station.Queue {
+			queueDestinations = append(queueDestinations, passenger.Destination)
+		}
 		snap.Stations = append(snap.Stations, StationDTO{
 			ID:                station.ID,
 			Kind:              station.Kind,
@@ -172,6 +178,7 @@ func (s *Server) buildSnapshot(paused bool) StateSnapshot {
 			X:                 station.Pos.X,
 			Y:                 station.Pos.Y,
 			QueueSize:         len(station.Queue),
+			QueueDestinations: queueDestinations,
 			Capacity:          station.Capacity,
 			OvercrowdingTimer: station.OvercrowdingTimer,
 			IsInterchange:     station.IsInterchange,
@@ -196,15 +203,20 @@ func (s *Server) buildSnapshot(paused bool) StateSnapshot {
 		if !tr.Active {
 			continue
 		}
+		passengers := make([]engine.StationKind, 0, len(tr.Passengers))
+		for _, passenger := range tr.Passengers {
+			passengers = append(passengers, passenger.Destination)
+		}
 		snap.Trains = append(snap.Trains, TrainDTO{
-			ID:        tr.ID,
-			LineID:    tr.LineID,
-			Segment:   tr.Segment,
-			Progress:  tr.Progress,
-			Direction: tr.Direction,
-			Capacity:  tr.Capacity,
-			Carriages: tr.Carriages,
-			Load:      len(tr.Passengers),
+			ID:         tr.ID,
+			LineID:     tr.LineID,
+			Segment:    tr.Segment,
+			Progress:   tr.Progress,
+			Direction:  tr.Direction,
+			Capacity:   tr.Capacity,
+			Carriages:  tr.Carriages,
+			Load:       len(tr.Passengers),
+			Passengers: passengers,
 		})
 	}
 	// Adjacency list (copy so caller doesn't mutate cached graph)
@@ -261,6 +273,10 @@ func (s *Server) handleServerCommand(cmd string) {
 	case cmd == "resume":
 		s.paused = false
 		log.Println("simulation resumed")
+	case cmd == "restart":
+		s.sim = engine.NewSimulatorWithMap(engine.LondonMap())
+		s.paused = false
+		log.Println("🔄 Simulation restarted cleanly with London map")
 	case strings.HasPrefix(cmd, "set_speed:"):
 		// payload is a raw JSON object {"tps":60}
 		payload := strings.TrimPrefix(cmd, "set_speed:")

@@ -1,9 +1,9 @@
 import type { RiverSegment, WaterPolygon } from '../types';
 import { Viewport } from './viewport';
 
-export const WATER_FILL = '#a5dcf5';
-export const WATER_STROKE = '#7cc8ee';
-export const BACKGROUND_COLOR = '#f4f3f0';
+export const WATER_FILL = '#c7e1ea';
+export const WATER_STROKE = '#b6d6e1';
+export const BACKGROUND_COLOR = '#f5f2ec';
 
 export function renderMapWater(
   ctx: CanvasRenderingContext2D,
@@ -31,7 +31,7 @@ export function renderMapWater(
       ctx.fillStyle = WATER_FILL;
       ctx.fill();
       ctx.strokeStyle = WATER_STROKE;
-      ctx.lineWidth = 2;
+      ctx.lineWidth = 1;
       ctx.stroke();
     }
   }
@@ -51,7 +51,7 @@ export function renderMapWater(
       ctx.moveTo(pFrom.x!, pFrom.y!);
       ctx.lineTo(pTo.x!, pTo.y!);
       ctx.strokeStyle = WATER_STROKE;
-      ctx.lineWidth = pixelWidth + 3;
+      ctx.lineWidth = pixelWidth + 2;
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       ctx.stroke();

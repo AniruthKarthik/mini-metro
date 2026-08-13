@@ -64,17 +64,18 @@ function computeTrainPosition(
   const n = line.stations.length;
   if (tr.segment < 0 || tr.segment >= n) return null;
 
-  let st1Id = line.stations[tr.segment];
-  let nextIdx = tr.segment + tr.direction;
+  let st1Idx = tr.segment;
+  let st2Idx = tr.segment + tr.direction;
 
   if (line.is_loop) {
-    nextIdx = (tr.segment + tr.direction + n) % n;
+    st2Idx = (tr.segment + tr.direction + n) % n;
   } else {
-    if (nextIdx < 0) nextIdx = 0;
-    if (nextIdx >= n) nextIdx = n - 1;
+    if (st2Idx < 0) st2Idx = 0;
+    if (st2Idx >= n) st2Idx = n - 1;
   }
 
-  let st2Id = line.stations[nextIdx];
+  const st1Id = line.stations[st1Idx];
+  const st2Id = line.stations[st2Idx];
 
   const st1 = stationMap.get(st1Id);
   const st2 = stationMap.get(st2Id);
@@ -83,13 +84,18 @@ function computeTrainPosition(
   const p1 = viewport.mapToScreen({ x: getX(st1), y: getY(st1) });
   const p2 = viewport.mapToScreen({ x: getX(st2), y: getY(st2) });
 
-  // Generate 45° octilinear path for this segment
-  const octilinearPts = generateOctilinearPath([p1, p2]);
+  // Order endpoints canonically to match the exact track line geometry drawn by lines.ts
+  const isForward = st1Idx <= st2Idx;
+  const startP = isForward ? p1 : p2;
+  const endP = isForward ? p2 : p1;
+
+  // Generate the EXACT canonical 45° octilinear track path
+  const octilinearPts = generateOctilinearPath([startP, endP]);
   if (octilinearPts.length < 2) {
     return { pos: p1, angle: 0 };
   }
 
-  // Calculate segment lengths along octilinear path
+  // Calculate segment lengths along canonical octilinear path
   const segLengths: number[] = [];
   let totalLength = 0;
 
@@ -107,10 +113,11 @@ function computeTrainPosition(
     return { pos: p1, angle: 0 };
   }
 
-  const prog = Math.max(0, Math.min(1, tr.progress));
-  let targetDist = prog * totalLength;
+  const rawProg = Math.max(0, Math.min(1, tr.progress));
+  const effectiveProg = isForward ? rawProg : 1.0 - rawProg;
+  let targetDist = effectiveProg * totalLength;
 
-  // Interpolate position and angle along octilinear path
+  // Interpolate position and angle along canonical octilinear path
   for (let i = 0; i < octilinearPts.length - 1; i++) {
     const len = segLengths[i];
     const a = octilinearPts[i];
@@ -118,19 +125,24 @@ function computeTrainPosition(
 
     const ax = getX(a), ay = getY(a);
     const bx = getX(b), by = getY(b);
-    const angle = Math.atan2(by - ay, bx - ax);
 
     if (targetDist <= len || i === octilinearPts.length - 2) {
       const frac = len > 0 ? Math.max(0, Math.min(1, targetDist / len)) : 0;
       const x = ax + (bx - ax) * frac;
       const y = ay + (by - ay) * frac;
+
+      let angle = Math.atan2(by - ay, bx - ax);
+      if (!isForward) {
+        angle += Math.PI; // Reverse train orientation when moving backward along canonical track
+      }
+
       return { pos: { x, y }, angle };
     }
 
     targetDist -= len;
   }
 
-  return { pos: p2, angle: 0 };
+  return { pos: isForward ? p2 : p1, angle: 0 };
 }
 
 function renderTrainCar(

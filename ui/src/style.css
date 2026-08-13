@@ -1,4 +1,10 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+:root {
+  color: #252525;
+  background: #f5f2ec;
+  font-family: "Avenir Next", Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
 
 * {
   box-sizing: border-box;
@@ -8,207 +14,179 @@
   -webkit-user-select: none;
 }
 
-html, body {
+html,
+body,
+#app {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background-color: #f4f3f0;
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
-  color: #22252a;
+}
+
+body {
+  background: #f5f2ec;
+}
+
+button {
+  font: inherit;
 }
 
 #app {
   position: relative;
-  width: 100vw;
-  height: 100vh;
-  overflow: hidden;
 }
 
-/* Canvas Engine */
 #game-canvas {
   position: absolute;
-  top: 0;
-  left: 0;
+  inset: 0;
+  display: block;
   width: 100%;
   height: 100%;
-  display: block;
+  cursor: default;
   z-index: 1;
-  cursor: crosshair;
 }
 
-/* HUD Overlay Layer */
 #hud-overlay {
   position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  z-index: 10;
+  inset: 0;
   pointer-events: none;
+  z-index: 10;
 }
 
 #hud-overlay button,
 #hud-overlay .hud-resource-btn,
-#hud-overlay .hud-line-circle,
+#hud-overlay .hud-line-token,
 #hud-overlay .hud-modal-card {
   pointer-events: auto;
 }
 
-/* Top Left Bar */
 .hud-top-left {
   position: absolute;
-  top: 24px;
+  top: 22px;
   left: 24px;
-  display: flex;
-  align-items: center;
-  gap: 16px;
 }
 
-.hud-circle-btn {
-  width: 44px;
-  height: 44px;
+.hud-icon-btn,
+.hud-speed-btn {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 0;
   border-radius: 50%;
-  border: 2.5px solid #22252a;
-  background: #ffffff;
-  color: #22252a;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  background: transparent;
+  color: #252525;
   cursor: pointer;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-  transition: transform 0.15s ease, background 0.15s ease;
 }
 
-.hud-circle-btn:hover {
-  transform: scale(1.05);
-  background: #f8f8f8;
+.hud-icon-btn:hover,
+.hud-speed-btn:hover {
+  background: rgba(37, 37, 37, 0.08);
 }
 
-/* Top Right Bar (Day, Score, Clock) */
 .hud-top-right {
   position: absolute;
-  top: 24px;
-  right: 28px;
+  top: 21px;
+  right: 26px;
   display: flex;
   align-items: center;
-  gap: 14px;
-}
-
-.hud-day {
-  font-size: 20px;
-  font-weight: 700;
-  letter-spacing: 1px;
-  color: #22252a;
+  gap: 12px;
+  color: #252525;
 }
 
 .hud-score {
-  font-size: 24px;
-  font-weight: 800;
-  color: #22252a;
-  min-width: 45px;
+  min-width: 46px;
   text-align: right;
+  font-size: 25px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.hud-day {
+  min-width: 38px;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: 1;
 }
 
 .hud-clock-container {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  width: 36px;
+  height: 36px;
 }
 
-/* Far Right Dock (Speed & Line Stack) */
 .hud-right-dock {
   position: absolute;
-  top: 90px;
-  right: 28px;
+  top: 84px;
+  right: 27px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 20px;
+  gap: 22px;
 }
 
 .hud-speed-controls {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 4px;
 }
 
 .hud-speed-btn {
-  width: 38px;
-  height: 38px;
-  border-radius: 50%;
-  border: 2px solid #22252a;
-  background: #ffffff;
-  color: #22252a;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.hud-speed-btn:hover {
-  background: #ecebe6;
+  color: rgba(37, 37, 37, 0.56);
 }
 
 .hud-speed-btn.active {
-  background: #22252a;
-  color: #ffffff;
+  color: #252525;
 }
 
 .hud-lines-stack {
   display: flex;
   flex-direction: column;
-  gap: 12px;
   align-items: center;
+  gap: 12px;
 }
 
-.hud-line-circle {
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  border: 2.5px solid #22252a;
-  cursor: pointer;
-  transition: transform 0.2s ease, opacity 0.2s ease;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
+.hud-line-token {
+  width: 29px;
+  height: 12px;
+  border-radius: 8px;
+  background: var(--line-color);
+  cursor: grab;
 }
 
-.hud-line-circle.available {
-  opacity: 1;
+.hud-line-token.available:hover {
+  transform: scale(1.12);
 }
 
-.hud-line-circle.available:hover {
-  transform: scale(1.15);
-}
-
-.hud-line-circle.used {
-  opacity: 0.45;
+.hud-line-token.used {
+  width: 19px;
+  height: 8px;
+  opacity: 0.42;
   cursor: default;
 }
 
-/* Far Left Dock (Locomotive, Carriage, Tunnel) */
+.hud-line-token:not(.available):not(.used) {
+  width: 8px;
+  height: 8px;
+  background: #c9c5bc;
+  cursor: default;
+}
+
 .hud-left-dock {
   position: absolute;
-  top: 140px;
-  left: 24px;
+  top: 118px;
+  left: 23px;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 19px;
 }
 
 .hud-resource-btn {
   position: relative;
+  display: grid;
+  place-items: center;
   width: 48px;
-  height: 48px;
-  border-radius: 50%;
-  border: 2.5px solid #22252a;
-  background: #22252a;
-  color: #ffffff;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  height: 34px;
+  color: #252525;
   cursor: grab;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-  transition: transform 0.15s ease;
 }
 
 .hud-resource-btn:active {
@@ -216,41 +194,39 @@ html, body {
 }
 
 .hud-resource-btn:hover:not(.disabled) {
-  transform: scale(1.08);
+  transform: scale(1.06);
 }
 
 .hud-resource-btn.disabled {
-  opacity: 0.35;
-  cursor: not-allowed;
+  opacity: 0.28;
+  cursor: default;
 }
 
 .hud-badge {
   position: absolute;
-  bottom: -4px;
   right: -4px;
-  background: #ffffff;
-  color: #22252a;
-  border: 2px solid #22252a;
-  border-radius: 10px;
+  bottom: -7px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: #252525;
+  color: #ffffff;
   font-size: 11px;
-  font-weight: 800;
-  padding: 1px 5px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
 }
 
-/* Modal Overlay */
 .hud-modal-overlay {
   position: absolute;
-  top: 0;
-  left: 0;
+  inset: 0;
+  display: grid;
+  place-items: center;
   width: 100vw;
   height: 100vh;
-  background: rgba(244, 243, 240, 0.85);
-  backdrop-filter: blur(8px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  background: rgba(245, 242, 236, 0.72);
   z-index: 100;
-  transition: opacity 0.25s ease;
 }
 
 .hud-modal-overlay.hidden {
@@ -258,137 +234,222 @@ html, body {
 }
 
 .hud-modal-card {
-  background: #ffffff;
-  border: 3px solid #22252a;
-  border-radius: 16px;
-  padding: 36px 44px;
+  width: min(420px, calc(100vw - 44px));
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.95);
+  border: 2px solid #252525;
+  padding: 28px;
   text-align: center;
-  max-width: 460px;
-  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.15);
 }
 
+.hud-modal-card h1,
 .hud-modal-card h2 {
-  font-size: 24px;
-  font-weight: 800;
   margin-bottom: 8px;
+  color: #252525;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: 0;
 }
 
 .hud-modal-card p {
-  color: #666;
+  margin-bottom: 22px;
+  color: rgba(37, 37, 37, 0.64);
   font-size: 14px;
-  margin-bottom: 24px;
+  font-weight: 500;
 }
 
 .hud-reward-options {
   display: flex;
   justify-content: center;
-  gap: 20px;
+  gap: 14px;
 }
 
 .hud-reward-card {
-  width: 140px;
-  height: 130px;
-  border-radius: 12px;
-  border: 2.5px solid #22252a;
-  background: #fdfdfd;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 12px;
+  gap: 13px;
+  width: 126px;
+  height: 116px;
+  border: 2px solid #252525;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #252525;
   cursor: pointer;
-  transition: all 0.2s ease;
 }
 
 .hud-reward-card:hover {
-  transform: translateY(-4px);
-  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.12);
-  background: #f4f3f0;
+  background: #f5f2ec;
 }
 
 .hud-reward-icon {
-  font-size: 36px;
+  position: relative;
+  display: block;
+  width: 48px;
+  height: 34px;
+}
+
+.hud-reward-icon.line::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  top: 14px;
+  height: 8px;
+  border-radius: 8px;
+  background: #e64b3c;
+}
+
+.hud-reward-icon.train::before,
+.hud-reward-icon.carriage::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  top: 9px;
+  height: 15px;
+  border: 3px solid #252525;
+  border-radius: 5px;
+}
+
+.hud-reward-icon.tunnel::before {
+  content: "";
+  position: absolute;
+  left: 7px;
+  top: 6px;
+  width: 30px;
+  height: 22px;
+  border: 4px solid #252525;
+  border-bottom: 0;
+  border-radius: 22px 22px 0 0;
+}
+
+.hud-reward-icon.interchange::before {
+  content: "";
+  position: absolute;
+  left: 11px;
+  top: 2px;
+  width: 26px;
+  height: 26px;
+  border: 4px solid #252525;
+  border-radius: 50%;
+}
+
+.hud-reward-icon.interchange::after {
+  content: "";
+  position: absolute;
+  left: 18px;
+  top: 9px;
+  width: 12px;
+  height: 12px;
+  border: 3px solid #252525;
+  background: #ffffff;
 }
 
 .hud-reward-title {
+  color: #252525;
   font-size: 13px;
   font-weight: 700;
-  color: #22252a;
 }
 
-/* Game Over Card */
 .hud-modal-card.gameover {
-  border-color: #e63946;
-}
-
-.hud-modal-card.gameover h1 {
-  font-size: 32px;
-  color: #e63946;
-  font-weight: 800;
-}
-
-.gameover-sub {
-  color: #888;
-  margin-bottom: 20px;
+  border-color: #e64b3c;
 }
 
 .gameover-score-box {
-  background: #f4f3f0;
-  border-radius: 12px;
-  padding: 18px;
-  margin-bottom: 24px;
   display: flex;
   flex-direction: column;
   align-items: center;
+  margin-bottom: 24px;
 }
 
 .score-num {
-  font-size: 42px;
-  font-weight: 800;
-  color: #22252a;
+  color: #252525;
+  font-size: 44px;
+  font-weight: 700;
+  line-height: 1;
 }
 
 .score-lbl {
+  margin-top: 5px;
+  color: rgba(37, 37, 37, 0.62);
   font-size: 12px;
-  font-weight: 600;
-  color: #666;
+  font-weight: 700;
+  letter-spacing: 0;
   text-transform: uppercase;
-  letter-spacing: 1px;
 }
 
 .hud-primary-btn {
-  background: #22252a;
-  color: #ffffff;
-  border: none;
+  min-width: 120px;
+  height: 40px;
+  border: 2px solid #252525;
   border-radius: 8px;
-  padding: 14px 28px;
-  font-size: 16px;
-  font-weight: 700;
+  background: #252525;
+  color: #ffffff;
   cursor: pointer;
-  transition: background 0.2s ease;
+  font-size: 14px;
+  font-weight: 700;
 }
 
 .hud-primary-btn:hover {
-  background: #444;
+  background: #3a3a3a;
 }
 
-/* Toast */
 .hud-toast {
   position: absolute;
-  bottom: 28px;
   left: 50%;
+  bottom: 28px;
   transform: translateX(-50%);
-  background: #e63946;
-  color: #ffffff;
-  padding: 10px 20px;
+  max-width: calc(100vw - 48px);
   border-radius: 8px;
+  background: #e64b3c;
+  color: #ffffff;
+  padding: 10px 18px;
   font-size: 14px;
   font-weight: 600;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
   pointer-events: none;
-  transition: opacity 0.3s ease;
 }
 
 .hud-toast.hidden {
   opacity: 0;
+}
+
+@media (max-width: 640px) {
+  .hud-top-left {
+    top: 14px;
+    left: 14px;
+  }
+
+  .hud-top-right {
+    top: 14px;
+    right: 14px;
+    gap: 9px;
+  }
+
+  .hud-score {
+    min-width: 36px;
+    font-size: 21px;
+  }
+
+  .hud-day {
+    min-width: 32px;
+    font-size: 13px;
+  }
+
+  .hud-right-dock {
+    top: 70px;
+    right: 15px;
+    gap: 17px;
+  }
+
+  .hud-left-dock {
+    top: 92px;
+    left: 12px;
+    gap: 14px;
+  }
+
+  .hud-reward-options {
+    flex-wrap: wrap;
+  }
 }

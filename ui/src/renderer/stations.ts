@@ -1,5 +1,5 @@
 import type { StationDTO, StationKind } from '../types';
-import { getX, getY } from '../types';
+import { StationKind as StationKindValue, getX, getY } from '../types';
 import { Viewport } from './viewport';
 import { drawStationShape, drawPassengerShape, DARK_CHARCOAL, WHITE_FILL } from './shapes';
 
@@ -16,16 +16,15 @@ export function renderStations(
 
     const screenPos = viewport.mapToScreen({ x: getX(st), y: getY(st) });
     const isHovered = st.id === hoveredStationId;
-    const baseRadius = isHovered ? 16 : 14;
+    const baseRadius = isHovered ? 15 : 13;
 
     // Magnetic Snap Ring Halo on Hover / Drag Target
     if (isHovered) {
       ctx.save();
       ctx.beginPath();
-      ctx.arc(screenPos.x, screenPos.y, baseRadius + 9, 0, Math.PI * 2);
-      ctx.strokeStyle = 'rgba(34, 37, 42, 0.45)';
-      ctx.lineWidth = 2.5;
-      ctx.setLineDash([6, 4]);
+      ctx.arc(screenPos.x, screenPos.y, baseRadius + 8, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(37, 37, 37, 0.22)';
+      ctx.lineWidth = 2;
       ctx.stroke();
       ctx.restore();
     }
@@ -52,11 +51,11 @@ export function renderStations(
       baseRadius,
       DARK_CHARCOAL,
       WHITE_FILL,
-      3.5
+      3
     );
 
     if (st.queue_size > 0) {
-      renderPassengerQueue(ctx, screenPos.x, screenPos.y, baseRadius, st.queue_size, st.kind);
+      renderPassengerQueue(ctx, screenPos.x, screenPos.y, baseRadius, st.queue_destinations || [], st.queue_size);
     }
   }
 
@@ -74,8 +73,8 @@ function renderOvercrowdingTimer(
 
   ctx.beginPath();
   ctx.arc(x, y, radius, 0, Math.PI * 2);
-  ctx.strokeStyle = 'rgba(0, 0, 0, 0.15)';
-  ctx.lineWidth = 4;
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.12)';
+  ctx.lineWidth = 3;
   ctx.stroke();
 
   const maxTimer = 20.0;
@@ -85,8 +84,8 @@ function renderOvercrowdingTimer(
 
   ctx.beginPath();
   ctx.arc(x, y, radius, startAngle, endAngle);
-  ctx.strokeStyle = progress > 0.7 ? '#e63946' : DARK_CHARCOAL;
-  ctx.lineWidth = 4;
+  ctx.strokeStyle = progress > 0.7 ? '#e64b3c' : DARK_CHARCOAL;
+  ctx.lineWidth = 3;
   ctx.lineCap = 'round';
   ctx.stroke();
 
@@ -98,25 +97,26 @@ function renderPassengerQueue(
   stationX: number,
   stationY: number,
   stationRadius: number,
-  queueSize: number,
-  stationKind: number
+  destinations: StationKind[],
+  queueSize: number
 ): void {
   ctx.save();
 
   const startX = stationX + stationRadius + 12;
-  const startY = stationY - 5;
-  const spacing = 11;
+  const startY = stationY - 4;
+  const spacing = 10;
   const maxPerRow = 6;
+  const total = Math.min(queueSize, 18);
 
-  for (let i = 0; i < queueSize; i++) {
+  for (let i = 0; i < total; i++) {
     const col = i % maxPerRow;
     const row = Math.floor(i / maxPerRow);
 
     const px = startX + col * spacing;
     const py = startY + row * spacing;
 
-    const dummyKind = ((stationKind + i + 1) % 10) as StationKind;
-    drawPassengerShape(ctx, dummyKind, px, py, 4.0, DARK_CHARCOAL);
+    const destination = destinations[i] ?? StationKindValue.Circle;
+    drawPassengerShape(ctx, destination, px, py, 3.7, DARK_CHARCOAL);
   }
 
   ctx.restore();

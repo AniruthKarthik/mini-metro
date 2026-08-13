@@ -130,8 +130,30 @@ func CrossesWater(p1, p2 Pos, rivers []RiverSegment, polygons []WaterPolygon) bo
 	return false
 }
 
+// PosInWater reports whether point p lies within or too close (within margin) to any river segment or water polygon.
+func PosInWater(p Pos, rivers []RiverSegment, polygons []WaterPolygon, margin float64) bool {
+	for _, r := range rivers {
+		if distToSegment(p, r.From, r.To) <= (r.Width/2.0 + margin) {
+			return true
+		}
+	}
+	for _, poly := range polygons {
+		if PointInPolygon(p, poly.Vertices) {
+			return true
+		}
+		n := len(poly.Vertices)
+		for i := 0; i < n; i++ {
+			next := (i + 1) % n
+			if distToSegment(p, poly.Vertices[i], poly.Vertices[next]) <= margin {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func rewardInterval() uint64 {
-	return 500
+	return 700
 }
 
 

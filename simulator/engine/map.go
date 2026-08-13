@@ -128,6 +128,6 @@ func NewSimulatorWithMap(cfg MapConfig) *Simulator {
 		sim.State.MaxTrainsPerLine = 4
 	}
 	sim.State.Scheduler.Schedule(rewardInterval(), EventReward)
-	sim.State.Scheduler.Schedule(spawnInterval(), EventSpawnStation)
+	sim.State.Scheduler.Schedule(initialSpawnInterval(), EventSpawnStation)
 	return sim
 }

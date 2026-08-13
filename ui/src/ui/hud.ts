@@ -47,8 +47,8 @@ export class HUDManager {
     this.container.innerHTML = `
       <!-- Top Left Bar -->
       <div class="hud-top-left">
-        <button id="hud-back-btn" class="hud-circle-btn" title="Back to Menu">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <button id="hud-back-btn" class="hud-icon-btn" title="Back">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
             <line x1="19" y1="12" x2="5" y2="12"></line>
             <polyline points="12 19 5 12 12 5"></polyline>
           </svg>
@@ -57,12 +57,12 @@ export class HUDManager {
 
       <!-- Top Right Bar (Day, Score, Analog Clock) -->
       <div class="hud-top-right">
-        <span id="hud-day-text" class="hud-day">SAT</span>
         <span id="hud-score-text" class="hud-score">0</span>
+        <span id="hud-day-text" class="hud-day">MON</span>
         <div class="hud-clock-container">
           <svg id="hud-clock-svg" width="34" height="34" viewBox="0 0 36 36">
-            <circle cx="18" cy="18" r="16" fill="#e63946" stroke="#22252a" stroke-width="2.5" />
-            <line id="hud-clock-hand" x1="18" y1="18" x2="18" y2="6" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" />
+            <circle cx="18" cy="18" r="15" fill="#e64b3c" stroke="#252525" stroke-width="2" />
+            <line id="hud-clock-hand" x1="18" y1="18" x2="18" y2="6" stroke="#ffffff" stroke-width="2.4" stroke-linecap="round" />
           </svg>
         </div>
       </div>
@@ -76,12 +76,12 @@ export class HUDManager {
               <rect x="14" y="4" width="4" height="16" rx="1" />
             </svg>
           </button>
-          <button id="hud-play-btn" class="hud-speed-btn active" title="1x Speed">
+          <button id="hud-play-btn" class="hud-speed-btn active" title="Play">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
               <polygon points="5 3 19 12 5 21 5 3" />
             </svg>
           </button>
-          <button id="hud-fast-btn" class="hud-speed-btn" title="2x Fast Forward">
+          <button id="hud-fast-btn" class="hud-speed-btn" title="Fast">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
               <polygon points="3 3 13 12 3 21 3 3" />
               <polygon points="13 3 23 12 13 21 13 3" />
@@ -95,29 +95,26 @@ export class HUDManager {
 
       <!-- Far Left Resource Dock (Train, Carriage, Tunnel) -->
       <div id="hud-left-dock" class="hud-left-dock">
-        <div id="hud-train-token" class="hud-resource-btn" title="Train / Locomotive">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="4" y="4" width="16" height="16" rx="2" />
-            <circle cx="8" cy="16" r="1.5" />
-            <circle cx="16" cy="16" r="1.5" />
-            <line x1="8" y1="8" x2="16" y2="8" />
+        <div id="hud-train-token" class="hud-resource-btn" title="Locomotive">
+          <svg width="30" height="22" viewBox="0 0 30 22" fill="none">
+            <rect x="3" y="6" width="24" height="10" rx="3" fill="#ffffff" stroke="currentColor" stroke-width="3" />
+            <circle cx="9" cy="17" r="1.7" fill="currentColor" />
+            <circle cx="21" cy="17" r="1.7" fill="currentColor" />
           </svg>
           <span id="hud-train-count" class="hud-badge">0</span>
         </div>
 
         <div id="hud-carriage-token" class="hud-resource-btn" title="Carriage">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="3" y="6" width="18" height="12" rx="2" />
-            <circle cx="7" cy="18" r="1.5" />
-            <circle cx="17" cy="18" r="1.5" />
+          <svg width="30" height="22" viewBox="0 0 30 22" fill="none">
+            <rect x="4" y="7" width="22" height="9" rx="3" fill="#ffffff" stroke="currentColor" stroke-width="3" />
           </svg>
           <span id="hud-carriage-count" class="hud-badge">0</span>
         </div>
 
-        <div id="hud-tunnel-token" class="hud-resource-btn" title="Bridge / Tunnel">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M4 18V12C4 7.58172 7.58172 4 12 4C16.4183 4 20 7.58172 20 12V18" />
-            <line x1="2" y1="18" x2="22" y2="18" />
+        <div id="hud-tunnel-token" class="hud-resource-btn" title="Tunnel">
+          <svg width="30" height="22" viewBox="0 0 30 22" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round">
+            <path d="M6 17V12C6 7 10 4 15 4C20 4 24 7 24 12V17" />
+            <line x1="4" y1="17" x2="26" y2="17" />
           </svg>
           <span id="hud-tunnel-count" class="hud-badge">0</span>
         </div>
@@ -126,8 +123,8 @@ export class HUDManager {
       <!-- Weekly Reward Choice Modal -->
       <div id="hud-reward-modal" class="hud-modal-overlay hidden">
         <div class="hud-modal-card">
-          <h2>Choose Weekly Upgrade</h2>
-          <p>Select one asset to add to your metro network</p>
+          <h2>End of week</h2>
+          <p>Choose one upgrade</p>
           <div id="hud-reward-options" class="hud-reward-options"></div>
         </div>
       </div>
@@ -135,11 +132,11 @@ export class HUDManager {
       <!-- Game Over Modal -->
       <div id="hud-gameover-modal" class="hud-modal-overlay hidden">
         <div class="hud-modal-card gameover">
-          <h1>Network Closed</h1>
-          <p class="gameover-sub">Station Overcrowded</p>
+          <h1>Game over</h1>
+          <p class="gameover-sub">Station overcrowded</p>
           <div class="gameover-score-box">
             <span class="score-num" id="gameover-score">0</span>
-            <span class="score-lbl">Passengers Transported</span>
+            <span class="score-lbl">Passengers</span>
           </div>
           <button id="hud-restart-btn" class="hud-primary-btn">Play Again</button>
         </div>
@@ -188,16 +185,21 @@ export class HUDManager {
       this.updateSpeedButtons('fast');
     });
 
-    this.trainToken.addEventListener('mousedown', () => {
-      if (this.dragHandler) this.dragHandler.startDragTrain();
+    this.trainToken.addEventListener('mousedown', (event) => {
+      if (this.dragHandler && !this.trainToken.classList.contains('disabled')) {
+        this.dragHandler.startDragTrain({ x: event.clientX, y: event.clientY });
+      }
     });
 
-    this.carriageToken.addEventListener('mousedown', () => {
-      if (this.dragHandler) this.dragHandler.startDragCarriage();
+    this.carriageToken.addEventListener('mousedown', (event) => {
+      if (this.dragHandler && !this.carriageToken.classList.contains('disabled')) {
+        this.dragHandler.startDragCarriage({ x: event.clientX, y: event.clientY });
+      }
     });
 
     document.getElementById('hud-restart-btn')?.addEventListener('click', () => {
-      window.location.reload();
+      this.wsClient.sendAction({ type: 'restart' });
+      this.gameOverModal.classList.add('hidden');
     });
 
     this.wsClient.onError((msg) => this.showToast(msg));
@@ -275,22 +277,22 @@ export class HUDManager {
       const isUsed = snap.lines && snap.lines.some((l) => l.id === i && !l.removed);
       const isAvailable = !isUsed && i < totalLinesAvailable;
 
-      const classes = ['hud-line-circle'];
+      const classes = ['hud-line-token'];
       if (isUsed) classes.push('used');
       if (isAvailable) classes.push('available');
 
-      html += `<div class="${classes.join(' ')}" style="background-color: ${color};" data-line-index="${i}"></div>`;
+      html += `<div class="${classes.join(' ')}" style="--line-color: ${color};" data-line-index="${i}"></div>`;
     }
 
     this.linesStack.innerHTML = html;
 
-    const circles = this.linesStack.querySelectorAll('.hud-line-circle.available');
+    const circles = this.linesStack.querySelectorAll('.hud-line-token.available');
     circles.forEach((el) => {
       el.addEventListener('mousedown', () => {
         const idx = parseInt(el.getAttribute('data-line-index') || '0', 10);
         if (this.dragHandler) {
           const rect = el.getBoundingClientRect();
-          this.dragHandler.startDragNewLine(idx, { x: rect.left + 15, y: rect.top + 15 });
+          this.dragHandler.startDragNewLine(idx, { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
         }
       });
     });
@@ -301,19 +303,19 @@ export class HUDManager {
     const optsContainer = document.getElementById('hud-reward-options')!;
 
     const labels: Record<number, { title: string; icon: string }> = {
-      [RewardType.RewardLine]: { title: 'New Line', icon: '🚇' },
-      [RewardType.RewardTrain]: { title: 'Locomotive', icon: '🚂' },
-      [RewardType.RewardTunnel]: { title: 'Bridge / Tunnel', icon: '🌉' },
-      [RewardType.RewardCarriage]: { title: 'Carriage', icon: '🚃' },
-      [RewardType.RewardInterchange]: { title: 'Interchange Hub', icon: '🏢' },
+      [RewardType.RewardLine]: { title: 'Line', icon: 'line' },
+      [RewardType.RewardTrain]: { title: 'Locomotive', icon: 'train' },
+      [RewardType.RewardTunnel]: { title: 'Tunnel', icon: 'tunnel' },
+      [RewardType.RewardCarriage]: { title: 'Carriage', icon: 'carriage' },
+      [RewardType.RewardInterchange]: { title: 'Interchange', icon: 'interchange' },
     };
 
     let html = '';
     for (const choice of choices) {
-      const info = labels[choice] || { title: 'Upgrade', icon: '🎁' };
+      const info = labels[choice] || { title: 'Upgrade', icon: 'interchange' };
       html += `
         <button class="hud-reward-card" data-choice="${choice}">
-          <span class="hud-reward-icon">${info.icon}</span>
+          <span class="hud-reward-icon ${info.icon}"></span>
           <span class="hud-reward-title">${info.title}</span>
         </button>
       `;

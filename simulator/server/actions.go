@@ -21,6 +21,7 @@ import (
 // {"type":"set_speed",       "payload":{"tps":60}}   // server-side control
 // {"type":"pause"}
 // {"type":"resume"}
+// {"type":"restart"}
 type ActionEnvelope struct {
 	Type    string          `json:"type"`
 	Payload json.RawMessage `json:"payload,omitempty"`
@@ -34,7 +35,7 @@ func ParseAction(raw []byte) (engine.Action, string, error) {
 
 	switch env.Type {
 	// ── server-side controls ─────────────────────────────────────
-	case "pause", "resume":
+	case "pause", "resume", "restart":
 		return nil, env.Type, nil
 
 	case "set_speed":
