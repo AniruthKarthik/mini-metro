@@ -340,17 +340,26 @@ export class HUD {
     const activeLines = (snap.lines || []).filter((l) => !l.removed);
     const activeIds = new Set(activeLines.map((l) => l.id));
 
-    // 1. Active Lines (used)
+    // 1. Active Lines (Click to delete line & refund resources)
     for (const line of activeLines) {
       const color = getLineColor(line.id);
       const token = document.createElement('div');
       token.className = 'hud-line-token used';
       token.style.setProperty('--line-color', color);
-      token.title = `Line ${line.id + 1} (${line.stations.length} stations)`;
+      token.title = `Click to delete Line ${line.id + 1} (${line.stations.length} stations)`;
+
+      token.addEventListener('click', () => {
+        console.log(`🗑️ [FRONTEND] Removing Line ${line.id}`);
+        this.wsClient.sendAction({
+          type: 'remove_line',
+          payload: { line_id: line.id },
+        });
+      });
+
       this.linesStack.appendChild(token);
     }
 
-    // 2. Available Lines (draggable)
+    // 2. Available Lines (Draggable to create line)
     let nextIdx = 0;
     for (let i = 0; i < availableLinesCount; i++) {
       while (activeIds.has(nextIdx)) {

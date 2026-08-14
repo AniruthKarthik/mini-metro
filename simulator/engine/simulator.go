@@ -169,14 +169,30 @@ func (s *Simulator) addLine(a AddLine) error {
 		s.State.Resources.Spend(RewardTunnel)
 	}
 
-	id := len(s.State.Lines)
+	id := -1
+	for i, l := range s.State.Lines {
+		if l.Removed {
+			id = i
+			break
+		}
+	}
 
-	s.State.Lines = append(s.State.Lines, Line{
-		ID:       id,
-		Stations: append([]int(nil), a.Stations...),
-		TunnelAt: tunnelAt,
-		Removed:  false,
-	})
+	if id == -1 {
+		id = len(s.State.Lines)
+		s.State.Lines = append(s.State.Lines, Line{
+			ID:       id,
+			Stations: append([]int(nil), a.Stations...),
+			TunnelAt: tunnelAt,
+			Removed:  false,
+		})
+	} else {
+		s.State.Lines[id] = Line{
+			ID:       id,
+			Stations: append([]int(nil), a.Stations...),
+			TunnelAt: tunnelAt,
+			Removed:  false,
+		}
+	}
 
 	// Auto-spawn initial train if train resource pool has available trains
 	if s.State.Resources.CanSpend(RewardTrain) {

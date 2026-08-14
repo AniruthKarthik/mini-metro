@@ -30,6 +30,39 @@ export class DragHandler {
     this.canvas.addEventListener('touchstart', this.onTouchStart.bind(this), { passive: false });
     window.addEventListener('touchmove', this.onTouchMove.bind(this), { passive: false });
     window.addEventListener('touchend', this.onTouchEnd.bind(this));
+
+    // Right-click to remove line & refund resources
+    this.canvas.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      const pos = this.getEventPos(e);
+      const snap = this.wsClient.getSnapshot();
+      if (!snap) return;
+
+      const lines = snap.lines || [];
+      const stations = snap.stations || [];
+
+      // Right-click terminal handle -> Remove Line
+      const terminalHit = this.findTerminalToExtend(pos, lines, stations);
+      if (terminalHit) {
+        console.log(`🗑️ [FRONTEND] Right-click removing Line ${terminalHit.lineId}`);
+        this.wsClient.sendAction({
+          type: 'remove_line',
+          payload: { line_id: terminalHit.lineId },
+        });
+        return;
+      }
+
+      // Right-click track segment -> Remove Line
+      const segHit = this.findSegmentToInsert(pos, lines, stations);
+      if (segHit) {
+        console.log(`🗑️ [FRONTEND] Right-click removing Line ${segHit.lineId}`);
+        this.wsClient.sendAction({
+          type: 'remove_line',
+          payload: { line_id: segHit.lineId },
+        });
+        return;
+      }
+    });
   }
 
   private getEventPos(e: MouseEvent | Touch): Pos {
@@ -436,6 +469,8 @@ export class DragHandler {
   }
 
   private onPointerDown(e: MouseEvent): void {
+    if (e.button !== 0) return; // Left click only
+
     const pos = this.getEventPos(e);
     const snap = this.wsClient.getSnapshot();
     if (!snap) return;
@@ -559,44 +594,60 @@ export class DragHandler {
           this.selectedStationId = null;
         }
       } else if (source.type === 'extend_line') {
-        if (targetStId !== null) {
-          if (source.lineId === -1) {
-            if (source.fromStationId !== targetStId) {
+        const line = lines.find((l) => l.id === source.lineId);
+        if (line) {
+          // 1. Dragged endpoint into empty space -> Remove Line
+          if (targetStId === null) {
+            console.log(`🗑️ [FRONTEND] Dragged end off into space -> Removing Line ${line.id}`);
+            this.wsClient.sendAction({
+              type: 'remove_line',
+              payload: { line_id: line.id },
+            });
+            this.selectedStationId = null;
+            this.dragState = null;
+            return;
+          }
+
+          // 2. Connecting opposite terminal -> Close loop
+          if (!line.is_loop && line.stations.length >= 2) {
+            const firstStId = line.stations[0];
+            const lastStId = line.stations[line.stations.length - 1];
+
+            const isOppositeTerminal =
+              (source.fromStationId === firstStId && targetStId === lastStId) ||
+              (source.fromStationId === lastStId && targetStId === firstStId);
+
+            if (isOppositeTerminal) {
+              console.log(`🔄 [FRONTEND] Closing loop for line ${line.id}`);
               this.wsClient.sendAction({
-                type: 'add_line',
-                payload: { stations: [source.fromStationId, targetStId] },
+                type: 'close_loop',
+                payload: { line_id: line.id, use_tunnel: false },
               });
               this.selectedStationId = null;
-            }
-          } else {
-            const line = lines.find((l) => l.id === source.lineId);
-            if (line && !line.is_loop && line.stations.length >= 2) {
-              const firstStId = line.stations[0];
-              const lastStId = line.stations[line.stations.length - 1];
-
-              const isOppositeTerminal =
-                (source.fromStationId === firstStId && targetStId === lastStId) ||
-                (source.fromStationId === lastStId && targetStId === firstStId);
-
-              if (isOppositeTerminal) {
-                console.log(`🔄 [FRONTEND] Closing loop for line ${line.id}`);
-                this.wsClient.sendAction({
-                  type: 'close_loop',
-                  payload: { line_id: line.id, use_tunnel: false },
-                });
-                this.selectedStationId = null;
-                this.dragState = null;
-                return;
-              }
+              this.dragState = null;
+              return;
             }
 
-            if (line && !line.stations.includes(targetStId) && source.fromStationId !== targetStId) {
+            // 3. Shortening 2-station line back onto origin -> Remove Line
+            if (line.stations.length === 2 && (targetStId === firstStId || targetStId === lastStId)) {
+              console.log(`🗑️ [FRONTEND] Shortening 2-station line to origin -> Removing Line ${line.id}`);
               this.wsClient.sendAction({
-                type: 'extend_line',
-                payload: { line_id: source.lineId, station_id: targetStId, use_tunnel: false, from_front: source.fromFront },
+                type: 'remove_line',
+                payload: { line_id: line.id },
               });
               this.selectedStationId = null;
+              this.dragState = null;
+              return;
             }
+          }
+
+          // 4. Normal line extension
+          if (!line.stations.includes(targetStId) && source.fromStationId !== targetStId) {
+            this.wsClient.sendAction({
+              type: 'extend_line',
+              payload: { line_id: source.lineId, station_id: targetStId, use_tunnel: false, from_front: source.fromFront },
+            });
+            this.selectedStationId = null;
           }
         }
       } else if (source.type === 'add_train') {
