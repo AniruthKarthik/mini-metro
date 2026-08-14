@@ -141,33 +141,32 @@ button {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 12px;
+  gap: 10px;
 }
 
 .hud-line-token {
-  width: 29px;
-  height: 12px;
-  border-radius: 8px;
+  width: 32px;
+  height: 14px;
+  border-radius: 7px;
   background: var(--line-color);
+  transition: transform 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+}
+
+.hud-line-token.available {
   cursor: grab;
 }
 
 .hud-line-token.available:hover {
-  transform: scale(1.12);
+  transform: scale(1.18);
+  box-shadow: 0 2px 7px rgba(0, 0, 0, 0.3);
 }
 
 .hud-line-token.used {
-  width: 19px;
-  height: 8px;
-  opacity: 0.42;
-  cursor: default;
-}
-
-.hud-line-token:not(.available):not(.used) {
-  width: 8px;
-  height: 8px;
-  background: #c9c5bc;
-  cursor: default;
+  width: 24px;
+  height: 10px;
+  opacity: 0.5;
+  cursor: pointer;
 }
 
 .hud-left-dock {

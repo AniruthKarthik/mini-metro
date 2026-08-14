@@ -27,6 +27,8 @@ export class HUD {
   private fastBtn!: HTMLButtonElement;
 
   private linesStack!: HTMLElement;
+  private lineTokenBtn!: HTMLElement;
+  private lineCount!: HTMLElement;
   private trainToken!: HTMLElement;
   private trainCount!: HTMLElement;
   private carriageToken!: HTMLElement;
@@ -103,8 +105,17 @@ export class HUD {
         </div>
       </div>
 
-      <!-- Far Left Resource Dock (Train, Carriage, Tunnel, Interchange) -->
+      <!-- Far Left Resource Dock (Line, Train, Carriage, Tunnel, Interchange) -->
       <div id="hud-left-dock" class="hud-left-dock">
+        <div id="hud-line-token-btn" class="hud-resource-btn" title="Line Token">
+          <svg width="30" height="22" viewBox="0 0 30 22" fill="none">
+            <rect x="3" y="8" width="24" height="6" rx="3" fill="#e64b3c" />
+            <circle cx="6" cy="11" r="3" fill="#ffffff" stroke="#252525" stroke-width="1.5" />
+            <circle cx="24" cy="11" r="3" fill="#ffffff" stroke="#252525" stroke-width="1.5" />
+          </svg>
+          <span id="hud-line-count" class="hud-badge">0</span>
+        </div>
+
         <div id="hud-train-token" class="hud-resource-btn" title="Locomotive">
           <svg width="30" height="22" viewBox="0 0 30 22" fill="none">
             <rect x="3" y="6" width="24" height="10" rx="3" fill="#ffffff" stroke="currentColor" stroke-width="3" />
@@ -173,6 +184,8 @@ export class HUD {
     this.fastBtn = document.getElementById('hud-fast-btn') as HTMLButtonElement;
 
     this.linesStack = document.getElementById('hud-lines-stack')!;
+    this.lineTokenBtn = document.getElementById('hud-line-token-btn')!;
+    this.lineCount = document.getElementById('hud-line-count')!;
     this.trainToken = document.getElementById('hud-train-token')!;
     this.trainCount = document.getElementById('hud-train-count')!;
     this.carriageToken = document.getElementById('hud-carriage-token')!;
@@ -204,6 +217,17 @@ export class HUD {
       this.wsClient.sendAction({ type: 'resume' });
       this.wsClient.sendAction({ type: 'set_speed', payload: { tps: 75 } });
       this.updateSpeedButtons('fast');
+    });
+
+    this.lineTokenBtn.addEventListener('mousedown', (event) => {
+      if (this.dragHandler && !this.lineTokenBtn.classList.contains('disabled')) {
+        const snap = this.wsClient.getSnapshot();
+        const activeLines = snap ? (snap.lines || []).filter((l) => !l.removed) : [];
+        const activeIds = new Set(activeLines.map((l) => l.id));
+        let nextIdx = 0;
+        while (activeIds.has(nextIdx)) nextIdx++;
+        this.dragHandler.startDragNewLine(nextIdx, { x: event.clientX, y: event.clientY });
+      }
     });
 
     this.trainToken.addEventListener('mousedown', (event) => {
@@ -266,16 +290,19 @@ export class HUD {
 
     // 4. Resources Dock
     const res = (snap.resources || {}) as any;
+    const availableLinesCount = res.lines ?? res.Lines ?? 0;
     const trains = res.trains ?? res.Trains ?? 0;
     const carriages = res.carriages ?? res.Carriages ?? 0;
     const tunnels = res.tunnels ?? res.Tunnels ?? 0;
     const interchanges = res.interchanges ?? res.Interchanges ?? 0;
 
+    this.lineCount.innerText = String(availableLinesCount);
     this.trainCount.innerText = String(trains);
     this.carriageCount.innerText = String(carriages);
     this.tunnelCount.innerText = String(tunnels);
     this.interchangeCount.innerText = String(interchanges);
 
+    this.lineTokenBtn.classList.toggle('disabled', availableLinesCount <= 0);
     this.trainToken.classList.toggle('disabled', trains <= 0);
     this.carriageToken.classList.toggle('disabled', carriages <= 0);
     this.tunnelToken.classList.toggle('disabled', tunnels <= 0);
@@ -309,26 +336,38 @@ export class HUD {
   private renderLineStack(snap: StateSnapshot): void {
     this.linesStack.innerHTML = '';
     const res = (snap.resources || {}) as any;
-    const availableLines = res.lines ?? res.Lines ?? 0;
+    const availableLinesCount = res.lines ?? res.Lines ?? 0;
     const activeLines = (snap.lines || []).filter((l) => !l.removed);
-
     const activeIds = new Set(activeLines.map((l) => l.id));
-    const nextLineIndex = (() => {
-      for (let i = 0; i < (snap.lines || []).length + 8; i++) {
-        if (!activeIds.has(i)) return i;
-      }
-      return activeLines.length;
-    })();
 
-    for (let i = 0; i < availableLines; i++) {
-      const color = getLineColor(nextLineIndex + i);
+    // 1. Active Lines (used)
+    for (const line of activeLines) {
+      const color = getLineColor(line.id);
       const token = document.createElement('div');
-      token.className = 'hud-line-token';
+      token.className = 'hud-line-token used';
       token.style.setProperty('--line-color', color);
+      token.title = `Line ${line.id + 1} (${line.stations.length} stations)`;
+      this.linesStack.appendChild(token);
+    }
+
+    // 2. Available Lines (draggable)
+    let nextIdx = 0;
+    for (let i = 0; i < availableLinesCount; i++) {
+      while (activeIds.has(nextIdx)) {
+        nextIdx++;
+      }
+      const lineIndexToUse = nextIdx;
+      nextIdx++;
+
+      const color = getLineColor(lineIndexToUse);
+      const token = document.createElement('div');
+      token.className = 'hud-line-token available';
+      token.style.setProperty('--line-color', color);
+      token.title = `Available Line (Color: ${color})`;
 
       token.addEventListener('mousedown', (e) => {
         if (this.dragHandler) {
-          this.dragHandler.startDragNewLine(nextLineIndex + i, { x: e.clientX, y: e.clientY });
+          this.dragHandler.startDragNewLine(lineIndexToUse, { x: e.clientX, y: e.clientY });
         }
       });
 
