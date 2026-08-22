@@ -101,16 +101,21 @@ func expectedTrainWaitTime(state *GameState, stationID, lineID, direction int) f
 		return 1e6
 	}
 
-	var active []*Train
+	var activeBuf [16]*Train
+	activeCount := 0
 	for i := range state.Trains {
 		tr := &state.Trains[i]
 		if tr.Active && tr.LineID == lineID {
-			active = append(active, tr)
+			if activeCount < len(activeBuf) {
+				activeBuf[activeCount] = tr
+				activeCount++
+			}
 		}
 	}
-	if len(active) == 0 {
+	if activeCount == 0 {
 		return 1e6 // no active train on this line
 	}
+	active := activeBuf[:activeCount]
 
 	N := len(line.Stations)
 	targetIdx := -1
@@ -227,10 +232,11 @@ func FindOptimalRoute(g *NetworkGraph, state *GameState, fromID int, destKind St
 		return RouteInfo{NextLineID: -1}
 	}
 
-	dist := make(map[stateKey]float64)
-	prev := make(map[stateKey]stateKey)
+	dist := make(map[stateKey]float64, 32)
+	prev := make(map[stateKey]stateKey, 32)
 
-	h := &routeHeap{}
+	hBuf := make(routeHeap, 0, 32)
+	h := &hBuf
 	heap.Init(h)
 
 	startKey := stateKey{fromID, -1, 0}

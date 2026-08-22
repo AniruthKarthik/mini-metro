@@ -24,12 +24,12 @@ var stationWeights = map[StationKind]int{
 }
 
 // weightedRandomKind returns a StationKind sampled proportionally to stationWeights.
-func weightedRandomKind() StationKind {
+func weightedRandomKind(rng *rand.Rand) StationKind {
 	total := 0
 	for _, w := range stationWeights {
 		total += w
 	}
-	r := rand.Intn(total)
+	r := rng.Intn(total)
 	allKinds := []StationKind{Circle, Triangle, Square, Star, Pentagon, Gem, Sector, Cross, Drop, Oval}
 	for _, kind := range allKinds {
 		r -= stationWeights[kind]
@@ -50,8 +50,8 @@ func (s *Simulator) spawnStation() {
 
 	for attempt := 0; attempt < 100; attempt++ {
 		cand := Pos{
-			X: 12.0 + rand.Float64()*76.0,
-			Y: 12.0 + rand.Float64()*76.0,
+			X: 12.0 + s.RNG().Float64()*76.0,
+			Y: 12.0 + s.RNG().Float64()*76.0,
 		}
 
 		if PosInWater(cand, s.State.Rivers, s.State.WaterPolygons, 4.0) {
@@ -74,12 +74,12 @@ func (s *Simulator) spawnStation() {
 	}
 
 	if !found {
-		spawnPos = Pos{X: 15.0 + rand.Float64()*70.0, Y: 15.0 + rand.Float64()*70.0}
+		spawnPos = Pos{X: 15.0 + s.RNG().Float64()*70.0, Y: 15.0 + s.RNG().Float64()*70.0}
 	}
 
 	s.State.Stations = append(s.State.Stations, Station{
 		ID:                id,
-		Kind:              weightedRandomKind(),
+		Kind:              weightedRandomKind(s.RNG()),
 		Pos:               spawnPos,
 		Capacity:          defaultStationCapacity,
 		Alive:             true,

@@ -1,5 +1,9 @@
 package engine
 
+import (
+	"math/rand"
+)
+
 type MapConfig struct {
 	Name             string
 	MaxLines         int
@@ -99,7 +103,7 @@ func TokyoMap() MapConfig {
 }
 
 // NewSimulatorWithMap creates a Simulator configured for a specific MapConfig.
-func NewSimulatorWithMap(cfg MapConfig) *Simulator {
+func NewSimulatorWithMap(cfg MapConfig, seed ...uint64) *Simulator {
 	stations := make([]Station, len(cfg.InitialStations))
 	copy(stations, cfg.InitialStations)
 	for i := range stations {
@@ -108,6 +112,10 @@ func NewSimulatorWithMap(cfg MapConfig) *Simulator {
 		if stations[i].Capacity == 0 {
 			stations[i].Capacity = defaultStationCapacity
 		}
+	}
+	var sSeed uint64 = 42
+	if len(seed) > 0 {
+		sSeed = seed[0]
 	}
 	sim := &Simulator{
 		State: GameState{
@@ -123,6 +131,7 @@ func NewSimulatorWithMap(cfg MapConfig) *Simulator {
 			Alive:            true,
 			MaxTrainsPerLine: cfg.MaxTrainsPerLine,
 		},
+		rng: rand.New(rand.NewSource(int64(sSeed))),
 	}
 	if sim.State.MaxTrainsPerLine <= 0 {
 		sim.State.MaxTrainsPerLine = 4

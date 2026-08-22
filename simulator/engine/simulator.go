@@ -8,15 +8,31 @@ import (
 type Simulator struct {
 	State        GameState
 	graphVersion uint64 // tracks which TopologyVersion the cached Graph was built for
+	rng          *rand.Rand
 }
 
-func NewSimulatorWithWater(stations []Station, rivers []RiverSegment, polygons []WaterPolygon) *Simulator {
+func (s *Simulator) RNG() *rand.Rand {
+	if s.rng == nil {
+		s.rng = rand.New(rand.NewSource(42))
+	}
+	return s.rng
+}
+
+func (s *Simulator) SetSeed(seed uint64) {
+	s.rng = rand.New(rand.NewSource(int64(seed)))
+}
+
+func NewSimulatorWithWater(stations []Station, rivers []RiverSegment, polygons []WaterPolygon, seed ...uint64) *Simulator {
 	for i := range stations {
 		stations[i].Alive = true
 		stations[i].OvercrowdingTimer = -1
 		if stations[i].Capacity == 0 {
 			stations[i].Capacity = 6
 		}
+	}
+	var sSeed uint64 = 42
+	if len(seed) > 0 {
+		sSeed = seed[0]
 	}
 	sim := &Simulator{
 		State: GameState{
@@ -31,21 +47,22 @@ func NewSimulatorWithWater(stations []Station, rivers []RiverSegment, polygons [
 			Alive:            true,
 			MaxTrainsPerLine: 4,
 		},
+		rng: rand.New(rand.NewSource(int64(sSeed))),
 	}
 	sim.State.Scheduler.Schedule(rewardInterval(), EventReward)
 	sim.State.Scheduler.Schedule(initialSpawnInterval(), EventSpawnStation)
 	return sim
 }
 
-func NewSimulatorWithRivers(stations []Station, rivers []RiverSegment) *Simulator {
-	return NewSimulatorWithWater(stations, rivers, nil)
+func NewSimulatorWithRivers(stations []Station, rivers []RiverSegment, seed ...uint64) *Simulator {
+	return NewSimulatorWithWater(stations, rivers, nil, seed...)
 }
 
-func NewSimulator(stations []Station) *Simulator {
+func NewSimulator(stations []Station, seed ...uint64) *Simulator {
 	defaultRivers := []RiverSegment{
 		{From: Pos{X: 0, Y: 50}, To: Pos{X: 100, Y: 50}, Width: 4.0},
 	}
-	return NewSimulatorWithWater(stations, defaultRivers, nil)
+	return NewSimulatorWithWater(stations, defaultRivers, nil, seed...)
 }
 
 // rebuildGraphIfNeeded rebuilds the cached NetworkGraph whenever the network
@@ -90,7 +107,7 @@ func (s *Simulator) offerReward() {
 	s.State.Resources.Grant(RewardLine)
 	s.State.Resources.Grant(RewardTrain)
 	pool := []RewardType{RewardTrain, RewardCarriage, RewardTunnel, RewardInterchange}
-	rand.Shuffle(len(pool), func(i, j int) { pool[i], pool[j] = pool[j], pool[i] })
+	s.RNG().Shuffle(len(pool), func(i, j int) { pool[i], pool[j] = pool[j], pool[i] })
 	s.State.PendingRewardChoices = pool[:2]
 	s.State.Scheduler.Schedule(s.State.Tick+rewardInterval(), EventReward)
 }
@@ -705,4 +722,61 @@ func (s *Simulator) insertStation(a InsertStation) error {
 
 	s.State.Graph = BuildGraph(&s.State)
 	return nil
+}
+
+type SimInfo struct {
+	EventTriggered string // "none", "reward_offered", "station_spawned", "game_over"
+	StepTicks      int
+}
+
+// StepMacro applies an action and advances physics for up to duration seconds (in dt=0.1s sub-ticks)
+// or until an asynchronous event (station spawn, reward choice, game over) triggers.
+func (s *Simulator) StepMacro(action Action, duration float64) (obs Observation, reward float64, done bool, info SimInfo) {
+	info.EventTriggered = "none"
+	if action != nil {
+		_ = s.ApplyAction(action)
+	}
+
+	if duration <= 0 {
+		duration = 5.0
+	}
+	dt := 0.1
+	subTicks := int(duration / dt)
+	if subTicks <= 0 {
+		subTicks = 1
+	}
+
+	startStationCount := len(s.State.Stations)
+	initialScore := s.State.Score
+
+	for i := 0; i < subTicks; i++ {
+		if !s.State.Alive {
+			info.EventTriggered = "game_over"
+			break
+		}
+		if len(s.State.PendingRewardChoices) > 0 {
+			info.EventTriggered = "reward_offered"
+			break
+		}
+
+		s.Step(dt)
+		info.StepTicks++
+
+		if !s.State.Alive {
+			info.EventTriggered = "game_over"
+			break
+		}
+		if len(s.State.PendingRewardChoices) > 0 {
+			info.EventTriggered = "reward_offered"
+			break
+		}
+		if len(s.State.Stations) > startStationCount {
+			info.EventTriggered = "station_spawned"
+			break
+		}
+	}
+
+	stepReward := s.ComputeStepReward(s.State.Score - initialScore)
+
+	return s.Observation(), stepReward, !s.State.Alive, info
 }
