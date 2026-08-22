@@ -1,0 +1,430 @@
+@startuml
+namespace cmd {
+    namespace server {
+    }
+}
+namespace engine {
+    interface "Action"  {
+        - isAction() 
+
+    }
+    class "AddCarriage" << (S,Aquamarine) >> {
+        + TrainID int
+
+        - isAction() 
+
+    }
+    class "AddLine" << (S,Aquamarine) >> {
+        + Stations []int
+
+        - isAction() 
+
+    }
+    class "AddTrain" << (S,Aquamarine) >> {
+        + LineID int
+
+        - isAction() 
+
+    }
+    class "ChooseReward" << (S,Aquamarine) >> {
+        + Choice RewardType
+
+        - isAction() 
+
+    }
+    class "CloseLoop" << (S,Aquamarine) >> {
+        + LineID int
+        + UseTunnel bool
+
+        - isAction() 
+
+    }
+    class "EventScheduler" << (S,Aquamarine) >> {
+        + Events []ScheduledEvent
+
+        + Schedule(firAt uint64, kind EventKind) 
+        + Poll(currentTick uint64) []ScheduledEvent
+
+    }
+    class "ExtendLine" << (S,Aquamarine) >> {
+        + LineID int
+        + StationID int
+        + UseTunnel bool
+        + FromFront bool
+
+        - isAction() 
+
+    }
+    class "GameState" << (S,Aquamarine) >> {
+        + MapName string
+        + Stations []Station
+        + Lines []Line
+        + Trains []Train
+        + Rivers []RiverSegment
+        + WaterPolygons []WaterPolygon
+        + Resources ResourcePool
+        + Graph NetworkGraph
+        + Scheduler EventScheduler
+        + PendingRewardChoices []RewardType
+        + TopologyVersion uint64
+        + Score int
+        + Tick uint64
+        + Alive bool
+        + MaxTrainsPerLine int
+
+    }
+    class "InsertStation" << (S,Aquamarine) >> {
+        + LineID int
+        + StationID int
+        + Index int
+        + UseTunnel bool
+
+        - isAction() 
+
+    }
+    class "Line" << (S,Aquamarine) >> {
+        + ID int
+        + Stations []int
+        + Corners []Pos
+        + TunnelAt []bool
+        + IsLoop bool
+        + LoopTunnel bool
+        + Removed bool
+
+    }
+    class "MapConfig" << (S,Aquamarine) >> {
+        + Name string
+        + MaxLines int
+        + MaxTrainsPerLine int
+        + InitialResources ResourcePool
+        + Rivers []RiverSegment
+        + WaterPolygons []WaterPolygon
+        + InitialStations []Station
+
+    }
+    class "NetworkGraph" << (S,Aquamarine) >> {
+        + Adj <font color=blue>map</font>[int][]int
+        + EdgeLines <font color=blue>map</font>[[]int][]int
+
+        - addEdge(u int, v int, lineID int) 
+
+        + Neighbours(stationID int) []int
+        + LinesFor(a int, b int) []int
+
+    }
+    class "Observation" << (S,Aquamarine) >> {
+        + MapName string
+        + StationKinds []StationKind
+        + StationQueues []int
+        + StationCapacities []int
+        + StationTimers []float64
+        + TrainLineIDs []int
+        + TrainSegments []int
+        + TrainLoads []int
+        + Rivers []RiverSegment
+        + WaterPolygons []WaterPolygon
+        + Resources ResourcePool
+        + PendingRewardChoices []RewardType
+        + AdjacencyList <font color=blue>map</font>[int][]int
+        + Score int
+        + Tick uint64
+
+    }
+    class "OpenLoop" << (S,Aquamarine) >> {
+        + LineID int
+
+        - isAction() 
+
+    }
+    class "Passenger" << (S,Aquamarine) >> {
+        + ID int
+        + Origin int
+        + Destination StationKind
+        + SpawnTick uint64
+
+    }
+    class "Pos" << (S,Aquamarine) >> {
+        + X float64
+        + Y float64
+
+    }
+    class "RemoveLine" << (S,Aquamarine) >> {
+        + LineID int
+
+        - isAction() 
+
+    }
+    class "RepositionTrain" << (S,Aquamarine) >> {
+        + TrainID int
+        + Segment int
+        + Direction int
+
+        - isAction() 
+
+    }
+    class "ResourcePool" << (S,Aquamarine) >> {
+        + Lines int
+        + Trains int
+        + Tunnels int
+        + Carriages int
+        + Interchanges int
+
+        + Grant(r RewardType) 
+        + CanSpend(r RewardType) bool
+        + Spend(r RewardType) bool
+
+    }
+    class "RiverSegment" << (S,Aquamarine) >> {
+        + From Pos
+        + To Pos
+        + Width float64
+
+    }
+    class "RouteInfo" << (S,Aquamarine) >> {
+        + Reachable bool
+        + IsDirect bool
+        + Transfers int
+        + NextLineID int
+        + NextDirection int
+        + TotalCost float64
+
+    }
+    class "ScheduledEvent" << (S,Aquamarine) >> {
+        + FireAt uint64
+        + Kind EventKind
+
+    }
+    class "ShortenLine" << (S,Aquamarine) >> {
+        + LineID int
+        + FromFront bool
+
+        - isAction() 
+
+    }
+    class "Simulator" << (S,Aquamarine) >> {
+        - graphVersion uint64
+
+        + State GameState
+
+        - checkGameOver() 
+        - spawnPassengers(dt float64) 
+        - updateScore() 
+        - rebuildGraphIfNeeded() 
+        - offerReward() 
+        - addLine(a AddLine) error
+        - extendLine(a ExtendLine) error
+        - addTrain(a AddTrain) error
+        - addCarriage(a AddCarriage) error
+        - removeLine(a RemoveLine) error
+        - chooseReward(a ChooseReward) error
+        - upgradeInterchange(a UpgradeInterchange) error
+        - shortenLine(a ShortenLine) error
+        - closeLoop(a CloseLoop) error
+        - openLoop(a OpenLoop) error
+        - repositionTrain(a RepositionTrain) error
+        - insertStation(a InsertStation) error
+        - spawnStation() 
+        - moveTrains(dt float64) 
+        - boardAndAlight() 
+
+        + Observation() Observation
+        + CurrentSpawnRate() float64
+        + Step(dt float64) 
+        + ApplyAction(a Action) error
+
+    }
+    class "Station" << (S,Aquamarine) >> {
+        + ID int
+        + Kind StationKind
+        + Pos Pos
+        + Queue []Passenger
+        + Capacity int
+        + Alive bool
+        + IsInterchange bool
+        + OvercrowdingTimer float64
+
+    }
+    class "StationKind" << (S,Aquamarine) >> {
+        + String() string
+
+    }
+    class "Train" << (S,Aquamarine) >> {
+        + ID int
+        + LineID int
+        + Segment int
+        + Progress float64
+        + Direction int
+        + Capacity int
+        + Carriages int
+        + Passengers []Passenger
+        + Active bool
+        + JustArrived bool
+        + DwellRemaining float64
+
+    }
+    class "UpgradeInterchange" << (S,Aquamarine) >> {
+        + StationID int
+
+        - isAction() 
+
+    }
+    class "WaterPolygon" << (S,Aquamarine) >> {
+        + Vertices []Pos
+
+    }
+    class "engine.EventKind" << (T, #FF7700) >>  {
+    }
+    class "engine.RewardType" << (T, #FF7700) >>  {
+    }
+    class "engine.StationKind" << (T, #FF7700) >>  {
+    }
+    class "engine.routeHeap" << (T, #FF7700) >>  {
+    }
+    class "routeHeap" << (S,Aquamarine) >> {
+        + Len() int
+        + Less(i int, j int) bool
+        + Swap(i int, j int) 
+        + Push(x <font color=blue>interface</font>{}) 
+        + Pop() <font color=blue>interface</font>{}
+
+    }
+    class "routeNode" << (S,Aquamarine) >> {
+        - stationID int
+        - lineID int
+        - direction int
+        - g float64
+        - h float64
+        - f float64
+        - index int
+
+    }
+    class "stateKey" << (S,Aquamarine) >> {
+        - stationID int
+        - lineID int
+        - direction int
+
+    }
+}
+namespace server {
+    class "ActionEnvelope" << (S,Aquamarine) >> {
+        + Type string
+        + Payload json.RawMessage
+
+    }
+    class "Client" << (S,Aquamarine) >> {
+        - hub *Hub
+        - conn *websocket.Conn
+        - send <font color=blue>chan</font> []byte
+        - actionCh <font color=blue>chan</font> []byte
+
+        - readPump() 
+        - writePump() 
+
+    }
+    class "ErrorMessage" << (S,Aquamarine) >> {
+        + Type string
+        + Error string
+
+    }
+    class "Hub" << (S,Aquamarine) >> {
+        - mu sync.RWMutex
+        - clients <font color=blue>map</font>[*Client]<font color=blue>struct</font>{}
+        - broadcast <font color=blue>chan</font> []byte
+        - register <font color=blue>chan</font> *Client
+        - unregister <font color=blue>chan</font> *Client
+
+        + Run() 
+        + Broadcast(data []byte) 
+
+    }
+    class "LineDTO" << (S,Aquamarine) >> {
+        + ID int
+        + Stations []int
+        + TunnelAt []bool
+        + IsLoop bool
+        + LoopTunnel bool
+        + Removed bool
+
+    }
+    class "Server" << (S,Aquamarine) >> {
+        - sim *engine.Simulator
+        - hub *Hub
+        - actionCh <font color=blue>chan</font> []byte
+        - mu sync.Mutex
+        - paused bool
+        - tps int
+
+        - gameLoop() 
+        - broadcastState(paused bool) 
+        - buildSnapshot(paused bool) StateSnapshot
+        - actionDispatcher() 
+        - handleServerCommand(cmd string) 
+
+        + RegisterRoutes(mux *http.ServeMux) 
+        + Run() 
+
+    }
+    class "StateSnapshot" << (S,Aquamarine) >> {
+        + Tick uint64
+        + Score int
+        + Alive bool
+        + MapName string
+        + Paused bool
+        + TPS int
+        + Stations []StationDTO
+        + Lines []LineDTO
+        + Trains []TrainDTO
+        + Rivers []engine.RiverSegment
+        + WaterPolygons []engine.WaterPolygon
+        + Resources engine.ResourcePool
+        + PendingRewardChoices []engine.RewardType
+        + AdjacencyList <font color=blue>map</font>[int][]int
+
+    }
+    class "StationDTO" << (S,Aquamarine) >> {
+        + ID int
+        + Kind engine.StationKind
+        + KindName string
+        + X float64
+        + Y float64
+        + QueueSize int
+        + QueueDestinations []engine.StationKind
+        + Capacity int
+        + OvercrowdingTimer float64
+        + IsInterchange bool
+        + Alive bool
+
+    }
+    class "TrainDTO" << (S,Aquamarine) >> {
+        + ID int
+        + LineID int
+        + Segment int
+        + Progress float64
+        + Direction int
+        + Capacity int
+        + Carriages int
+        + Load int
+        + Passengers []engine.StationKind
+
+    }
+}
+"__builtin__.int" #.. "engine.EventKind"
+"__builtin__.int" #.. "engine.RewardType"
+"__builtin__.int" #.. "engine.StationKind"
+"engine.[]*routeNode" #.. "engine.routeHeap"
+
+"engine.Action" <|-- "engine.AddCarriage"
+"engine.Action" <|-- "engine.AddLine"
+"engine.Action" <|-- "engine.AddTrain"
+"engine.Action" <|-- "engine.ChooseReward"
+"engine.Action" <|-- "engine.CloseLoop"
+"engine.Action" <|-- "engine.ExtendLine"
+"engine.Action" <|-- "engine.InsertStation"
+"engine.Action" <|-- "engine.OpenLoop"
+"engine.Action" <|-- "engine.RemoveLine"
+"engine.Action" <|-- "engine.RepositionTrain"
+"engine.Action" <|-- "engine.ShortenLine"
+"engine.Action" <|-- "engine.UpgradeInterchange"
+
+
+@enduml
