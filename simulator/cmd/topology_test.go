@@ -14,6 +14,8 @@ func TestAdjacencyGraph(t *testing.T) {
 		{ID: 3, Kind: engine.Star, Pos: engine.Pos{X: 30, Y: 0}},
 	})
 
+	sim.State.Resources.Grant(engine.RewardLine)
+
 	_ = sim.ApplyAction(engine.AddLine{Stations: []int{0, 1, 2}})
 	_ = sim.ApplyAction(engine.AddLine{Stations: []int{2, 3}})
 

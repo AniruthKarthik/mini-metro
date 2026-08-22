@@ -5,13 +5,13 @@ import (
 )
 
 const (
-	baseSpawnRate     = 0.2
-	spawnAccelPerTick = 0.0001
-	maxSpawnRate      = 2.0
+	baseSpawnRate     = 0.04    // 1 passenger every ~25 seconds per station
+	spawnAccelPerTick = 0.000015 // gentle acceleration over game ticks
+	maxSpawnRate      = 0.4     // max spawn rate cap
 )
 
 // CurrentSpawnRate returns the passenger spawn rate (passengers/sec per station),
-// which accelerates over simulation time (s.State.Tick).
+// which accelerates gently over simulation time (s.State.Tick).
 func (s *Simulator) CurrentSpawnRate() float64 {
 	rate := baseSpawnRate + float64(s.State.Tick)*spawnAccelPerTick
 	if rate > maxSpawnRate {
@@ -21,8 +21,6 @@ func (s *Simulator) CurrentSpawnRate() float64 {
 }
 
 // destinationWeights defines passenger attraction demand for each station kind.
-// Rare/unique shapes (Star, Pentagon, Gem, etc.) have higher attraction demand
-// because fewer stations of those shapes exist on the map.
 var destinationWeights = map[StationKind]int{
 	Circle:   2,
 	Triangle: 3,
@@ -58,7 +56,6 @@ func sampleDestinationKind(state *GameState, originKind StationKind) StationKind
 		candidates = append(candidates, k)
 	}
 
-	// Fallback if no other active station kind exists on the map yet
 	if len(candidates) == 0 {
 		for k, w := range destinationWeights {
 			if k != originKind {
@@ -108,5 +105,3 @@ func (s *Simulator) spawnPassengers(dt float64) {
 		}
 	}
 }
-
-

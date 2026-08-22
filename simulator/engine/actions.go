@@ -14,9 +14,19 @@ type ExtendLine struct {
 	LineID    int
 	StationID int
 	UseTunnel bool // set true to spend a tunnel token for a long-distance segment
+	FromFront bool // set true to extend from the first station rather than the last
 }
 
 func (ExtendLine) isAction() {}
+
+type InsertStation struct {
+	LineID    int
+	StationID int
+	Index     int  // index in line.Stations where StationID will be inserted
+	UseTunnel bool
+}
+
+func (InsertStation) isAction() {}
 
 type AddTrain struct {
 	LineID int
@@ -40,14 +50,12 @@ type AddCarriage struct {
 
 func (AddCarriage) isAction() {}
 
-// UpgradeInterchange spends one interchange token to mark a station as an interchange hub.
 type UpgradeInterchange struct {
 	StationID int
 }
 
 func (UpgradeInterchange) isAction() {}
 
-// ShortenLine removes one station from a line endpoint. FromFront=true removes the first station; false removes the last.
 type ShortenLine struct {
 	LineID    int
 	FromFront bool
@@ -55,27 +63,23 @@ type ShortenLine struct {
 
 func (ShortenLine) isAction() {}
 
-// CloseLoop closes a line into a loop by connecting the last station back to the first.
 type CloseLoop struct {
 	LineID    int
-	UseTunnel bool // set true if the wrap-around segment crosses the tunnel distance threshold
+	UseTunnel bool
 }
 
 func (CloseLoop) isAction() {}
 
-// OpenLoop breaks a loop back into a linear line, refunding a tunnel token if the wrap-around used one.
 type OpenLoop struct {
 	LineID int
 }
 
 func (OpenLoop) isAction() {}
 
-// RepositionTrain moves an active train to a specific station segment on its line.
 type RepositionTrain struct {
 	TrainID   int
-	Segment   int // target station index on line.Stations
-	Direction int // optional: 1 or -1 (default 1 if 0)
+	Segment   int
+	Direction int
 }
 
 func (RepositionTrain) isAction() {}
-

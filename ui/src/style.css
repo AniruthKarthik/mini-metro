@@ -1,0 +1,460 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+:root {
+  color: #252525;
+  background: #f5f2ec;
+  font-family: "Avenir Next", Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  background: #f5f2ec;
+}
+
+button {
+  font: inherit;
+}
+
+#app {
+  position: relative;
+}
+
+#game-canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: default;
+  z-index: 1;
+}
+
+#hud-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 10;
+}
+
+#hud-overlay button,
+#hud-overlay .hud-resource-btn,
+#hud-overlay .hud-line-token,
+#hud-overlay .hud-modal-card {
+  pointer-events: auto;
+}
+
+.hud-top-left {
+  position: absolute;
+  top: 22px;
+  left: 24px;
+}
+
+.hud-icon-btn,
+.hud-speed-btn {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #252525;
+  cursor: pointer;
+}
+
+.hud-icon-btn:hover,
+.hud-speed-btn:hover {
+  background: rgba(37, 37, 37, 0.08);
+}
+
+.hud-top-right {
+  position: absolute;
+  top: 21px;
+  right: 26px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: #252525;
+}
+
+.hud-score {
+  min-width: 46px;
+  text-align: right;
+  font-size: 25px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.hud-day {
+  min-width: 38px;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: 1;
+}
+
+.hud-clock-container {
+  width: 36px;
+  height: 36px;
+}
+
+.hud-right-dock {
+  position: absolute;
+  top: 84px;
+  right: 27px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 22px;
+}
+
+.hud-speed-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.hud-speed-btn {
+  color: rgba(37, 37, 37, 0.56);
+}
+
+.hud-speed-btn.active {
+  color: #252525;
+}
+
+.hud-lines-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.hud-line-token {
+  width: 32px;
+  height: 14px;
+  border-radius: 7px;
+  background: var(--line-color);
+  transition: transform 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+}
+
+.hud-line-token.available {
+  cursor: grab;
+}
+
+.hud-line-token.available:hover {
+  transform: scale(1.18);
+  box-shadow: 0 2px 7px rgba(0, 0, 0, 0.3);
+}
+
+.hud-line-token.used {
+  width: 24px;
+  height: 10px;
+  opacity: 0.5;
+  cursor: pointer;
+}
+
+.hud-line-token.used:hover {
+  opacity: 0.95;
+  transform: scale(1.15);
+  box-shadow: 0 2px 6px rgba(230, 75, 60, 0.4);
+}
+
+.hud-left-dock {
+  position: absolute;
+  top: 118px;
+  left: 23px;
+  display: flex;
+  flex-direction: column;
+  gap: 19px;
+}
+
+.hud-resource-btn {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 34px;
+  color: #252525;
+  cursor: grab;
+}
+
+.hud-resource-btn:active {
+  cursor: grabbing;
+}
+
+.hud-resource-btn:hover:not(.disabled) {
+  transform: scale(1.06);
+}
+
+.hud-resource-btn.disabled {
+  opacity: 0.28;
+  cursor: default;
+}
+
+.hud-badge {
+  position: absolute;
+  right: -4px;
+  bottom: -7px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: #252525;
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  text-align: center;
+}
+
+.hud-modal-overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  width: 100vw;
+  height: 100vh;
+  background: rgba(245, 242, 236, 0.72);
+  z-index: 100;
+}
+
+.hud-modal-overlay.hidden {
+  display: none;
+}
+
+.hud-modal-card {
+  width: min(420px, calc(100vw - 44px));
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.95);
+  border: 2px solid #252525;
+  padding: 28px;
+  text-align: center;
+}
+
+.hud-modal-card h1,
+.hud-modal-card h2 {
+  margin-bottom: 8px;
+  color: #252525;
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.hud-modal-card p {
+  margin-bottom: 22px;
+  color: rgba(37, 37, 37, 0.64);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.hud-reward-options {
+  display: flex;
+  justify-content: center;
+  gap: 14px;
+}
+
+.hud-reward-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 13px;
+  width: 126px;
+  height: 116px;
+  border: 2px solid #252525;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #252525;
+  cursor: pointer;
+}
+
+.hud-reward-card:hover {
+  background: #f5f2ec;
+}
+
+.hud-reward-icon {
+  position: relative;
+  display: block;
+  width: 48px;
+  height: 34px;
+}
+
+.hud-reward-icon.line::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  top: 14px;
+  height: 8px;
+  border-radius: 8px;
+  background: #e64b3c;
+}
+
+.hud-reward-icon.train::before,
+.hud-reward-icon.carriage::before {
+  content: "";
+  position: absolute;
+  left: 4px;
+  right: 4px;
+  top: 9px;
+  height: 15px;
+  border: 3px solid #252525;
+  border-radius: 5px;
+}
+
+.hud-reward-icon.tunnel::before {
+  content: "";
+  position: absolute;
+  left: 7px;
+  top: 6px;
+  width: 30px;
+  height: 22px;
+  border: 4px solid #252525;
+  border-bottom: 0;
+  border-radius: 22px 22px 0 0;
+}
+
+.hud-reward-icon.interchange::before {
+  content: "";
+  position: absolute;
+  left: 11px;
+  top: 2px;
+  width: 26px;
+  height: 26px;
+  border: 4px solid #252525;
+  border-radius: 50%;
+}
+
+.hud-reward-icon.interchange::after {
+  content: "";
+  position: absolute;
+  left: 18px;
+  top: 9px;
+  width: 12px;
+  height: 12px;
+  border: 3px solid #252525;
+  background: #ffffff;
+}
+
+.hud-reward-title {
+  color: #252525;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.hud-modal-card.gameover {
+  border-color: #e64b3c;
+}
+
+.gameover-score-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-bottom: 24px;
+}
+
+.score-num {
+  color: #252525;
+  font-size: 44px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.score-lbl {
+  margin-top: 5px;
+  color: rgba(37, 37, 37, 0.62);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.hud-primary-btn {
+  min-width: 120px;
+  height: 40px;
+  border: 2px solid #252525;
+  border-radius: 8px;
+  background: #252525;
+  color: #ffffff;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.hud-primary-btn:hover {
+  background: #3a3a3a;
+}
+
+.hud-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  max-width: calc(100vw - 48px);
+  border-radius: 8px;
+  background: #e64b3c;
+  color: #ffffff;
+  padding: 10px 18px;
+  font-size: 14px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+.hud-toast.hidden {
+  opacity: 0;
+}
+
+@media (max-width: 640px) {
+  .hud-top-left {
+    top: 14px;
+    left: 14px;
+  }
+
+  .hud-top-right {
+    top: 14px;
+    right: 14px;
+    gap: 9px;
+  }
+
+  .hud-score {
+    min-width: 36px;
+    font-size: 21px;
+  }
+
+  .hud-day {
+    min-width: 32px;
+    font-size: 13px;
+  }
+
+  .hud-right-dock {
+    top: 70px;
+    right: 15px;
+    gap: 17px;
+  }
+
+  .hud-left-dock {
+    top: 92px;
+    left: 12px;
+    gap: 14px;
+  }
+
+  .hud-reward-options {
+    flex-wrap: wrap;
+  }
+}

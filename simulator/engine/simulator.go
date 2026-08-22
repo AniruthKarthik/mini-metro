@@ -33,7 +33,7 @@ func NewSimulatorWithWater(stations []Station, rivers []RiverSegment, polygons [
 		},
 	}
 	sim.State.Scheduler.Schedule(rewardInterval(), EventReward)
-	sim.State.Scheduler.Schedule(spawnInterval(), EventSpawnStation)
+	sim.State.Scheduler.Schedule(initialSpawnInterval(), EventSpawnStation)
 	return sim
 }
 
@@ -87,8 +87,9 @@ func (s *Simulator) Step(dt float64) {
 }
 
 func (s *Simulator) offerReward() {
+	s.State.Resources.Grant(RewardLine)
 	s.State.Resources.Grant(RewardTrain)
-	pool := []RewardType{RewardLine, RewardCarriage, RewardTunnel, RewardInterchange}
+	pool := []RewardType{RewardTrain, RewardCarriage, RewardTunnel, RewardInterchange}
 	rand.Shuffle(len(pool), func(i, j int) { pool[i], pool[j] = pool[j], pool[i] })
 	s.State.PendingRewardChoices = pool[:2]
 	s.State.Scheduler.Schedule(s.State.Tick+rewardInterval(), EventReward)
@@ -103,6 +104,8 @@ func (s *Simulator) ApplyAction(a Action) error {
 		return s.addLine(v)
 	case ExtendLine:
 		return s.extendLine(v)
+	case InsertStation:
+		return s.insertStation(v)
 	case AddTrain:
 		return s.addTrain(v)
 	case RemoveLine:
@@ -166,14 +169,47 @@ func (s *Simulator) addLine(a AddLine) error {
 		s.State.Resources.Spend(RewardTunnel)
 	}
 
-	id := len(s.State.Lines)
+	id := -1
+	for i, l := range s.State.Lines {
+		if l.Removed {
+			id = i
+			break
+		}
+	}
 
-	s.State.Lines = append(s.State.Lines, Line{
-		ID:       id,
-		Stations: append([]int(nil), a.Stations...),
-		TunnelAt: tunnelAt,
-		Removed:  false,
-	})
+	if id == -1 {
+		id = len(s.State.Lines)
+		s.State.Lines = append(s.State.Lines, Line{
+			ID:       id,
+			Stations: append([]int(nil), a.Stations...),
+			TunnelAt: tunnelAt,
+			Removed:  false,
+		})
+	} else {
+		s.State.Lines[id] = Line{
+			ID:       id,
+			Stations: append([]int(nil), a.Stations...),
+			TunnelAt: tunnelAt,
+			Removed:  false,
+		}
+	}
+
+	// Auto-spawn initial train if train resource pool has available trains
+	if s.State.Resources.CanSpend(RewardTrain) {
+		s.State.Resources.Spend(RewardTrain)
+		trID := len(s.State.Trains)
+		s.State.Trains = append(s.State.Trains, Train{
+			ID:          trID,
+			LineID:      id,
+			Segment:     0,
+			Progress:    0,
+			Direction:   1,
+			Capacity:    6,
+			Carriages:   1,
+			Active:      true,
+			JustArrived: true,
+		})
+	}
 
 	s.State.TopologyVersion++
 	return nil
@@ -198,30 +234,49 @@ func (s *Simulator) extendLine(a ExtendLine) error {
 		return errors.New("line is removed")
 	}
 
-	if len(line.Stations) > 0 && line.Stations[len(line.Stations)-1] == a.StationID {
-		return errors.New("cannot extend line to the same station")
+	for _, stID := range line.Stations {
+		if stID == a.StationID {
+			return errors.New("station is already on this line")
+		}
 	}
 
-	// check whether this segment crosses a river / water body
-	lastID := line.Stations[len(line.Stations)-1]
-	lastPos := s.State.Stations[lastID].Pos
+	var endpointID int
+	if a.FromFront {
+		endpointID = line.Stations[0]
+	} else {
+		endpointID = line.Stations[len(line.Stations)-1]
+	}
+
+	endpointPos := s.State.Stations[endpointID].Pos
 	newPos := s.State.Stations[a.StationID].Pos
-	needsTunnel := CrossesWater(lastPos, newPos, s.State.Rivers, s.State.WaterPolygons)
+	needsTunnel := CrossesWater(endpointPos, newPos, s.State.Rivers, s.State.WaterPolygons)
 
-	if needsTunnel && !a.UseTunnel {
-		return errors.New("tunnel token required for this segment")
-	}
-	if a.UseTunnel && !needsTunnel {
-		return errors.New("tunnel not required for this segment")
-	}
-	if a.UseTunnel {
+	if needsTunnel {
+		if !a.UseTunnel && s.State.Resources.CanSpend(RewardTunnel) {
+			a.UseTunnel = true
+		}
+		if !a.UseTunnel {
+			return errors.New("tunnel token required for this segment")
+		}
 		if !s.State.Resources.Spend(RewardTunnel) {
 			return errors.New("no tunnel tokens available")
 		}
 	}
 
-	line.Stations = append(line.Stations, a.StationID)
-	line.TunnelAt = append(line.TunnelAt, a.UseTunnel)
+	if a.FromFront {
+		line.Stations = append([]int{a.StationID}, line.Stations...)
+		line.TunnelAt = append([]bool{a.UseTunnel}, line.TunnelAt...)
+		for i := range s.State.Trains {
+			tr := &s.State.Trains[i]
+			if tr.LineID == a.LineID && tr.Active {
+				tr.Segment++
+			}
+		}
+	} else {
+		line.Stations = append(line.Stations, a.StationID)
+		line.TunnelAt = append(line.TunnelAt, a.UseTunnel)
+	}
+
 	s.State.TopologyVersion++
 	return nil
 }
@@ -338,19 +393,26 @@ func (s *Simulator) chooseReward(a ChooseReward) error {
 		return errors.New("no pending reward choice available")
 	}
 
-	valid := false
-	for _, choice := range s.State.PendingRewardChoices {
-		if choice == a.Choice {
-			valid = true
+	var chosenType RewardType = -1
+
+	// Check if a.Choice matches enum value directly
+	for _, c := range s.State.PendingRewardChoices {
+		if c == a.Choice {
+			chosenType = c
 			break
 		}
 	}
 
-	if !valid {
+	// Fallback check if a.Choice is index into PendingRewardChoices (0 <= index < len)
+	if chosenType == -1 && int(a.Choice) >= 0 && int(a.Choice) < len(s.State.PendingRewardChoices) {
+		chosenType = s.State.PendingRewardChoices[int(a.Choice)]
+	}
+
+	if chosenType == -1 {
 		return errors.New("invalid reward choice")
 	}
 
-	s.State.Resources.Grant(a.Choice)
+	s.State.Resources.Grant(chosenType)
 	s.State.PendingRewardChoices = nil
 	return nil
 }
@@ -460,17 +522,19 @@ func (s *Simulator) closeLoop(a CloseLoop) error {
 	firstPos := s.State.Stations[line.Stations[0]].Pos
 	lastPos := s.State.Stations[line.Stations[len(line.Stations)-1]].Pos
 	needsTunnel := CrossesWater(lastPos, firstPos, s.State.Rivers, s.State.WaterPolygons)
-	if needsTunnel && !a.UseTunnel {
-		return errors.New("tunnel token required for this wrap-around segment")
-	}
-	if a.UseTunnel && !needsTunnel {
-		return errors.New("tunnel not required for this wrap-around segment")
-	}
-	if a.UseTunnel {
+
+	if needsTunnel {
+		if !a.UseTunnel && s.State.Resources.CanSpend(RewardTunnel) {
+			a.UseTunnel = true
+		}
+		if !a.UseTunnel {
+			return errors.New("tunnel token required for this wrap-around segment")
+		}
 		if !s.State.Resources.Spend(RewardTunnel) {
 			return errors.New("no tunnel tokens available")
 		}
 	}
+
 	line.IsLoop = true
 	line.LoopTunnel = a.UseTunnel
 	s.State.TopologyVersion++
@@ -556,3 +620,89 @@ func (s *Simulator) repositionTrain(a RepositionTrain) error {
 	return nil
 }
 
+func (s *Simulator) insertStation(a InsertStation) error {
+	if a.LineID < 0 || a.LineID >= len(s.State.Lines) {
+		return errors.New("invalid line ID")
+	}
+	if a.StationID < 0 || a.StationID >= len(s.State.Stations) {
+		return errors.New("invalid station ID")
+	}
+	if !s.State.Stations[a.StationID].Alive {
+		return errors.New("station is not alive")
+	}
+
+	line := &s.State.Lines[a.LineID]
+	if line.Removed {
+		return errors.New("line is removed")
+	}
+
+	for _, stID := range line.Stations {
+		if stID == a.StationID {
+			return errors.New("station is already on this line")
+		}
+	}
+
+	n := len(line.Stations)
+	if a.Index < 1 || a.Index >= n {
+		a.Index = n - 1
+	}
+
+	stPrev := s.State.Stations[line.Stations[a.Index-1]].Pos
+	stNext := s.State.Stations[line.Stations[a.Index]].Pos
+	stNew := s.State.Stations[a.StationID].Pos
+
+	tunnelsNeeded := 0
+	cross1 := CrossesWater(stPrev, stNew, s.State.Rivers, s.State.WaterPolygons)
+	cross2 := CrossesWater(stNew, stNext, s.State.Rivers, s.State.WaterPolygons)
+	if cross1 {
+		tunnelsNeeded++
+	}
+	if cross2 {
+		tunnelsNeeded++
+	}
+
+	origTunnel := false
+	if a.Index-1 < len(line.TunnelAt) && line.TunnelAt[a.Index-1] {
+		origTunnel = true
+	}
+
+	netTunnels := tunnelsNeeded
+	if origTunnel {
+		netTunnels--
+	}
+
+	if netTunnels > 0 {
+		if !s.State.Resources.CanSpend(RewardTunnel) {
+			return errors.New("no tunnel tokens available")
+		}
+		for i := 0; i < netTunnels; i++ {
+			s.State.Resources.Spend(RewardTunnel)
+		}
+	} else if netTunnels < 0 {
+		s.State.Resources.Grant(RewardTunnel)
+	}
+
+	// Insert station ID into line.Stations at Index
+	line.Stations = append(line.Stations[:a.Index], append([]int{a.StationID}, line.Stations[a.Index:]...)...)
+
+	// Update tunnel flags
+	if a.Index-1 < len(line.TunnelAt) {
+		line.TunnelAt[a.Index-1] = cross1
+		line.TunnelAt = append(line.TunnelAt[:a.Index], append([]bool{cross2}, line.TunnelAt[a.Index:]...)...)
+	} else {
+		line.TunnelAt = append(line.TunnelAt, cross1)
+	}
+
+	// Update active trains running on this line
+	for i := range s.State.Trains {
+		tr := &s.State.Trains[i]
+		if tr.LineID == a.LineID && tr.Active {
+			if tr.Segment >= a.Index {
+				tr.Segment++
+			}
+		}
+	}
+
+	s.State.Graph = BuildGraph(&s.State)
+	return nil
+}

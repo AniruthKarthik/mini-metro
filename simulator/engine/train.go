@@ -2,13 +2,13 @@ package engine
 
 import "math"
 
-const trainSpeed = 0.5
-const dwellTime = 2.0 // seconds a train pauses at each station for boarding/alighting
+const trainSpeed = 1.8
+const dwellTime = 0.4 // seconds a train pauses at each station for boarding/alighting
 
 type Train struct {
 	ID             int
 	LineID         int
-	Segment        int // line between stations, explains position of the train in the series of lines
+	Segment        int // line between stations
 	Progress       float64
 	Direction      int
 	Capacity       int
@@ -19,24 +19,26 @@ type Train struct {
 	DwellRemaining float64
 }
 
-// velocityProfile returns a smooth acceleration/deceleration multiplier in [0.2, 1.0] based on segment progress p in [0, 1].
-func velocityProfile(p float64) float64 {
+// velocityProfile returns a smooth acceleration/deceleration multiplier in [0.35, 1.0] based on segment progress p in [0, 1].
+func velocityProfile(p float64, accelFromStart bool, decelAtEnd bool) float64 {
 	if p < 0.0 {
 		p = 0.0
 	}
 	if p > 1.0 {
 		p = 1.0
 	}
-	if p < 0.2 {
-		return 0.2 + 0.8*math.Sin((p/0.2)*(math.Pi/2.0))
+
+	mult := 1.0
+	if accelFromStart && p < 0.25 {
+		mult = math.Min(mult, 0.35+0.65*math.Sin((p/0.25)*(math.Pi/2.0)))
 	}
-	if p > 0.8 {
-		return 0.2 + 0.8*math.Sin(((1.0-p)/0.2)*(math.Pi/2.0))
+	if decelAtEnd && p > 0.75 {
+		mult = math.Min(mult, 0.35+0.65*math.Sin(((1.0-p)/0.25)*(math.Pi/2.0)))
 	}
-	return 1.0
+	return mult
 }
 
-// trackCornerMultiplier calculates the turn angle slowdown factor in [0.4, 1.0] at stationIndex on line.
+// trackCornerMultiplier calculates the turn angle slowdown factor in [0.6, 1.0] at stationIndex on line.
 func trackCornerMultiplier(state *GameState, line *Line, stationIndex int, dir int) float64 {
 	if line.Removed || len(line.Stations) < 3 {
 		return 1.0
@@ -54,7 +56,7 @@ func trackCornerMultiplier(state *GameState, line *Line, stationIndex int, dir i
 		prevSeg = stationIndex - dir
 		nextSeg = stationIndex + dir
 		if prevSeg < 0 || prevSeg >= N || nextSeg < 0 || nextSeg >= N {
-			return 0.5 // bounce endpoint turnaround slowdown
+			return 0.7
 		}
 	}
 
@@ -91,9 +93,9 @@ func trackCornerMultiplier(state *GameState, line *Line, stationIndex int, dir i
 		dot = -1.0
 	}
 
-	mult := 0.6 + 0.4*dot
-	if mult < 0.4 {
-		mult = 0.4
+	mult := 0.7 + 0.3*dot
+	if mult < 0.6 {
+		mult = 0.6
 	}
 	if mult > 1.0 {
 		mult = 1.0
@@ -127,7 +129,6 @@ func (s *Simulator) moveTrains(dt float64) {
 			continue
 		}
 
-		// Calculate segment distance and physics speed
 		st1ID := line.Stations[tr.Segment]
 		var nextSegIdx int
 		if line.IsLoop {
@@ -148,19 +149,22 @@ func (s *Simulator) moveTrains(dt float64) {
 			segLen = 10.0
 		}
 
-		prof := velocityProfile(tr.Progress)
+		// Terminal station or loop end-point acceleration/deceleration check
+		isStartTerminal := !line.IsLoop && (tr.Segment == 0 || tr.Segment == len(line.Stations)-1)
+		isNextTerminal := !line.IsLoop && (nextSegIdx == 0 || nextSegIdx == len(line.Stations)-1)
+
+		prof := velocityProfile(tr.Progress, isStartTerminal, isNextTerminal)
 		cornerMult := trackCornerMultiplier(&s.State, line, tr.Segment, tr.Direction)
 		effSpeed := trainSpeed * prof * cornerMult
 
 		progressDelta := (effSpeed * 10.0 / segLen) * dt
 		tr.Progress += progressDelta
 
-		// reached next station
+		// Reached next station
 		for tr.Progress >= 1.0 {
 			tr.Progress -= 1.0
 
 			if line.IsLoop {
-				// wrap around — no bounce, always one-way
 				n := len(line.Stations)
 				tr.Segment = (tr.Segment + tr.Direction + n) % n
 			} else {
@@ -168,7 +172,6 @@ func (s *Simulator) moveTrains(dt float64) {
 
 				last := len(line.Stations) - 1
 
-				// bounce at ends
 				if tr.Segment >= last {
 					tr.Segment = last
 					tr.Direction = -1
@@ -183,7 +186,6 @@ func (s *Simulator) moveTrains(dt float64) {
 			tr.JustArrived = true
 		}
 
-		// pause at station; interchange stations board/alight faster
 		if tr.JustArrived {
 			stID := line.Stations[tr.Segment]
 			if s.State.Stations[stID].IsInterchange {
@@ -244,7 +246,7 @@ func (s *Simulator) boardAndAlight() {
 		}
 		tr.Passengers = remainingPassengers
 
-		// Board — compute A* routes once per destKind per station visit, then filter by NextLineID & NextDirection.
+		// Board
 		totalCapacity := tr.Capacity
 		if tr.Carriages > 1 {
 			totalCapacity += (tr.Carriages - 1) * 6

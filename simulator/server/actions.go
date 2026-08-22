@@ -21,6 +21,7 @@ import (
 // {"type":"set_speed",       "payload":{"tps":60}}   // server-side control
 // {"type":"pause"}
 // {"type":"resume"}
+// {"type":"restart"}
 type ActionEnvelope struct {
 	Type    string          `json:"type"`
 	Payload json.RawMessage `json:"payload,omitempty"`
@@ -34,7 +35,7 @@ func ParseAction(raw []byte) (engine.Action, string, error) {
 
 	switch env.Type {
 	// ── server-side controls ─────────────────────────────────────
-	case "pause", "resume":
+	case "pause", "resume", "restart":
 		return nil, env.Type, nil
 
 	case "set_speed":
@@ -55,11 +56,24 @@ func ParseAction(raw []byte) (engine.Action, string, error) {
 			LineID    int  `json:"line_id"`
 			StationID int  `json:"station_id"`
 			UseTunnel bool `json:"use_tunnel"`
+			FromFront bool `json:"from_front"`
 		}
 		if err := json.Unmarshal(env.Payload, &p); err != nil {
 			return nil, "", err
 		}
-		return engine.ExtendLine{LineID: p.LineID, StationID: p.StationID, UseTunnel: p.UseTunnel}, "", nil
+		return engine.ExtendLine{LineID: p.LineID, StationID: p.StationID, UseTunnel: p.UseTunnel, FromFront: p.FromFront}, "", nil
+
+	case "insert_station":
+		var p struct {
+			LineID    int  `json:"line_id"`
+			StationID int  `json:"station_id"`
+			Index     int  `json:"index"`
+			UseTunnel bool `json:"use_tunnel"`
+		}
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return nil, "", err
+		}
+		return engine.InsertStation{LineID: p.LineID, StationID: p.StationID, Index: p.Index, UseTunnel: p.UseTunnel}, "", nil
 
 	case "add_train":
 		var p struct {
