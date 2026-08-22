@@ -399,6 +399,21 @@ func (s *Simulator) removeLine(a RemoveLine) error {
 				}
 				tr.Carriages = 1
 			}
+			// Offload any passengers aboard this train back to the station queue
+			if len(tr.Passengers) > 0 {
+				stIdx := tr.Segment
+				if stIdx < 0 || stIdx >= len(line.Stations) {
+					stIdx = 0
+				}
+				if stIdx < len(line.Stations) {
+					stID := line.Stations[stIdx]
+					if stID >= 0 && stID < len(s.State.Stations) {
+						st := &s.State.Stations[stID]
+						st.Queue = append(st.Queue, tr.Passengers...)
+					}
+				}
+				tr.Passengers = nil
+			}
 		}
 	}
 
@@ -699,13 +714,20 @@ func (s *Simulator) insertStation(a InsertStation) error {
 		s.State.Resources.Grant(RewardTunnel)
 	}
 
-	// Insert station ID into line.Stations at Index
-	line.Stations = append(line.Stations[:a.Index], append([]int{a.StationID}, line.Stations[a.Index:]...)...)
+	// Insert station ID into line.Stations at Index without buffer aliasing
+	newStations := make([]int, 0, len(line.Stations)+1)
+	newStations = append(newStations, line.Stations[:a.Index]...)
+	newStations = append(newStations, a.StationID)
+	newStations = append(newStations, line.Stations[a.Index:]...)
+	line.Stations = newStations
 
-	// Update tunnel flags
+	// Update tunnel flags without buffer aliasing
 	if a.Index-1 < len(line.TunnelAt) {
-		line.TunnelAt[a.Index-1] = cross1
-		line.TunnelAt = append(line.TunnelAt[:a.Index], append([]bool{cross2}, line.TunnelAt[a.Index:]...)...)
+		newTunnelAt := make([]bool, 0, len(line.TunnelAt)+1)
+		newTunnelAt = append(newTunnelAt, line.TunnelAt[:a.Index-1]...)
+		newTunnelAt = append(newTunnelAt, cross1, cross2)
+		newTunnelAt = append(newTunnelAt, line.TunnelAt[a.Index:]...)
+		line.TunnelAt = newTunnelAt
 	} else {
 		line.TunnelAt = append(line.TunnelAt, cross1)
 	}
