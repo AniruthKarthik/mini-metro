@@ -20,18 +20,20 @@ func (s *Simulator) CurrentSpawnRate() float64 {
 	return rate
 }
 
-// destinationWeights defines passenger attraction demand for each station kind.
+// destinationWeights defines relative passenger attraction for each station kind.
+// All shapes use equal weight: bottlenecks arise from station scarcity, not
+// inflated intrinsic demand (as per official Mini Metro mechanics).
 var destinationWeights = map[StationKind]int{
-	Circle:   2,
-	Triangle: 3,
-	Square:   4,
-	Star:     8,
-	Pentagon: 8,
-	Gem:      8,
-	Sector:   8,
-	Cross:    8,
-	Drop:     8,
-	Oval:     8,
+	Circle:   1,
+	Triangle: 1,
+	Square:   1,
+	Star:     1,
+	Pentagon: 1,
+	Gem:      1,
+	Sector:   1,
+	Cross:    1,
+	Drop:     1,
+	Oval:     1,
 }
 
 // sampleDestinationKind selects a destination StationKind for a passenger spawning at originKind,
