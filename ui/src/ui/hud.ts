@@ -387,7 +387,7 @@ export class HUD {
 
   private showRewardModal(choices: RewardType[]): void {
     this.rewardOptions.innerHTML = '';
-    choices.forEach((choice) => {
+    choices.forEach((choice, index) => {
       const card = document.createElement('div');
       card.className = 'hud-reward-card';
 
@@ -400,7 +400,7 @@ export class HUD {
       card.addEventListener('click', () => {
         this.wsClient.sendAction({
           type: 'choose_reward',
-          payload: { choice: choice },
+          payload: { choice: index },
         });
         this.rewardModal.classList.add('hidden');
       });

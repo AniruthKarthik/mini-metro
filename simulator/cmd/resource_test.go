@@ -73,3 +73,36 @@ func TestResourceReturnOnRemoval(t *testing.T) {
 		t.Errorf("expected 3 lines after line removal refund, got %d", sim.State.Resources.Lines)
 	}
 }
+
+func TestChooseRewardByPositionalIndexAndEnum(t *testing.T) {
+	sim := engine.NewSimulator([]engine.Station{
+		{ID: 0, Kind: engine.Circle, Pos: engine.Pos{X: 0, Y: 0}},
+	})
+
+	// Set pending choices: [RewardTunnel (2), RewardCarriage (3)]
+	sim.State.PendingRewardChoices = []engine.RewardType{engine.RewardTunnel, engine.RewardCarriage}
+
+	// 1. Selecting by positional index 1 (RewardCarriage)
+	initialCarriages := sim.State.Resources.Carriages
+	err := sim.ApplyAction(engine.ChooseReward{Choice: 1})
+	if err != nil {
+		t.Fatalf("unexpected error choosing reward by index: %v", err)
+	}
+	if sim.State.Resources.Carriages != initialCarriages+1 {
+		t.Errorf("expected carriage count to increase by 1")
+	}
+
+	// 2. Set pending choices again: [RewardLine (0), RewardTunnel (2)]
+	sim.State.PendingRewardChoices = []engine.RewardType{engine.RewardLine, engine.RewardTunnel}
+	initialTunnels := sim.State.Resources.Tunnels
+
+	// Selecting by RewardType enum value 2 (RewardTunnel)
+	err = sim.ApplyAction(engine.ChooseReward{Choice: engine.RewardType(2)})
+	if err != nil {
+		t.Fatalf("unexpected error choosing reward by enum value: %v", err)
+	}
+	if sim.State.Resources.Tunnels != initialTunnels+2 {
+		t.Errorf("expected tunnel count to increase by 2 (2 tunnels per grant)")
+	}
+}
+
