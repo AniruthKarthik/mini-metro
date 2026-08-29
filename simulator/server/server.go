@@ -276,6 +276,9 @@ func (s *Server) handleServerCommand(cmd string) {
 	case cmd == "restart":
 		s.sim = engine.NewSimulatorWithMap(engine.LondonMap())
 		s.paused = false
+		for len(s.actionCh) > 0 {
+			<-s.actionCh
+		}
 		log.Println("🔄 Simulation restarted cleanly with London map")
 	case strings.HasPrefix(cmd, "set_speed:"):
 		// payload is a raw JSON object {"tps":60}

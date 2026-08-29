@@ -106,3 +106,31 @@ func TestChooseRewardByPositionalIndexAndEnum(t *testing.T) {
 	}
 }
 
+func TestTrainSlotReuseOnLineRemovalAndAdd(t *testing.T) {
+	sim := engine.NewSimulator([]engine.Station{
+		{ID: 0, Kind: engine.Circle, Pos: engine.Pos{X: 0, Y: 0}},
+		{ID: 1, Kind: engine.Triangle, Pos: engine.Pos{X: 10, Y: 0}},
+	})
+
+	// Add line 0 (spawns train ID 0)
+	_ = sim.ApplyAction(engine.AddLine{Stations: []int{0, 1}})
+	if len(sim.State.Trains) != 1 {
+		t.Fatalf("expected 1 train, got %d", len(sim.State.Trains))
+	}
+
+	// Remove line 0 (train 0 becomes inactive)
+	_ = sim.ApplyAction(engine.RemoveLine{LineID: 0})
+	if sim.State.Trains[0].Active {
+		t.Fatalf("expected train 0 to be inactive after line removal")
+	}
+
+	// Add line 0 again (should reuse train ID 0 slot instead of appending a new train)
+	_ = sim.ApplyAction(engine.AddLine{Stations: []int{0, 1}})
+	if len(sim.State.Trains) != 1 {
+		t.Errorf("expected train slot reuse (train count 1), got %d trains", len(sim.State.Trains))
+	}
+	if !sim.State.Trains[0].Active {
+		t.Errorf("expected train 0 to be reactivated")
+	}
+}
+

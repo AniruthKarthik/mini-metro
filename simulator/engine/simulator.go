@@ -215,18 +215,7 @@ func (s *Simulator) addLine(a AddLine) error {
 	// Auto-spawn initial train if train resource pool has available trains
 	if s.State.Resources.CanSpend(RewardTrain) {
 		s.State.Resources.Spend(RewardTrain)
-		trID := len(s.State.Trains)
-		s.State.Trains = append(s.State.Trains, Train{
-			ID:          trID,
-			LineID:      id,
-			Segment:     0,
-			Progress:    0,
-			Direction:   1,
-			Capacity:    6,
-			Carriages:   1,
-			Active:      true,
-			JustArrived: true,
-		})
+		s.spawnOrCreateTrain(id)
 	}
 
 	s.State.TopologyVersion++
@@ -299,6 +288,41 @@ func (s *Simulator) extendLine(a ExtendLine) error {
 	return nil
 }
 
+func (s *Simulator) spawnOrCreateTrain(lineID int) {
+	for i := range s.State.Trains {
+		tr := &s.State.Trains[i]
+		if !tr.Active {
+			tr.LineID = lineID
+			tr.Segment = 0
+			tr.Progress = 0
+			tr.Direction = 1
+			tr.Capacity = 6
+			tr.Carriages = 1
+			tr.Passengers = nil
+			tr.Active = true
+			tr.JustArrived = true
+			tr.DwellRemaining = 0
+			tr.ServiceElapsed = 0
+			return
+		}
+	}
+
+	trID := len(s.State.Trains)
+	s.State.Trains = append(s.State.Trains, Train{
+		ID:             trID,
+		LineID:         lineID,
+		Segment:        0,
+		Progress:       0,
+		Direction:      1,
+		Capacity:       6,
+		Carriages:      1,
+		Active:         true,
+		JustArrived:    true,
+		DwellRemaining: 0,
+		ServiceElapsed: 0,
+	})
+}
+
 func (s *Simulator) addTrain(a AddTrain) error {
 	if a.LineID < 0 || a.LineID >= len(s.State.Lines) {
 		return errors.New("invalid line ID")
@@ -328,20 +352,7 @@ func (s *Simulator) addTrain(a AddTrain) error {
 		return errors.New("no trains available")
 	}
 
-	id := len(s.State.Trains)
-
-	s.State.Trains = append(s.State.Trains, Train{
-		ID:          id,
-		LineID:      a.LineID,
-		Segment:     0,
-		Progress:    0,
-		Direction:   1,
-		Capacity:    6,
-		Carriages:   1,
-		Active:      true,
-		JustArrived: true,
-	})
-
+	s.spawnOrCreateTrain(a.LineID)
 	return nil
 }
 

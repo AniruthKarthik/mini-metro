@@ -217,8 +217,8 @@ func (s *Simulator) WriteVectorizedObservation(outNodes []float32, outEdges []in
 func (s *Simulator) VectorizedObservation() VectorizedObservation {
 	N := len(s.State.Stations)
 	nodes := make([]float32, N*NodeFeatureDim)
-	edges := make([]int32, 200*2)
-	edgeAttrs := make([]float32, 200*EdgeFeatureDim)
+	edges := make([]int32, 600*2)
+	edgeAttrs := make([]float32, 600*EdgeFeatureDim)
 	globals := make([]float32, GlobalFeatureDim)
 
 	numNodes, numEdges := s.WriteVectorizedObservation(nodes, edges, edgeAttrs, globals)

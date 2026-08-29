@@ -119,6 +119,11 @@ func GetObservation(handle C.uintptr_t, outNodes *C.float, outEdges *C.int32_t, 
 	sim.WriteVectorizedObservation(nodesBuf, edgesBuf, edgeAttrsBuf, globalsBuf)
 }
 
+var (
+	boolMaskBuf []bool
+	boolMaskMu  sync.Mutex
+)
+
 //export GetActionMask
 func GetActionMask(handle C.uintptr_t, outMask *C.uint8_t) {
 	sim := getSim(uintptr(handle))
@@ -128,7 +133,12 @@ func GetActionMask(handle C.uintptr_t, outMask *C.uint8_t) {
 
 	maskSize := engine.MaxActionSpaceSize()
 	maskSlice := unsafe.Slice((*uint8)(unsafe.Pointer(outMask)), maskSize)
-	boolMask := make([]bool, maskSize)
+
+	boolMaskMu.Lock()
+	if len(boolMaskBuf) < maskSize {
+		boolMaskBuf = make([]bool, maskSize)
+	}
+	boolMask := boolMaskBuf[:maskSize]
 	sim.GetActionMask(boolMask)
 
 	for i := 0; i < maskSize; i++ {
@@ -138,6 +148,7 @@ func GetActionMask(handle C.uintptr_t, outMask *C.uint8_t) {
 			maskSlice[i] = 0
 		}
 	}
+	boolMaskMu.Unlock()
 }
 
 func main() {}
