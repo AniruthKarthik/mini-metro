@@ -1,5 +1,7 @@
 package engine
 
+import "math"
+
 type Observation struct {
 	MapName              string
 	StationKinds         []StationKind
@@ -197,7 +199,8 @@ func (s *Simulator) WriteVectorizedObservation(outNodes []float32, outEdges []in
 		outGlobals[2] = float32(s.State.Resources.Carriages)
 		outGlobals[3] = float32(s.State.Resources.Tunnels)
 		outGlobals[4] = float32(s.State.Resources.Interchanges)
-		outGlobals[5] = float32(s.State.Tick%rewardInterval()) / float32(rewardInterval())
+		weekSeconds := float64(rewardInterval()) / 30.0 // canonical seconds per week (140s)
+		outGlobals[5] = float32(math.Mod(s.State.GameTimeSeconds, weekSeconds) / weekSeconds)
 		outGlobals[6] = float32(s.State.Score)
 		activeTrains := 0
 		for _, tr := range s.State.Trains {
