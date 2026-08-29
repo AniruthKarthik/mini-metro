@@ -662,7 +662,12 @@ export class DragHandler {
           });
         }
       } else if (source.type === 'add_carriage') {
-        const train = trains.length > 0 ? trains[0] : null;
+        const line = targetStId !== null
+          ? lines.find((l) => !l.removed && l.stations.includes(targetStId))
+          : this.findLineNear(currentPos, lines, stations);
+        const train = line
+          ? trains.find((tr) => tr.line_id === line.id)
+          : null;
         if (train) {
           this.wsClient.sendAction({
             type: 'add_carriage',

@@ -6,6 +6,18 @@ import type { SharedEdgeMap } from './lines';
 import { drawPassengerShape, DARK_CHARCOAL, WHITE_FILL } from './shapes';
 
 export class TrainInterpolator {
+  private previousById: Map<number, TrainDTO> = new Map();
+  private currentById: Map<number, TrainDTO> = new Map();
+  private previousAt = 0;
+  private currentAt = 0;
+
+  public setSnapshot(trains: TrainDTO[], now: number = performance.now()): void {
+    this.previousById = this.currentById;
+    this.previousAt = this.currentAt || now;
+    this.currentById = new Map((trains || []).map((train) => [train.id, train]));
+    this.currentAt = now;
+  }
+
   public renderTrains(
     ctx: CanvasRenderingContext2D,
     viewport: Viewport,
@@ -27,7 +39,11 @@ export class TrainInterpolator {
 
     const sharedEdgeMap = buildSharedEdgeMap(lines);
 
-    for (const tr of trains) {
+    const elapsed = this.currentAt > this.previousAt ? this.currentAt - this.previousAt : 0;
+    const alpha = elapsed > 0 ? Math.max(0, Math.min(1, (performance.now() - this.currentAt) / elapsed)) : 1;
+
+    for (const rawTrain of trains) {
+      const tr = this.interpolateTrain(rawTrain, alpha);
       const line = lineMap.get(tr.line_id);
       if (!line || line.removed || !line.stations || line.stations.length < 2) {
         continue;
@@ -44,7 +60,7 @@ export class TrainInterpolator {
       renderTrainCar(ctx, trainPos.pos, trainPos.angle, color, locoPassengers);
 
       if (tr.carriages > 1) {
-        const carriageCap = 4;
+        const carriageCap = 6;
         for (let c = 1; c < tr.carriages; c++) {
           const trailDist = c * 26;
           const trainX = getX(trainPos.pos);
@@ -61,6 +77,24 @@ export class TrainInterpolator {
     }
 
     ctx.restore();
+  }
+
+  private interpolateTrain(current: TrainDTO, alpha: number): TrainDTO {
+    const previous = this.previousById.get(current.id);
+    if (
+      !previous ||
+      previous.line_id !== current.line_id ||
+      previous.segment !== current.segment ||
+      previous.direction !== current.direction ||
+      Math.abs(current.progress - previous.progress) > 0.5
+    ) {
+      return current;
+    }
+
+    return {
+      ...current,
+      progress: previous.progress + (current.progress - previous.progress) * alpha,
+    };
   }
 }
 

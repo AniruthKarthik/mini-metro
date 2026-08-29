@@ -85,8 +85,9 @@ function renderOvercrowdingTimer(
   ctx.lineWidth = 3;
   ctx.stroke();
 
-  const maxTimer = 20.0;
-  const progress = Math.max(0, Math.min(1, 1 - timerValue / maxTimer));
+  const maxTimer = 47.0;
+  const visualCountdown = 45.0;
+  const progress = Math.max(0, Math.min(1, 1 - (timerValue - (maxTimer - visualCountdown)) / visualCountdown));
   const startAngle = -Math.PI / 2;
   const endAngle = startAngle + progress * Math.PI * 2;
 

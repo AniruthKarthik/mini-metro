@@ -4,6 +4,7 @@ import { GameWSClient } from '../ws/client';
 import { getLineColor } from '../renderer/lines';
 
 const DAYS = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
+const TICKS_PER_DAY = 600;
 
 const REWARD_LABELS: Record<number, string> = {
   0: 'Line',
@@ -272,11 +273,11 @@ export class HUD {
     // 1. Score
     this.scoreText.innerText = String(snap.score);
 
-    // 2. Day & Clock (1 day = 100 ticks)
-    const dayIdx = Math.floor(snap.tick / 100) % 7;
+    // 2. Day & Clock
+    const dayIdx = Math.floor(snap.tick / TICKS_PER_DAY) % 7;
     this.dayText.innerText = DAYS[dayIdx];
 
-    const clockAngle = ((snap.tick % 100) / 100) * 360;
+    const clockAngle = ((snap.tick % TICKS_PER_DAY) / TICKS_PER_DAY) * 360;
     this.clockHand.setAttribute('transform', `rotate(${clockAngle} 18 18)`);
 
     // 3. Speed status
