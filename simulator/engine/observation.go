@@ -5,7 +5,7 @@ type Observation struct {
 	StationKinds         []StationKind
 	StationQueues        []int
 	StationCapacities    []int     // max queue per station
-	StationTimers        []float64 // overcrowding countdown per station; -1 = not active
+	StationTimers        []float64 // overcrowding countdown seconds per station; -1 = not active
 	TrainLineIDs         []int
 	TrainSegments        []int
 	TrainLoads           []int
@@ -113,10 +113,7 @@ func (s *Simulator) WriteVectorizedObservation(outNodes []float32, outEdges []in
 		if st.OvercrowdingTimer < 0 {
 			outNodes[base+22] = 0.0
 		} else {
-			outNodes[base+22] = float32(1.0 - st.OvercrowdingTimer/overcrowdingGrace)
-			if outNodes[base+22] < 0 {
-				outNodes[base+22] = 0.0
-			}
+			outNodes[base+22] = float32(OvercrowdingProgress(st))
 		}
 
 		degree := len(s.State.Graph.Neighbours(st.ID))

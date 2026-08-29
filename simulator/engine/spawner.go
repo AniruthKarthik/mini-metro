@@ -4,10 +4,10 @@ import (
 	"math/rand"
 )
 
-// spawnInterval returns how many ticks between automatic station spawns.
-func spawnInterval() uint64 { return 450 }
+// spawnInterval returns how many fixed 30 Hz ticks between automatic station spawns.
+func spawnInterval() uint64 { return 900 }
 
-func initialSpawnInterval() uint64 { return 450 }
+func initialSpawnInterval() uint64 { return 900 }
 
 // stationWeights is the relative spawn probability for each StationKind.
 var stationWeights = map[StationKind]int{

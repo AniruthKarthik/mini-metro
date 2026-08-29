@@ -5,15 +5,15 @@ import (
 )
 
 const (
-	baseSpawnRate     = 0.04    // 1 passenger every ~25 seconds per station
-	spawnAccelPerTick = 0.000015 // gentle acceleration over game ticks
-	maxSpawnRate      = 0.4     // max spawn rate cap
+	baseSpawnRate       = 0.04    // 1 passenger every ~25 seconds per station
+	spawnAccelPerSecond = 0.00045 // equivalent to the old 30 TPS tick ramp
+	maxSpawnRate        = 0.4     // max spawn rate cap
 )
 
 // CurrentSpawnRate returns the passenger spawn rate (passengers/sec per station),
-// which accelerates gently over simulation time (s.State.Tick).
+// which accelerates gently over elapsed game time.
 func (s *Simulator) CurrentSpawnRate() float64 {
-	rate := baseSpawnRate + float64(s.State.Tick)*spawnAccelPerTick
+	rate := baseSpawnRate + s.State.GameTimeSeconds*spawnAccelPerSecond
 	if rate > maxSpawnRate {
 		return maxSpawnRate
 	}

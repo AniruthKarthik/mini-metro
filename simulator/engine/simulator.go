@@ -89,6 +89,7 @@ func (s *Simulator) Step(dt float64) {
 	s.moveTrains(dt)
 	s.boardAndAlight()
 	s.updateScore()
+	s.State.GameTimeSeconds += dt
 	s.State.Tick++
 
 	for _, ev := range s.State.Scheduler.Poll(s.State.Tick) {
@@ -100,7 +101,7 @@ func (s *Simulator) Step(dt float64) {
 		}
 	}
 
-	s.checkGameOver()
+	s.checkGameOver(dt)
 }
 
 func (s *Simulator) offerReward() {
@@ -751,7 +752,7 @@ type SimInfo struct {
 	StepTicks      int
 }
 
-// StepMacro applies an action and advances physics for up to duration seconds (in dt=0.1s sub-ticks)
+// StepMacro applies an action and advances physics for up to duration seconds (in fixed 30 Hz sub-ticks)
 // or until an asynchronous event (station spawn, reward choice, game over) triggers.
 func (s *Simulator) StepMacro(action Action, duration float64) (obs Observation, reward float64, done bool, info SimInfo) {
 	info.EventTriggered = "none"
@@ -762,7 +763,7 @@ func (s *Simulator) StepMacro(action Action, duration float64) (obs Observation,
 	if duration <= 0 {
 		duration = 5.0
 	}
-	dt := 0.1
+	dt := 1.0 / 30.0
 	subTicks := int(duration / dt)
 	if subTicks <= 0 {
 		subTicks = 1

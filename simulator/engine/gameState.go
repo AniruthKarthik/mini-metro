@@ -14,7 +14,7 @@ type GameState struct {
 	TopologyVersion      uint64
 	Score                int
 	Tick                 uint64
+	GameTimeSeconds      float64
 	Alive                bool
 	MaxTrainsPerLine     int // max trains allowed per line (default 4)
 }
-
