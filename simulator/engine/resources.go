@@ -10,8 +10,8 @@ type ResourcePool struct {
 
 func NewResourcePool() ResourcePool {
 	return ResourcePool{
-		Lines:     1,
-		Trains:    1,
+		Lines:     3,
+		Trains:    3,
 		Tunnels:   0,
 		Carriages: 0,
 	}

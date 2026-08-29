@@ -8,11 +8,11 @@ import (
 
 func TestResourcePool(t *testing.T) {
 	pool := engine.NewResourcePool()
-	if pool.Lines != 1 {
-		t.Errorf("expected 1 line, got %d", pool.Lines)
+	if pool.Lines != 3 {
+		t.Errorf("expected 3 lines, got %d", pool.Lines)
 	}
-	if pool.Trains != 1 {
-		t.Errorf("expected 1 train, got %d", pool.Trains)
+	if pool.Trains != 3 {
+		t.Errorf("expected 3 trains, got %d", pool.Trains)
 	}
 	if pool.Tunnels != 0 {
 		t.Errorf("expected 0 tunnels, got %d", pool.Tunnels)
@@ -24,13 +24,13 @@ func TestResourcePool(t *testing.T) {
 	if !pool.Spend(engine.RewardLine) {
 		t.Errorf("failed to spend line")
 	}
-	if pool.Lines != 0 {
-		t.Errorf("expected 0 lines remaining, got %d", pool.Lines)
+	if pool.Lines != 2 {
+		t.Errorf("expected 2 lines remaining, got %d", pool.Lines)
 	}
 
 	pool.Grant(engine.RewardLine)
-	if pool.Lines != 1 {
-		t.Errorf("expected 1 line after grant, got %d", pool.Lines)
+	if pool.Lines != 3 {
+		t.Errorf("expected 3 lines after grant, got %d", pool.Lines)
 	}
 }
 
@@ -64,12 +64,12 @@ func TestResourceReturnOnRemoval(t *testing.T) {
 	})
 
 	_ = sim.ApplyAction(engine.AddLine{Stations: []int{0, 1}})
-	if sim.State.Resources.Lines != 0 {
-		t.Errorf("expected 0 lines remaining before removal, got %d", sim.State.Resources.Lines)
+	if sim.State.Resources.Lines != 2 {
+		t.Errorf("expected 2 lines remaining before removal, got %d", sim.State.Resources.Lines)
 	}
 
 	_ = sim.ApplyAction(engine.RemoveLine{LineID: 0})
-	if sim.State.Resources.Lines != 1 {
-		t.Errorf("expected 1 line after line removal refund, got %d", sim.State.Resources.Lines)
+	if sim.State.Resources.Lines != 3 {
+		t.Errorf("expected 3 lines after line removal refund, got %d", sim.State.Resources.Lines)
 	}
 }

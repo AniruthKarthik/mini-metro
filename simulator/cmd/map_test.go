@@ -47,9 +47,9 @@ func TestLondonMapThamesCrossing(t *testing.T) {
 	// Add line connecting station 0 (20,25) to station 1 (50,60) which crosses Thames
 	err := simLondon.ApplyAction(engine.AddLine{Stations: []int{0, 1}})
 	if err != nil {
-		t.Fatalf("expected AddLine across Thames to succeed using London's initial tunnel token, got: %v", err)
+		t.Fatalf("expected AddLine across Thames to succeed using London's initial tunnel budget, got: %v", err)
 	}
-	if simLondon.State.Resources.Tunnels != 0 {
-		t.Errorf("expected London tunnel token to be spent on Thames river crossing")
+	if simLondon.State.Resources.Tunnels != 2 {
+		t.Errorf("expected one London tunnel token to be spent on Thames river crossing, got %d", simLondon.State.Resources.Tunnels)
 	}
 }

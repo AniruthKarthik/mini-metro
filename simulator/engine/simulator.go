@@ -105,9 +105,8 @@ func (s *Simulator) Step(dt float64) {
 }
 
 func (s *Simulator) offerReward() {
-	s.State.Resources.Grant(RewardLine)
 	s.State.Resources.Grant(RewardTrain)
-	pool := []RewardType{RewardTrain, RewardCarriage, RewardTunnel, RewardInterchange}
+	pool := []RewardType{RewardLine, RewardCarriage, RewardTunnel, RewardInterchange}
 	s.RNG().Shuffle(len(pool), func(i, j int) { pool[i], pool[j] = pool[j], pool[i] })
 	s.State.PendingRewardChoices = pool[:2]
 	s.State.Scheduler.Schedule(s.State.Tick+rewardInterval(), EventReward)
@@ -445,7 +444,12 @@ func (s *Simulator) chooseReward(a ChooseReward) error {
 		return errors.New("invalid reward choice")
 	}
 
-	s.State.Resources.Grant(chosenType)
+	if chosenType == RewardTunnel {
+		s.State.Resources.Grant(RewardTunnel)
+		s.State.Resources.Grant(RewardTunnel)
+	} else {
+		s.State.Resources.Grant(chosenType)
+	}
 	s.State.PendingRewardChoices = nil
 	return nil
 }
