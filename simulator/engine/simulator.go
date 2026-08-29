@@ -553,8 +553,8 @@ func (s *Simulator) closeLoop(a CloseLoop) error {
 	if line.IsLoop {
 		return errors.New("line is already a loop")
 	}
-	if len(line.Stations) < 2 {
-		return errors.New("line needs at least 2 stations to form a loop")
+	if len(line.Stations) < 3 {
+		return errors.New("line needs at least 3 stations to form a loop")
 	}
 	firstPos := s.State.Stations[line.Stations[0]].Pos
 	lastPos := s.State.Stations[line.Stations[len(line.Stations)-1]].Pos
@@ -747,7 +747,7 @@ func (s *Simulator) insertStation(a InsertStation) error {
 		}
 	}
 
-	s.State.Graph = BuildGraph(&s.State)
+	s.State.TopologyVersion++
 	return nil
 }
 
