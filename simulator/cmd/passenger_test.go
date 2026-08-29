@@ -69,3 +69,28 @@ func TestWeightedPassengerDestinationSampling(t *testing.T) {
 		t.Errorf("expected passengers to target only active station kinds present on the map")
 	}
 }
+
+func TestPassengerIDsAreDeterministic(t *testing.T) {
+	sim := engine.NewSimulator([]engine.Station{
+		{ID: 0, Kind: engine.Circle, Pos: engine.Pos{X: 0, Y: 0}},
+		{ID: 1, Kind: engine.Triangle, Pos: engine.Pos{X: 10, Y: 0}},
+	})
+	sim.SetSeed(1)
+
+	for len(sim.State.Stations[0].Queue)+len(sim.State.Stations[1].Queue) < 2 {
+		sim.Step(1.0)
+	}
+
+	seen := map[int]bool{}
+	for _, st := range sim.State.Stations {
+		for _, p := range st.Queue {
+			if seen[p.ID] {
+				t.Fatalf("duplicate passenger ID %d", p.ID)
+			}
+			seen[p.ID] = true
+		}
+	}
+	if !seen[0] || !seen[1] {
+		t.Fatalf("expected first passenger IDs 0 and 1, got %#v", seen)
+	}
+}

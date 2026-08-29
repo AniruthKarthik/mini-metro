@@ -12,6 +12,7 @@ type GameState struct {
 	Scheduler            EventScheduler
 	PendingRewardChoices []RewardType
 	TopologyVersion      uint64
+	NextPassengerID      int
 	Score                int
 	Tick                 uint64
 	GameTimeSeconds      float64

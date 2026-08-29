@@ -66,32 +66,7 @@ func sampleDestinationKind(state *GameState, originKind StationKind, rng *rand.R
 	}
 
 	if numActive == 0 {
-		var fallback [16]StationKind
-		numFallback := 0
-		for k, w := range destinationWeights {
-			if k != originKind {
-				totalWeight += w
-				if numFallback < len(fallback) {
-					fallback[numFallback] = k
-					numFallback++
-				}
-			}
-		}
-		if totalWeight <= 0 || numFallback == 0 {
-			return Circle
-		}
-		r := rng.Intn(totalWeight)
-		for j := 0; j < numFallback; j++ {
-			w := destinationWeights[fallback[j]]
-			if w <= 0 {
-				w = 1
-			}
-			r -= w
-			if r < 0 {
-				return fallback[j]
-			}
-		}
-		return fallback[0]
+		return originKind
 	}
 
 	if totalWeight <= 0 {
@@ -126,7 +101,13 @@ func (s *Simulator) spawnPassengers(dt float64) {
 		}
 		if s.RNG().Float64() < prob {
 			dest := sampleDestinationKind(&s.State, st.Kind, s.RNG())
+			if dest == st.Kind {
+				continue
+			}
+			id := s.State.NextPassengerID
+			s.State.NextPassengerID++
 			st.Queue = append(st.Queue, Passenger{
+				ID:          id,
 				Origin:      st.ID,
 				Destination: dest,
 				SpawnTick:   s.State.Tick,
