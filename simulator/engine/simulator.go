@@ -87,7 +87,7 @@ func (s *Simulator) Step(dt float64) {
 	s.rebuildGraphIfNeeded()
 	s.spawnPassengers(dt)
 	s.moveTrains(dt)
-	s.boardAndAlight()
+	s.boardAndAlight(dt)
 	s.updateScore()
 	s.State.GameTimeSeconds += dt
 	s.State.Tick++

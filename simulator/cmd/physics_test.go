@@ -17,6 +17,7 @@ func TestTrainPhysicsAndMovement(t *testing.T) {
 	_ = sim.ApplyAction(engine.AddTrain{LineID: 0})
 
 	sim.Step(0.01)
+	sim.Step(0.01)
 
 	tr := &sim.State.Trains[0]
 	if tr.Progress <= 0 {

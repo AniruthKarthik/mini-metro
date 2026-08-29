@@ -4,6 +4,7 @@ import "math"
 
 const trainSpeed = 1.8
 const dwellTime = 0.4 // seconds a train pauses at each station for boarding/alighting
+const passengerServiceTime = 0.5
 
 type Train struct {
 	ID             int
@@ -17,6 +18,7 @@ type Train struct {
 	Active         bool
 	JustArrived    bool
 	DwellRemaining float64
+	ServiceElapsed float64
 }
 
 // velocityProfile returns a smooth acceleration/deceleration multiplier in [0.35, 1.0] based on segment progress p in [0, 1].
@@ -127,12 +129,14 @@ func (s *Simulator) moveTrains(dt float64) {
 			continue
 		}
 
-		if tr.DwellRemaining > 0 {
-			tr.DwellRemaining -= dt
+		if tr.JustArrived {
 			if tr.DwellRemaining > 0 {
-				continue
+				tr.DwellRemaining -= dt
+				if tr.DwellRemaining < 0 {
+					tr.DwellRemaining = 0
+				}
 			}
-			tr.DwellRemaining = 0
+			continue
 		}
 
 		if tr.LineID < 0 || tr.LineID >= len(s.State.Lines) {
@@ -210,15 +214,13 @@ func (s *Simulator) moveTrains(dt float64) {
 	}
 }
 
-func (s *Simulator) boardAndAlight() {
+func (s *Simulator) boardAndAlight(dt float64) {
 	for i := range s.State.Trains {
 		tr := &s.State.Trains[i]
 
 		if !tr.Active || !tr.JustArrived {
 			continue
 		}
-
-		tr.JustArrived = false
 
 		if tr.LineID < 0 || tr.LineID >= len(s.State.Lines) {
 			continue
@@ -243,54 +245,112 @@ func (s *Simulator) boardAndAlight() {
 			continue
 		}
 
-		// Alight
-		remainingPassengers := make([]Passenger, 0, len(tr.Passengers))
-		for _, p := range tr.Passengers {
-			if p.Destination == st.Kind {
-				s.State.Score++
-			} else {
-				route := FindOptimalRoute(&s.State.Graph, &s.State, stationID, p.Destination)
-				if route.Reachable && route.NextLineID == tr.LineID && (route.NextDirection == 0 || route.NextDirection == tr.Direction) {
-					remainingPassengers = append(remainingPassengers, p)
-				} else {
-					st.Queue = append(st.Queue, p)
-				}
-			}
+		if dt > 0 {
+			tr.ServiceElapsed += dt
 		}
-		tr.Passengers = remainingPassengers
 
-		// Board
+		serviceTime := passengerServiceTime
+		if st.IsInterchange {
+			serviceTime /= 2
+		}
+		if serviceTime <= 0 {
+			serviceTime = passengerServiceTime
+		}
+
+		for tr.ServiceElapsed >= serviceTime {
+			if !s.serviceOnePassenger(tr, st, stationID) {
+				break
+			}
+			tr.ServiceElapsed -= serviceTime
+		}
+
+		if tr.DwellRemaining <= 0 && !s.hasServiceWork(tr, st, stationID) {
+			tr.JustArrived = false
+			tr.ServiceElapsed = 0
+		}
+	}
+}
+
+func trainCapacity(tr *Train) int {
+	totalCapacity := tr.Capacity
+	if tr.Carriages > 1 {
+		totalCapacity += (tr.Carriages - 1) * 6
+	}
+	return totalCapacity
+}
+
+func (s *Simulator) hasServiceWork(tr *Train, st *Station, stationID int) bool {
+	for _, p := range tr.Passengers {
+		if p.Destination == st.Kind {
+			return true
+		}
+		route := FindOptimalRoute(&s.State.Graph, &s.State, stationID, p.Destination)
+		if !route.Reachable || route.NextLineID != tr.LineID || (route.NextDirection != 0 && route.NextDirection != tr.Direction) {
+			return true
+		}
+	}
+
+	if len(tr.Passengers) >= trainCapacity(tr) {
+		return false
+	}
+	for _, p := range st.Queue {
+		route := FindOptimalRoute(&s.State.Graph, &s.State, stationID, p.Destination)
+		if route.Reachable && route.NextLineID == tr.LineID && (route.NextDirection == 0 || route.NextDirection == tr.Direction) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Simulator) serviceOnePassenger(tr *Train, st *Station, stationID int) bool {
+	for idx, p := range tr.Passengers {
+		if p.Destination == st.Kind {
+			tr.Passengers = append(tr.Passengers[:idx], tr.Passengers[idx+1:]...)
+			s.State.Score++
+			return true
+		}
+	}
+
+	for idx, p := range tr.Passengers {
+		route := FindOptimalRoute(&s.State.Graph, &s.State, stationID, p.Destination)
+		if !route.Reachable || route.NextLineID != tr.LineID || (route.NextDirection != 0 && route.NextDirection != tr.Direction) {
+			tr.Passengers = append(tr.Passengers[:idx], tr.Passengers[idx+1:]...)
+			st.Queue = append(st.Queue, p)
+			return true
+		}
+	}
+
+	if len(tr.Passengers) >= trainCapacity(tr) {
+		return false
+	}
+
+	remaining := st.Queue[:0]
+	boarded := false
+	for _, p := range st.Queue {
+		if boarded {
+			remaining = append(remaining, p)
+			continue
+		}
 		totalCapacity := tr.Capacity
 		if tr.Carriages > 1 {
 			totalCapacity += (tr.Carriages - 1) * 6
 		}
 
-		routeCache := make(map[StationKind]RouteInfo)
-		getRoute := func(dest StationKind) RouteInfo {
-			if r, ok := routeCache[dest]; ok {
-				return r
-			}
-			r := FindOptimalRoute(&s.State.Graph, &s.State, stationID, dest)
-			routeCache[dest] = r
-			return r
-		}
-
-		remaining := make([]Passenger, 0, len(st.Queue))
-		for _, p := range st.Queue {
-			route := getRoute(p.Destination)
-			canBoard := len(tr.Passengers) < totalCapacity &&
-				route.Reachable &&
-				route.NextLineID == tr.LineID &&
-				(route.NextDirection == 0 || route.NextDirection == tr.Direction)
-			if canBoard {
-				tr.Passengers = append(tr.Passengers, p)
-			} else {
-				remaining = append(remaining, p)
-			}
-		}
-		st.Queue = remaining
-		if len(st.Queue) == 0 {
-			st.Queue = nil
+		route := FindOptimalRoute(&s.State.Graph, &s.State, stationID, p.Destination)
+		canBoard := len(tr.Passengers) < totalCapacity &&
+			route.Reachable &&
+					route.NextLineID == tr.LineID &&
+					(route.NextDirection == 0 || route.NextDirection == tr.Direction)
+		if canBoard {
+			tr.Passengers = append(tr.Passengers, p)
+			boarded = true
+		} else {
+			remaining = append(remaining, p)
 		}
 	}
+	st.Queue = remaining
+	if len(st.Queue) == 0 {
+		st.Queue = nil
+	}
+	return boarded
 }
