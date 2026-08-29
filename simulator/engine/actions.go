@@ -22,8 +22,9 @@ func (ExtendLine) isAction() {}
 type InsertStation struct {
 	LineID    int
 	StationID int
-	Index     int  // index in line.Stations where StationID will be inserted
-	UseTunnel bool
+	Index     int // index in line.Stations where StationID will be inserted; clamped to [1, len-1]
+	// Tunnel tokens are managed automatically: net crossings for the two new segments
+	// minus the replaced crossing are spent/refunded without explicit caller input.
 }
 
 func (InsertStation) isAction() {}

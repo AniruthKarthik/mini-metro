@@ -65,15 +65,14 @@ func ParseAction(raw []byte) (engine.Action, string, error) {
 
 	case "insert_station":
 		var p struct {
-			LineID    int  `json:"line_id"`
-			StationID int  `json:"station_id"`
-			Index     int  `json:"index"`
-			UseTunnel bool `json:"use_tunnel"`
+			LineID    int `json:"line_id"`
+			StationID int `json:"station_id"`
+			Index     int `json:"index"`
 		}
 		if err := json.Unmarshal(env.Payload, &p); err != nil {
 			return nil, "", err
 		}
-		return engine.InsertStation{LineID: p.LineID, StationID: p.StationID, Index: p.Index, UseTunnel: p.UseTunnel}, "", nil
+		return engine.InsertStation{LineID: p.LineID, StationID: p.StationID, Index: p.Index}, "", nil
 
 	case "add_train":
 		var p struct {
