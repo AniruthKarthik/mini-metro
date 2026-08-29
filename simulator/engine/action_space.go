@@ -38,9 +38,9 @@ const (
 	UpgradeInterchangeOffset = AddCarriageOffset + AddCarriageCount
 	UpgradeInterchangeCount  = MaxStations
 
-	// ChooseReward: choice (0..3) = 4
+	// ChooseReward: positional index into 2 offered choices (0 or 1)
 	ChooseRewardOffset = UpgradeInterchangeOffset + UpgradeInterchangeCount
-	ChooseRewardCount  = 4
+	ChooseRewardCount  = 2
 
 	// CloseLoop: line_id (0..6) = 7
 	CloseLoopOffset = ChooseRewardOffset + ChooseRewardCount
