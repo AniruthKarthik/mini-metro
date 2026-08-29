@@ -62,3 +62,26 @@ func TestUnreachablePassengerFiltering(t *testing.T) {
 		t.Errorf("expected station 2 (Square) to be unreachable from station 0")
 	}
 }
+
+func TestRouteCostIgnoresStationQueueSize(t *testing.T) {
+	sim := engine.NewSimulator([]engine.Station{
+		{ID: 0, Kind: engine.Circle, Pos: engine.Pos{X: 0, Y: 0}},
+		{ID: 1, Kind: engine.Triangle, Pos: engine.Pos{X: 10, Y: 0}},
+	})
+	_ = sim.ApplyAction(engine.AddLine{Stations: []int{0, 1}})
+	sim.Step(0.01)
+
+	baseline := engine.FindOptimalRoute(&sim.State.Graph, &sim.State, 0, engine.Triangle)
+	for i := 0; i < 18; i++ {
+		sim.State.Stations[0].Queue = append(sim.State.Stations[0].Queue, engine.Passenger{
+			ID:          i,
+			Origin:      0,
+			Destination: engine.Triangle,
+		})
+	}
+	withQueue := engine.FindOptimalRoute(&sim.State.Graph, &sim.State, 0, engine.Triangle)
+
+	if baseline.TotalCost != withQueue.TotalCost {
+		t.Fatalf("expected queue size not to alter passenger route cost: baseline=%f queued=%f", baseline.TotalCost, withQueue.TotalCost)
+	}
+}

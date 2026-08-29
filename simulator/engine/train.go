@@ -103,6 +103,22 @@ func trackCornerMultiplier(state *GameState, line *Line, stationIndex int, dir i
 	return mult
 }
 
+func segmentTravelTime(state *GameState, line *Line, fromIdx, toIdx int) float64 {
+	if line == nil || fromIdx < 0 || fromIdx >= len(line.Stations) || toIdx < 0 || toIdx >= len(line.Stations) {
+		return 0
+	}
+	st1ID := line.Stations[fromIdx]
+	st2ID := line.Stations[toIdx]
+	if st1ID < 0 || st1ID >= len(state.Stations) || st2ID < 0 || st2ID >= len(state.Stations) {
+		return 0
+	}
+	segLen := distance(state.Stations[st1ID].Pos, state.Stations[st2ID].Pos)
+	if segLen <= 0 {
+		segLen = 10.0
+	}
+	return segLen / (trainSpeed * 10.0)
+}
+
 func (s *Simulator) moveTrains(dt float64) {
 	for i := range s.State.Trains {
 		tr := &s.State.Trains[i]
@@ -129,7 +145,6 @@ func (s *Simulator) moveTrains(dt float64) {
 			continue
 		}
 
-		st1ID := line.Stations[tr.Segment]
 		var nextSegIdx int
 		if line.IsLoop {
 			n := len(line.Stations)
@@ -143,12 +158,6 @@ func (s *Simulator) moveTrains(dt float64) {
 				nextSegIdx = len(line.Stations) - 1
 			}
 		}
-		st2ID := line.Stations[nextSegIdx]
-		segLen := distance(s.State.Stations[st1ID].Pos, s.State.Stations[st2ID].Pos)
-		if segLen <= 0 {
-			segLen = 10.0
-		}
-
 		// Terminal station or loop end-point acceleration/deceleration check
 		isStartTerminal := !line.IsLoop && (tr.Segment == 0 || tr.Segment == len(line.Stations)-1)
 		isNextTerminal := !line.IsLoop && (nextSegIdx == 0 || nextSegIdx == len(line.Stations)-1)
@@ -157,7 +166,11 @@ func (s *Simulator) moveTrains(dt float64) {
 		cornerMult := trackCornerMultiplier(&s.State, line, tr.Segment, tr.Direction)
 		effSpeed := trainSpeed * prof * cornerMult
 
-		progressDelta := (effSpeed * 10.0 / segLen) * dt
+		baseTravelTime := segmentTravelTime(&s.State, line, tr.Segment, nextSegIdx)
+		if baseTravelTime <= 0 {
+			continue
+		}
+		progressDelta := (effSpeed / trainSpeed) * dt / baseTravelTime
 		tr.Progress += progressDelta
 
 		// Reached next station
