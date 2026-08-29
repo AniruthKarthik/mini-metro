@@ -105,8 +105,9 @@ func (s *Simulator) Step(dt float64) {
 }
 
 func (s *Simulator) offerReward() {
+	// Weekly reward: always grant one locomotive, then offer choice of one upgrade.
 	s.State.Resources.Grant(RewardTrain)
-	pool := []RewardType{RewardLine, RewardCarriage, RewardTunnel, RewardInterchange}
+	pool := []RewardType{RewardLine, RewardCarriage, RewardTunnel, RewardTunnel, RewardInterchange}
 	s.RNG().Shuffle(len(pool), func(i, j int) { pool[i], pool[j] = pool[j], pool[i] })
 	s.State.PendingRewardChoices = pool[:2]
 	s.State.Scheduler.Schedule(s.State.Tick+rewardInterval(), EventReward)
