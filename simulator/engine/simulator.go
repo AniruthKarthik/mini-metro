@@ -426,24 +426,13 @@ func (s *Simulator) chooseReward(a ChooseReward) error {
 		return errors.New("no pending reward choice available")
 	}
 
-	var chosenType RewardType = -1
-
-	// Check if a.Choice matches enum value directly
-	for _, c := range s.State.PendingRewardChoices {
-		if c == a.Choice {
-			chosenType = c
-			break
-		}
+	// a.Choice is a positional index (0 = first offered, 1 = second offered).
+	idx := int(a.Choice)
+	if idx < 0 || idx >= len(s.State.PendingRewardChoices) {
+		return errors.New("invalid reward choice index")
 	}
 
-	// Fallback check if a.Choice is index into PendingRewardChoices (0 <= index < len)
-	if chosenType == -1 && int(a.Choice) >= 0 && int(a.Choice) < len(s.State.PendingRewardChoices) {
-		chosenType = s.State.PendingRewardChoices[int(a.Choice)]
-	}
-
-	if chosenType == -1 {
-		return errors.New("invalid reward choice")
-	}
+	chosenType := s.State.PendingRewardChoices[idx]
 
 	if chosenType == RewardTunnel {
 		s.State.Resources.Grant(RewardTunnel)
