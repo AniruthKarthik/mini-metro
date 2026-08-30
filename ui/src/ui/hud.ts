@@ -167,7 +167,6 @@ export class HUD {
           <div class="hud-map-options">
             <div class="hud-map-card" data-map="london">
               <div class="map-card-header">
-                <span class="city-flag">🇬🇧</span>
                 <div class="city-title-box">
                   <h3>London</h3>
                   <span class="river-name">River Thames</span>
@@ -179,7 +178,6 @@ export class HUD {
 
             <div class="hud-map-card" data-map="nyc">
               <div class="map-card-header">
-                <span class="city-flag">🇺🇸</span>
                 <div class="city-title-box">
                   <h3>New York</h3>
                   <span class="river-name">Hudson & East Rivers</span>
@@ -191,7 +189,6 @@ export class HUD {
 
             <div class="hud-map-card" data-map="tokyo">
               <div class="map-card-header">
-                <span class="city-flag">🇯🇵</span>
                 <div class="city-title-box">
                   <h3>Tokyo</h3>
                   <span class="river-name">Sumida River & Bay</span>
