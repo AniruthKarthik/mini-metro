@@ -79,6 +79,7 @@ func (OpenLoop) isAction() {}
 
 type RepositionTrain struct {
 	TrainID   int
+	LineID    int // target line ID (if < 0, keeps current line)
 	Segment   int
 	Direction int
 }

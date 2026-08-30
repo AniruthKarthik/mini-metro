@@ -98,7 +98,7 @@ export class TrainInterpolator {
   }
 }
 
-function computeTrainPosition(
+export function computeTrainPosition(
   tr: TrainDTO,
   line: LineDTO,
   stationMap: Map<number, StationDTO>,

@@ -154,6 +154,7 @@ func ParseAction(raw []byte) (engine.Action, string, error) {
 	case "reposition_train":
 		var p struct {
 			TrainID   int `json:"train_id"`
+			LineID    int `json:"line_id"`
 			Segment   int `json:"segment"`
 			Direction int `json:"direction"`
 		}
@@ -162,6 +163,7 @@ func ParseAction(raw []byte) (engine.Action, string, error) {
 		}
 		return engine.RepositionTrain{
 			TrainID:   p.TrainID,
+			LineID:    p.LineID,
 			Segment:   p.Segment,
 			Direction: p.Direction,
 		}, "", nil

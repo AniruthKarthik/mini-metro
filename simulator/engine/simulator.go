@@ -637,10 +637,13 @@ func (s *Simulator) repositionTrain(a RepositionTrain) error {
 	if !tr.Active {
 		return errors.New("train is inactive")
 	}
-	if tr.LineID < 0 || tr.LineID >= len(s.State.Lines) {
-		return errors.New("invalid line ID")
+
+	targetLineID := tr.LineID
+	if a.LineID >= 0 && a.LineID < len(s.State.Lines) {
+		targetLineID = a.LineID
 	}
-	line := &s.State.Lines[tr.LineID]
+
+	line := &s.State.Lines[targetLineID]
 	if line.Removed || len(line.Stations) < 2 {
 		return errors.New("invalid or removed line")
 	}
@@ -661,6 +664,7 @@ func (s *Simulator) repositionTrain(a RepositionTrain) error {
 		}
 	}
 
+	tr.LineID = targetLineID
 	tr.Segment = a.Segment
 	tr.Progress = 0
 	tr.Direction = dir

@@ -1,8 +1,9 @@
-import type { StationDTO, LineDTO, Pos, DragState } from '../types';
+import type { StationDTO, LineDTO, TrainDTO, Pos, DragState } from '../types';
 import { getX, getY } from '../types';
 import { Viewport } from '../renderer/viewport';
 import { GameWSClient } from '../ws/client';
 import { getLineColor, generateOctilinearPath, getTerminalCapPosition, buildSharedEdgeMap, getSegmentParallelOffset } from '../renderer/lines';
+import { computeTrainPosition } from '../renderer/trains';
 
 const NEW_LINE_GUIDE_COLOR = '#888888';
 
@@ -167,7 +168,7 @@ export class DragHandler {
 
     ctx.save();
 
-    if (sourceType === 'add_train') {
+    if (sourceType === 'add_train' || sourceType === 'reposition_train') {
       // Floating Locomotive Icon under cursor
       const width = 34;
       const height = 20;
@@ -300,6 +301,40 @@ export class DragHandler {
     return closest;
   }
 
+  private findTrainAt(pos: Pos, trains: TrainDTO[], lines: LineDTO[], stations: StationDTO[], threshold: number = 45): { trainId: number; lineId: number } | null {
+    if (!trains || !lines || !stations) return null;
+    const stationMap = new Map<number, StationDTO>();
+    for (const st of stations) stationMap.set(st.id, st);
+
+    const lineMap = new Map<number, LineDTO>();
+    for (const l of lines) lineMap.set(l.id, l);
+
+    const sharedEdgeMap = buildSharedEdgeMap(lines);
+    const px = getX(pos), py = getY(pos);
+    let closest: { trainId: number; lineId: number; dist: number } | null = null;
+
+    for (const tr of trains) {
+      if ((tr as any).active === false) continue;
+      const line = lineMap.get(tr.line_id);
+      if (!line || line.removed || !line.stations || line.stations.length < 2) continue;
+
+      const trainPos = computeTrainPosition(tr, line, stationMap, this.viewport, sharedEdgeMap);
+      if (!trainPos) continue;
+
+      const dx = getX(trainPos.pos) - px;
+      const dy = getY(trainPos.pos) - py;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+
+      if (dist <= threshold) {
+        if (!closest || dist < closest.dist) {
+          closest = { trainId: tr.id, lineId: tr.line_id, dist };
+        }
+      }
+    }
+
+    return closest ? { trainId: closest.trainId, lineId: closest.lineId } : null;
+  }
+
   private findTerminalToExtend(pos: Pos, lines: LineDTO[], stations: StationDTO[]): { lineId: number; stationId: number; fromFront: boolean } | null {
     if (!lines || !stations) return null;
     const stationMap = new Map<number, StationDTO>();
@@ -325,42 +360,44 @@ export class DragHandler {
       const lastSt = stationMap.get(lastStId);
       const secondLastSt = stationMap.get(secondLastStId);
 
-      // 1. Back terminal end-cap T-bar
-      if (lastSt && secondLastSt) {
+      // 1. Back terminal end-cap T-bar & endpoint station
+      if (lastSt) {
         const lastP = this.viewport.mapToScreen({ x: getX(lastSt), y: getY(lastSt) });
-        const prevP = this.viewport.mapToScreen({ x: getX(secondLastSt), y: getY(secondLastSt) });
+        const distSt = Math.sqrt((lastP.x - px) ** 2 + (lastP.y - py) ** 2);
 
-        const { p1Offset, p2Offset } = getSegmentParallelOffset(lastP, prevP, lastStId, secondLastStId, line.id, sharedEdgeMap, 8.0);
-        const capInfo = getTerminalCapPosition(p1Offset, p2Offset, 18);
-        const capX = getX(capInfo.capPos), capY = getY(capInfo.capPos);
+        let distCap = 999;
+        if (secondLastSt) {
+          const prevP = this.viewport.mapToScreen({ x: getX(secondLastSt), y: getY(secondLastSt) });
+          const { p1Offset, p2Offset } = getSegmentParallelOffset(lastP, prevP, lastStId, secondLastStId, line.id, sharedEdgeMap, 8.0);
+          const capInfo = getTerminalCapPosition(p1Offset, p2Offset, 18);
+          distCap = Math.sqrt((getX(capInfo.capPos) - px) ** 2 + (getY(capInfo.capPos) - py) ** 2);
+        }
 
-        const dx = capX - px, dy = capY - py;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-
-        // Check distance to T-bar extending handle (within 35px radius)
-        if (dist <= 35) {
-          if (!bestMatch || dist < bestMatch.dist) {
-            bestMatch = { lineId: line.id, stationId: lastStId, fromFront: false, dist };
+        const minDist = Math.min(distSt, distCap);
+        if (minDist <= 55) {
+          if (!bestMatch || minDist < bestMatch.dist) {
+            bestMatch = { lineId: line.id, stationId: lastStId, fromFront: false, dist: minDist };
           }
         }
       }
 
-      // 2. Front terminal end-cap T-bar
-      if (firstSt && secondSt) {
+      // 2. Front terminal end-cap T-bar & endpoint station
+      if (firstSt) {
         const firstP = this.viewport.mapToScreen({ x: getX(firstSt), y: getY(firstSt) });
-        const nextP = this.viewport.mapToScreen({ x: getX(secondSt), y: getY(secondSt) });
+        const distSt = Math.sqrt((firstP.x - px) ** 2 + (firstP.y - py) ** 2);
 
-        const { p1Offset, p2Offset } = getSegmentParallelOffset(firstP, nextP, firstStId, secondStId, line.id, sharedEdgeMap, 8.0);
-        const capInfo = getTerminalCapPosition(p1Offset, p2Offset, 18);
-        const capX = getX(capInfo.capPos), capY = getY(capInfo.capPos);
+        let distCap = 999;
+        if (secondSt) {
+          const nextP = this.viewport.mapToScreen({ x: getX(secondSt), y: getY(secondSt) });
+          const { p1Offset } = getSegmentParallelOffset(firstP, nextP, firstStId, secondStId, line.id, sharedEdgeMap, 8.0);
+          const capInfo = getTerminalCapPosition(p1Offset, nextP, 18);
+          distCap = Math.sqrt((getX(capInfo.capPos) - px) ** 2 + (getY(capInfo.capPos) - py) ** 2);
+        }
 
-        const dx = capX - px, dy = capY - py;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-
-        // Check distance to T-bar extending handle (within 35px radius)
-        if (dist <= 35) {
-          if (!bestMatch || dist < bestMatch.dist) {
-            bestMatch = { lineId: line.id, stationId: firstStId, fromFront: true, dist };
+        const minDist = Math.min(distSt, distCap);
+        if (minDist <= 55) {
+          if (!bestMatch || minDist < bestMatch.dist) {
+            bestMatch = { lineId: line.id, stationId: firstStId, fromFront: true, dist: minDist };
           }
         }
       }
@@ -373,14 +410,13 @@ export class DragHandler {
     return null;
   }
 
-  private findSegmentToInsert(pos: Pos, lines: LineDTO[], stations: StationDTO[]): { lineId: number; insertIndex: number; fromStationAId: number; toStationBId: number } | null {
+  private findSegmentToInsert(pos: Pos, lines: LineDTO[], stations: StationDTO[], threshold: number = 35): { lineId: number; insertIndex: number; fromStationAId: number; toStationBId: number } | null {
     if (!lines || !stations) return null;
     const stationMap = new Map<number, StationDTO>();
     for (const st of stations) stationMap.set(st.id, st);
 
     const sharedEdgeMap = buildSharedEdgeMap(lines);
 
-    const threshold = 35;
     const px = getX(pos);
     const py = getY(pos);
 
@@ -418,8 +454,8 @@ export class DragHandler {
     return null;
   }
 
-  private findLineNear(pos: Pos, lines: LineDTO[], stations: StationDTO[]): LineDTO | null {
-    const seg = this.findSegmentToInsert(pos, lines, stations);
+  private findLineNear(pos: Pos, lines: LineDTO[], stations: StationDTO[], threshold: number = 75): LineDTO | null {
+    const seg = this.findSegmentToInsert(pos, lines, stations, threshold);
     if (!seg) return null;
     return lines.find((l) => l.id === seg.lineId) || null;
   }
@@ -477,10 +513,23 @@ export class DragHandler {
 
     const stations = snap.stations || [];
     const lines = snap.lines || [];
+    const trains = snap.trains || [];
     const res = (snap.resources || {}) as any;
     const availableLines = res.lines ?? res.Lines ?? 0;
 
-    // 1. Check line terminal extension hit box (extending T-bar handles)
+    // 0. Check active train hit box -> REPOSITION TRAIN
+    const trainHit = this.findTrainAt(pos, trains, lines, stations, 45);
+    if (trainHit) {
+      this.dragState = {
+        source: { type: 'reposition_train', trainId: trainHit.trainId, fromLineId: trainHit.lineId } as any,
+        currentPos: pos,
+        targetStationId: null,
+      };
+      this.selectedStationId = null;
+      return;
+    }
+
+    // 1. Check line terminal extension hit box (extending T-bar handles or terminal station)
     const terminalHit = this.findTerminalToExtend(pos, lines, stations);
     if (terminalHit) {
       this.dragState = {
@@ -653,7 +702,7 @@ export class DragHandler {
       } else if (source.type === 'add_train') {
         let line = targetStId !== null
           ? lines.find((l) => !l.removed && l.stations.includes(targetStId))
-          : this.findLineNear(currentPos, lines, stations);
+          : this.findLineNear(currentPos, lines, stations, 75);
 
         if (line) {
           this.wsClient.sendAction({
@@ -661,10 +710,25 @@ export class DragHandler {
             payload: { line_id: line.id },
           });
         }
+      } else if (source.type === 'reposition_train' || (source as any).type === 'reposition_train') {
+        const src = source as any;
+        const line = targetStId !== null
+          ? lines.find((l) => !l.removed && l.stations.includes(targetStId))
+          : this.findLineNear(currentPos, lines, stations, 75);
+
+        if (line) {
+          const targetSeg = this.findSegmentToInsert(currentPos, [line], stations, 75);
+          const segIdx = targetSeg ? targetSeg.insertIndex - 1 : 0;
+          console.log(`🚂 [FRONTEND] Dispatching reposition_train: Train ${src.trainId} to Line ${line.id} segment ${segIdx}`);
+          this.wsClient.sendAction({
+            type: 'reposition_train',
+            payload: { train_id: src.trainId, line_id: line.id, segment: segIdx, direction: 1 },
+          });
+        }
       } else if (source.type === 'add_carriage') {
         const line = targetStId !== null
           ? lines.find((l) => !l.removed && l.stations.includes(targetStId))
-          : this.findLineNear(currentPos, lines, stations);
+          : this.findLineNear(currentPos, lines, stations, 75);
         const train = line
           ? trains.find((tr) => tr.line_id === line.id)
           : null;
