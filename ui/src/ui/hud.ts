@@ -327,8 +327,8 @@ export class HUD {
     });
 
     document.getElementById('hud-restart-btn')?.addEventListener('click', () => {
+      this.wsClient.sendAction({ type: 'restart' });
       this.gameOverModal.classList.add('hidden');
-      this.mapModal.classList.remove('hidden');
     });
 
     this.wsClient.onError((msg) => this.showToast(msg));

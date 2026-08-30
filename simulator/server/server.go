@@ -274,12 +274,21 @@ func (s *Server) handleServerCommand(cmd string) {
 		s.paused = false
 		log.Println("simulation resumed")
 	case cmd == "restart":
-		s.sim = engine.NewSimulatorWithMap(engine.LondonMap())
+		var cfg engine.MapConfig
+		switch strings.ToLower(s.sim.State.MapName) {
+		case "new york city", "nyc", "new york":
+			cfg = engine.NYCMap()
+		case "tokyo":
+			cfg = engine.TokyoMap()
+		default:
+			cfg = engine.LondonMap()
+		}
+		s.sim = engine.NewSimulatorWithMap(cfg)
 		s.paused = false
 		for len(s.actionCh) > 0 {
 			<-s.actionCh
 		}
-		log.Println("🔄 Simulation restarted cleanly with London map")
+		log.Printf("🔄 Simulation restarted cleanly with %s map", cfg.Name)
 	case strings.HasPrefix(cmd, "select_map:"):
 		payload := strings.TrimPrefix(cmd, "select_map:")
 		var p struct {
