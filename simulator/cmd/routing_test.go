@@ -75,7 +75,6 @@ func TestRouteCostIgnoresStationQueueSize(t *testing.T) {
 	for i := 0; i < 18; i++ {
 		sim.State.Stations[0].Queue = append(sim.State.Stations[0].Queue, engine.Passenger{
 			ID:          i,
-			Origin:      0,
 			Destination: engine.Triangle,
 		})
 	}

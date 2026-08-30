@@ -27,12 +27,12 @@ type Client struct {
 	hub  *Hub
 	conn *websocket.Conn
 	send chan []byte // outbound message queue
-	// actionCh receives raw JSON action payloads from the read pump.
-	actionCh chan<- []byte
+	// actionCh receives action messages from the read pump.
+	actionCh chan<- actionMsg
 }
 
 // ServeWs upgrades an HTTP connection to WebSocket and registers the client.
-func ServeWs(hub *Hub, actionCh chan<- []byte, w http.ResponseWriter, r *http.Request) {
+func ServeWs(hub *Hub, actionCh chan<- actionMsg, w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("ws upgrade error: %v", err)
@@ -77,9 +77,10 @@ func (c *Client) readPump() {
 			}
 			break
 		}
-		// Forward raw JSON to the action dispatcher (non-blocking drop if full).
+		// BUG-13: forward message with a reference to this client so the dispatcher
+		// can route error responses back to the originator only.
 		select {
-		case c.actionCh <- msg:
+		case c.actionCh <- actionMsg{raw: msg, client: c}:
 			log.Printf("📥 Action received from client: %s", string(msg))
 		default:
 			log.Println("action channel full, dropping message")

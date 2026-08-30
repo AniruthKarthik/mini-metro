@@ -79,14 +79,15 @@ func TestChooseRewardByPositionalIndexAndEnum(t *testing.T) {
 		{ID: 0, Kind: engine.Circle, Pos: engine.Pos{X: 0, Y: 0}},
 	})
 
+	// BUG-1 fix: chooseReward now enforces strictly positional indices (0 or 1).
 	// Set pending choices: [RewardTunnel (2), RewardCarriage (3)]
 	sim.State.PendingRewardChoices = []engine.RewardType{engine.RewardTunnel, engine.RewardCarriage}
 
-	// 1. Selecting by positional index 1 (RewardCarriage)
+	// 1. Select by positional index 1 → should grant RewardCarriage.
 	initialCarriages := sim.State.Resources.Carriages
 	err := sim.ApplyAction(engine.ChooseReward{Choice: 1})
 	if err != nil {
-		t.Fatalf("unexpected error choosing reward by index: %v", err)
+		t.Fatalf("unexpected error choosing reward by index 1: %v", err)
 	}
 	if sim.State.Resources.Carriages != initialCarriages+1 {
 		t.Errorf("expected carriage count to increase by 1")
@@ -94,15 +95,22 @@ func TestChooseRewardByPositionalIndexAndEnum(t *testing.T) {
 
 	// 2. Set pending choices again: [RewardLine (0), RewardTunnel (2)]
 	sim.State.PendingRewardChoices = []engine.RewardType{engine.RewardLine, engine.RewardTunnel}
-	initialTunnels := sim.State.Resources.Tunnels
+	initialLines := sim.State.Resources.Lines
 
-	// Selecting by RewardType enum value 2 (RewardTunnel)
-	err = sim.ApplyAction(engine.ChooseReward{Choice: engine.RewardType(2)})
+	// Select by positional index 0 → should grant RewardLine.
+	err = sim.ApplyAction(engine.ChooseReward{Choice: engine.RewardType(0)})
 	if err != nil {
-		t.Fatalf("unexpected error choosing reward by enum value: %v", err)
+		t.Fatalf("unexpected error choosing reward by index 0: %v", err)
 	}
-	if sim.State.Resources.Tunnels != initialTunnels+2 {
-		t.Errorf("expected tunnel count to increase by 2 (2 tunnels per grant)")
+	if sim.State.Resources.Lines != initialLines+1 {
+		t.Errorf("expected line count to increase by 1")
+	}
+
+	// 3. Out-of-range index should be rejected.
+	sim.State.PendingRewardChoices = []engine.RewardType{engine.RewardLine, engine.RewardTunnel}
+	err = sim.ApplyAction(engine.ChooseReward{Choice: engine.RewardType(2)})
+	if err == nil {
+		t.Error("expected error for out-of-range choice index 2, got nil")
 	}
 }
 

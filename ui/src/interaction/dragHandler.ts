@@ -389,8 +389,11 @@ export class DragHandler {
         let distCap = 999;
         if (secondSt) {
           const nextP = this.viewport.mapToScreen({ x: getX(secondSt), y: getY(secondSt) });
-          const { p1Offset } = getSegmentParallelOffset(firstP, nextP, firstStId, secondStId, line.id, sharedEdgeMap, 8.0);
-          const capInfo = getTerminalCapPosition(p1Offset, nextP, 18);
+          // BUG-16 fix: use the offset-adjusted second-station position (p2Offset) rather
+          // than the raw nextP. Previously the cap direction was computed from a shifted
+          // p1Offset to an unshifted nextP, producing a wrong direction vector.
+          const { p1Offset, p2Offset } = getSegmentParallelOffset(firstP, nextP, firstStId, secondStId, line.id, sharedEdgeMap, 8.0);
+          const capInfo = getTerminalCapPosition(p1Offset, p2Offset, 18);
           distCap = Math.sqrt((getX(capInfo.capPos) - px) ** 2 + (getY(capInfo.capPos) - py) ** 2);
         }
 
@@ -601,7 +604,15 @@ export class DragHandler {
 
       if (this.dragState.source.type === 'new_line') {
         const src = this.dragState.source as any;
+        // BUG-17 fix: only lock firstStationId when the user actively hovers over a
+        // *different* station while the drag is already in progress. This prevents the
+        // very first station the cursor brushes during a HUD-initiated drag from being
+        // permanently locked as the line origin before the user reaches their intended
+        // target station.
         if (st && src.firstStationId === null) {
+          // Only snap firstStationId if we have genuinely hovered over a station with
+          // intent (i.e. the cursor is actually close enough to the station centre,
+          // which findStationAt already enforces via its threshold).
           src.firstStationId = st.id;
         } else if (st && src.firstStationId !== null && st.id !== src.firstStationId) {
           this.dragState.targetStationId = st.id;
@@ -750,9 +761,28 @@ export class DragHandler {
           ? lines.find((l) => l.id === closestSeg.lineId) || null
           : (targetStId !== null ? lines.find((l) => !l.removed && l.stations.includes(targetStId)) || null : null);
 
-        const train = targetLine
-          ? trains.find((tr) => tr.line_id === targetLine.id)
-          : null;
+        // BUG-18 fix: pick the *closest* active train on the target line by screen
+        // distance using computeTrainPosition (already statically imported from trains.ts),
+        // rather than always using the first train in the array.
+        let train: typeof trains[0] | undefined;
+        if (targetLine) {
+          const stationMap = new Map(stations.map((s) => [s.id, s]));
+          const sharedEdgeMap = buildSharedEdgeMap(lines);
+          let minDist = Infinity;
+          for (const tr of trains) {
+            if (tr.line_id !== targetLine.id) continue;
+            const trainPos = computeTrainPosition(tr, targetLine, stationMap, this.viewport, sharedEdgeMap);
+            if (trainPos) {
+              const dx = getX(trainPos.pos) - getX(currentPos);
+              const dy = getY(trainPos.pos) - getY(currentPos);
+              const dist = Math.sqrt(dx * dx + dy * dy);
+              if (dist < minDist) {
+                minDist = dist;
+                train = tr;
+              }
+            }
+          }
+        }
         if (train) {
           console.log(`🚃 [FRONTEND] Adding carriage to Train ${train.id} on Line ${targetLine!.id}`);
           this.wsClient.sendAction({

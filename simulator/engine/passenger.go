@@ -110,7 +110,6 @@ func (s *Simulator) spawnPassengers(dt float64) {
 			s.State.NextPassengerID++
 			st.Queue = append(st.Queue, Passenger{
 				ID:          id,
-				Origin:      st.ID,
 				Destination: dest,
 				SpawnTick:   s.State.Tick,
 			})

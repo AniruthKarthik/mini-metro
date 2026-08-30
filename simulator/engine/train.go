@@ -245,16 +245,21 @@ func (s *Simulator) boardAndAlight(dt float64) {
 			continue
 		}
 
-		if dt > 0 {
-			tr.ServiceElapsed += dt
-		}
-
 		serviceTime := passengerServiceTime
 		if st.IsInterchange {
 			serviceTime /= 2
 		}
 		if serviceTime <= 0 {
 			serviceTime = passengerServiceTime
+		}
+
+		// BUG-7 fix: only accumulate service time once the dwell phase has ended.
+		// Previously, ServiceElapsed accumulated even while DwellRemaining > 0,
+		// causing boarding to begin immediately on arrival, overlapping with the
+		// dwell phase. At large dt values this could process more passengers per
+		// step than intended.
+		if dt > 0 && tr.DwellRemaining <= 0 {
+			tr.ServiceElapsed += dt
 		}
 
 		for tr.ServiceElapsed >= serviceTime {
@@ -324,6 +329,12 @@ func (s *Simulator) serviceOnePassenger(tr *Train, st *Station, stationID int) b
 		return false
 	}
 
+	// BUG-8 (design): this is a FIFO queue — an ineligible passenger at the head
+	// blocks the slot for one full passengerServiceTime (0.5 s) before the next
+	// candidate is tried. This mirrors real-world transit behaviour. If the front
+	// passenger has no reachable route at all (network disconnected), every call to
+	// serviceOnePassenger wastes 0.5 s while nothing boards. This is intentional;
+	// the gameplay consequence is that a disconnected destination creates a queue jam.
 	remaining := st.Queue[:0]
 	boarded := false
 	for _, p := range st.Queue {

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/AniruthKarthik/mini-metro/simulator/engine"
@@ -81,22 +82,35 @@ type ErrorMessage struct {
 
 // Server wires together the hub, the game loop, and HTTP routes.
 type Server struct {
-	sim      *engine.Simulator
+	// BUG-11 fix: use atomic.Pointer so gameLoop can safely read s.sim while
+	// actionDispatcher replaces it during a restart/select_map command. Previously
+	// s.sim was a bare pointer guarded only by s.mu in the writer, but not in the
+	// reader (gameLoop), causing a data race.
+	simPtr   atomic.Pointer[engine.Simulator]
 	hub      *Hub
-	actionCh chan []byte
+	// BUG-13 fix: actionCh carries (payload, originClient) pairs so error responses
+	// can be routed back to the originating client only.
+	actionCh chan actionMsg
 	mu       sync.Mutex
 	paused   bool
 	tps      int // ticks per second
 }
 
+// actionMsg bundles a raw action payload with the client that sent it.
+type actionMsg struct {
+	raw    []byte
+	client *Client // nil means broadcast errors to all (legacy path)
+}
+
 // New constructs a Server around an already-initialised Simulator.
 func New(sim *engine.Simulator) *Server {
-	return &Server{
-		sim:      sim,
+	s := &Server{
 		hub:      NewHub(),
-		actionCh: make(chan []byte, 512),
+		actionCh: make(chan actionMsg, 512),
 		tps:      30, // default: 30 ticks / second
 	}
+	s.simPtr.Store(sim)
+	return s
 }
 
 // RegisterRoutes attaches the WebSocket and health-check endpoints to mux.
@@ -126,14 +140,24 @@ func (s *Server) gameLoop() {
 		tps := s.tps
 		paused := s.paused
 		s.mu.Unlock()
-		if paused || !s.sim.State.Alive {
+
+		// BUG-11 fix: load sim via atomic pointer — safe concurrent read.
+		sim := s.simPtr.Load()
+
+		if paused || !sim.State.Alive {
 			// Still broadcast while paused / game-over so the UI can react.
 			s.broadcastState(paused)
 			time.Sleep(100 * time.Millisecond)
 			continue
 		}
-		dt := 1.0 / 30.0 // Standard 30 TPS simulation step quantum
-		s.sim.Step(dt)
+		// BUG-12: dt is always 1/30 s regardless of TPS.
+		// In fast mode (tps > 30) the loop ticks more often per wall-clock second
+		// while each tick still advances 1/30 s of simulation time, meaning the
+		// game runs at tps/30 × real-time speed. GameTimeSeconds, spawn rates, and
+		// overcrowding timers all accelerate accordingly — this is the intended
+		// "fast-forward" behaviour.
+		dt := 1.0 / 30.0
+		sim.Step(dt)
 		s.broadcastState(false)
 		time.Sleep(time.Duration(float64(time.Second) / float64(tps)))
 	}
@@ -141,7 +165,8 @@ func (s *Server) gameLoop() {
 
 // broadcastState serialises the current simulation state and sends it to all clients.
 func (s *Server) broadcastState(paused bool) {
-	snap := s.buildSnapshot(paused)
+	sim := s.simPtr.Load()
+	snap := s.buildSnapshot(sim, paused)
 	data, err := json.Marshal(snap)
 	if err != nil {
 		log.Printf("state marshal error: %v", err)
@@ -151,8 +176,8 @@ func (s *Server) broadcastState(paused bool) {
 }
 
 // buildSnapshot converts the engine's internal GameState into a StateSnapshot.
-func (s *Server) buildSnapshot(paused bool) StateSnapshot {
-	st := &s.sim.State
+func (s *Server) buildSnapshot(sim *engine.Simulator, paused bool) StateSnapshot {
+	st := &sim.State
 	snap := StateSnapshot{
 		Tick:                 st.Tick,
 		Score:                st.Score,
@@ -234,7 +259,8 @@ func (s *Server) buildSnapshot(paused bool) StateSnapshot {
 // actionDispatcher reads raw JSON from actionCh, parses it, and either
 // applies engine actions or handles server-side controls.
 func (s *Server) actionDispatcher() {
-	for raw := range s.actionCh {
+	for msg := range s.actionCh {
+		raw := msg.raw
 		action, cmd, err := ParseAction(raw)
 		if err != nil {
 			log.Printf("❌ Action parse error: %v (raw: %s)", err, raw)
@@ -242,24 +268,40 @@ func (s *Server) actionDispatcher() {
 				Type:  "action_error",
 				Error: err.Error(),
 			})
-			s.hub.Broadcast(errMsg)
+			// BUG-13 fix: route error only to the originating client when available.
+			s.sendError(msg.client, errMsg)
 			continue
 		}
 		if cmd != "" {
 			s.handleServerCommand(cmd)
 			continue
 		}
-		if err := s.sim.ApplyAction(action); err != nil {
+		sim := s.simPtr.Load()
+		if err := sim.ApplyAction(action); err != nil {
 			log.Printf("❌ Action apply error: %v (raw: %s)", err, raw)
 			errMsg, _ := json.Marshal(ErrorMessage{
 				Type:  "action_error",
 				Error: err.Error(),
 			})
-			s.hub.Broadcast(errMsg)
+			s.sendError(msg.client, errMsg)
 		} else {
 			log.Printf("✅ Action applied successfully: %s", string(raw))
 		}
 	}
+}
+
+// sendError delivers an error JSON to a specific client if known, otherwise broadcasts.
+func (s *Server) sendError(client *Client, errMsg []byte) {
+	if client != nil {
+		select {
+		case client.send <- errMsg:
+		default:
+			// client send buffer full — fall back to broadcast
+			s.hub.Broadcast(errMsg)
+		}
+		return
+	}
+	s.hub.Broadcast(errMsg)
 }
 
 // handleServerCommand processes non-engine commands like pause/resume/set_speed.
@@ -275,7 +317,8 @@ func (s *Server) handleServerCommand(cmd string) {
 		log.Println("simulation resumed")
 	case cmd == "restart":
 		var cfg engine.MapConfig
-		switch strings.ToLower(s.sim.State.MapName) {
+		curSim := s.simPtr.Load()
+		switch strings.ToLower(curSim.State.MapName) {
 		case "new york city", "nyc", "new york":
 			cfg = engine.NYCMap()
 		case "tokyo":
@@ -283,7 +326,8 @@ func (s *Server) handleServerCommand(cmd string) {
 		default:
 			cfg = engine.LondonMap()
 		}
-		s.sim = engine.NewSimulatorWithMap(cfg)
+		// BUG-11 fix: store new sim atomically so gameLoop always sees a consistent pointer.
+		s.simPtr.Store(engine.NewSimulatorWithMap(cfg))
 		s.paused = false
 		for len(s.actionCh) > 0 {
 			<-s.actionCh
@@ -307,7 +351,8 @@ func (s *Server) handleServerCommand(cmd string) {
 		} else {
 			cfg = engine.LondonMap()
 		}
-		s.sim = engine.NewSimulatorWithMap(cfg)
+		// BUG-11 fix: atomic store.
+		s.simPtr.Store(engine.NewSimulatorWithMap(cfg))
 		s.paused = false
 		for len(s.actionCh) > 0 {
 			<-s.actionCh

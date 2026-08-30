@@ -105,6 +105,10 @@ func (s *Simulator) Step(dt float64) {
 }
 
 func (s *Simulator) offerReward() {
+	// BUG-6 guard: never overwrite an outstanding reward choice.
+	if len(s.State.PendingRewardChoices) > 0 {
+		return
+	}
 	// Weekly reward: always grant one locomotive, then offer choice of one upgrade.
 	s.State.Resources.Grant(RewardTrain)
 	pool := []RewardType{RewardLine, RewardCarriage, RewardTunnel, RewardTunnel, RewardInterchange}
@@ -152,6 +156,9 @@ func (s *Simulator) addLine(a AddLine) error {
 		return errors.New("insufficient stations to add a new line")
 	}
 
+	// BUG-2: full uniqueness check — detect duplicate stations anywhere in the slice,
+	// not just in adjacent pairs (e.g. [0,1,0] would have been accepted before).
+	seen := make(map[int]struct{}, len(a.Stations))
 	for i, stID := range a.Stations {
 		if stID < 0 || stID >= len(s.State.Stations) {
 			return errors.New("invalid station ID in line")
@@ -159,9 +166,11 @@ func (s *Simulator) addLine(a AddLine) error {
 		if !s.State.Stations[stID].Alive {
 			return errors.New("station is not alive")
 		}
-		if i+1 < len(a.Stations) && a.Stations[i] == a.Stations[i+1] {
-			return errors.New("cannot connect station to itself")
+		if _, dup := seen[stID]; dup {
+			return errors.New("duplicate station in line")
 		}
+		seen[stID] = struct{}{}
+		_ = i // suppress unused-variable warning; index used implicitly
 	}
 
 	tunnelAt := make([]bool, len(a.Stations)-1)
@@ -411,18 +420,24 @@ func (s *Simulator) removeLine(a RemoveLine) error {
 				}
 				tr.Carriages = 1
 			}
-			// Offload any passengers aboard this train back to the station queue
+			// BUG-4 fix: offload passengers to the nearest station endpoint rather
+			// than always using the departure station. When progress >= 0.5 the train
+			// is closer to the next station (segment+1); otherwise use the departure
+			// station (segment). This avoids unfairly spiking the departure station's
+			// overcrowding counter when the train was near the opposite end.
 			if len(tr.Passengers) > 0 {
+				// Determine nearest station index along the line.
 				stIdx := tr.Segment
+				if tr.Progress >= 0.5 && stIdx+1 < len(line.Stations) {
+					stIdx = tr.Segment + 1
+				}
 				if stIdx < 0 || stIdx >= len(line.Stations) {
 					stIdx = 0
 				}
-				if stIdx < len(line.Stations) {
-					stID := line.Stations[stIdx]
-					if stID >= 0 && stID < len(s.State.Stations) {
-						st := &s.State.Stations[stID]
-						st.Queue = append(st.Queue, tr.Passengers...)
-					}
+				stID := line.Stations[stIdx]
+				if stID >= 0 && stID < len(s.State.Stations) {
+					st := &s.State.Stations[stID]
+					st.Queue = append(st.Queue, tr.Passengers...)
 				}
 				tr.Passengers = nil
 			}
@@ -437,26 +452,17 @@ func (s *Simulator) chooseReward(a ChooseReward) error {
 		return errors.New("no pending reward choice available")
 	}
 
-	var chosenType RewardType = -1
-
-	// 1. Try matching positional index (0 = first card, 1 = second card)
+	// BUG-1: the API contract is strictly positional — a.Choice is always 0 (first card)
+	// or 1 (second card). Using the enum value directly would collide because RewardType
+	// values 0 and 1 are valid positional indices. The frontend always sends positional
+	// indices; any RL / API caller must do the same.
 	idx := int(a.Choice)
-	if idx >= 0 && idx < len(s.State.PendingRewardChoices) {
-		chosenType = s.State.PendingRewardChoices[idx]
-	} else {
-		// 2. Fallback: match RewardType enum value directly if sent by caller
-		for _, c := range s.State.PendingRewardChoices {
-			if c == a.Choice {
-				chosenType = c
-				break
-			}
-		}
+	if idx < 0 || idx >= len(s.State.PendingRewardChoices) {
+		return errors.New("invalid reward choice: expected positional index 0 or 1")
 	}
+	chosenType := s.State.PendingRewardChoices[idx]
 
-	if chosenType == -1 {
-		return errors.New("invalid reward choice")
-	}
-
+	// Tunnel reward grants two tokens (as per original Mini Metro bonus mechanics).
 	if chosenType == RewardTunnel {
 		s.State.Resources.Grant(RewardTunnel)
 		s.State.Resources.Grant(RewardTunnel)
@@ -519,10 +525,13 @@ func (s *Simulator) shortenLine(a ShortenLine) error {
 				continue
 			}
 			tr.Segment--
-			if tr.Segment <= 0 {
+			// BUG-3 fix: use < 0 (not <= 0) so trains legitimately at segment 1
+			// (now segment 0) keep their existing direction. Only truly out-of-bounds
+			// trains (segment < 0) need clamping and a direction reset.
+			if tr.Segment < 0 {
 				tr.Segment = 0
+				tr.Direction = 1 // was heading toward the now-removed first station; reset forward
 				tr.Progress = 0
-				tr.Direction = 1 // was heading toward the now-removed first station; reverse
 			}
 		}
 	} else {

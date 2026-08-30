@@ -140,7 +140,6 @@ func main() {
 	sim4.ApplyAction(engine.AddTrain{LineID: 0})
 	// Manually inject a passenger wanting Pentagon (unreachable) into station 0
 	sim4.State.Stations[0].Queue = append(sim4.State.Stations[0].Queue, engine.Passenger{
-		Origin:      0,
 		Destination: engine.Pentagon,
 		SpawnTick:   0,
 	})
@@ -229,7 +228,6 @@ func main() {
 
 	// Seed Station 1 queue with passenger wanting Circle
 	sim8.State.Stations[1].Queue = append(sim8.State.Stations[1].Queue, engine.Passenger{
-		Origin:      1,
 		Destination: engine.Circle,
 	})
 
@@ -284,8 +282,8 @@ func main() {
 		Active:      true,
 		JustArrived: true,
 		Passengers: []engine.Passenger{
-			{Origin: 0, Destination: engine.Square},
-		},
+				{Destination: engine.Square},
+			},
 	})
 	sim9.Step(0.01) // boardAndAlight triggers at Station 1
 

@@ -356,7 +356,10 @@ func (s *Simulator) GetActionMask(outMask []bool) []bool {
 			continue
 		}
 
-		if !line.IsLoop && len(line.Stations) >= 2 {
+		// BUG-10 fix: closeLoop() in simulator.go rejects lines with fewer than 3 stations.
+		// The mask previously enabled CloseLoop for >= 2 stations, which would always
+		// produce an engine error — breaking the mask contract for RL agents / API callers.
+		if !line.IsLoop && len(line.Stations) >= 3 {
 			firstPos := s.State.Stations[line.Stations[0]].Pos
 			lastPos := s.State.Stations[line.Stations[len(line.Stations)-1]].Pos
 			needsTunnel := CrossesWater(lastPos, firstPos, s.State.Rivers, s.State.WaterPolygons)

@@ -201,11 +201,10 @@ func expectedTrainWaitTime(state *GameState, stationID, lineID, direction int) f
 		}
 
 		if !found && minWait == math.MaxFloat64 {
-			// Fallback wait time estimate
-			totalTime := float64(N) * 10.0
-			if totalTime < minWait {
-				minWait = totalTime
-			}
+			// BUG-9 fix: the old code declared a local `totalTime` that shadowed the outer
+			// loop variable and then guarded it with `if totalTime < minWait` which is
+			// always true when minWait == math.MaxFloat64. Simplify to a direct assignment.
+			minWait = float64(N) * 10.0
 		}
 	}
 

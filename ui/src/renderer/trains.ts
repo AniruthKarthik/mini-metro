@@ -12,9 +12,26 @@ export class TrainInterpolator {
   private currentAt = 0;
 
   public setSnapshot(trains: TrainDTO[], now: number = performance.now()): void {
-    this.previousById = this.currentById;
+    const incoming = new Map((trains || []).map((train) => [train.id, train]));
+
+    // BUG-5 fix: detect recycled train IDs. The engine reuses a deactivated train's
+    // slot index (and thus its ID) when spawning a new train. If the previous snapshot
+    // had train ID=N on lineA, and the new snapshot has train ID=N on lineB, carrying
+    // over the previous interpolation state would cause a one-frame snap/teleport.
+    // Clear the previous entry for any ID whose line has changed so interpolation
+    // starts fresh for the re-activated train.
+    const previous = this.currentById;
+    for (const [id, train] of incoming) {
+      const prev = previous.get(id);
+      if (prev && prev.line_id !== train.line_id) {
+        // Recycled slot: discard history so the new train starts without stale state.
+        previous.delete(id);
+      }
+    }
+
+    this.previousById = previous;
     this.previousAt = this.currentAt || now;
-    this.currentById = new Map((trains || []).map((train) => [train.id, train]));
+    this.currentById = incoming;
     this.currentAt = now;
   }
 
@@ -85,6 +102,10 @@ export class TrainInterpolator {
       !previous ||
       previous.line_id !== current.line_id ||
       previous.segment !== current.segment ||
+      // BUG-15 (design): when direction flips at a terminal bounce, interpolation is
+      // aborted and the train snaps to the current frame position. This is intentional:
+      // interpolating through a direction reversal would show the train running backwards
+      // through the terminal, which is visually worse than a single-frame snap.
       previous.direction !== current.direction ||
       Math.abs(current.progress - previous.progress) > 0.5
     ) {

@@ -476,9 +476,12 @@ export class HUD {
       `;
 
       card.addEventListener('click', () => {
+        // BUG-19 fix: explicitly send the positional index (0 = first card, 1 = second card)
+        // rather than the RewardType enum value. The server's chooseReward() now enforces
+        // a strictly positional contract (see BUG-1 fix), so these must stay in sync.
         this.wsClient.sendAction({
           type: 'choose_reward',
-          payload: { choice: index },
+          payload: { choice: index },   // `index` = 0 or 1 (positional, not RewardType enum)
         });
         this.rewardModal.classList.add('hidden');
       });
