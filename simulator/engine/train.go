@@ -2,9 +2,13 @@ package engine
 
 import "math"
 
-const trainSpeed = 1.8
-const dwellTime = 0.4 // seconds a train pauses at each station for boarding/alighting
-const passengerServiceTime = 0.5
+const (
+	trainSpeed           = 1.8
+	dwellTime            = 0.4  // seconds a train pauses at each station for boarding/alighting
+	passengerServiceTime = 0.5  // seconds per passenger boarding/alighting
+	minTrainSpeedFactor  = 0.30 // minimum speed factor (30% of cruising speed) when departing or approaching a station platform
+	accelDecelDistance   = 0.25 // fraction of segment distance used for acceleration / deceleration (0.0 to 0.25 accel, 0.75 to 1.0 decel)
+)
 
 type Train struct {
 	ID             int
@@ -17,11 +21,15 @@ type Train struct {
 	Passengers     []Passenger
 	Active         bool
 	JustArrived    bool
+	JustDeparted   bool // true if train recently departed a station where it stopped (for smooth acceleration)
 	DwellRemaining float64
 	ServiceElapsed float64
 }
 
-// velocityProfile returns a smooth acceleration/deceleration multiplier in [0.35, 1.0] based on segment progress p in [0, 1].
+// velocityProfile returns a smooth, symmetric acceleration/deceleration multiplier in [minTrainSpeedFactor, 1.0].
+// - Leaving a station (0.0 <= p < 0.25): accelerates smoothly from minTrainSpeedFactor to 1.0 (constant cruising speed).
+// - Intermediate path (0.25 <= p <= 0.75): constant cruising speed (1.0).
+// - Entering a station (0.75 < p <= 1.0): decelerates smoothly from 1.0 down to minTrainSpeedFactor with exact symmetric rate.
 func velocityProfile(p float64, accelFromStart bool, decelAtEnd bool) float64 {
 	if p < 0.0 {
 		p = 0.0
@@ -31,12 +39,21 @@ func velocityProfile(p float64, accelFromStart bool, decelAtEnd bool) float64 {
 	}
 
 	mult := 1.0
-	if accelFromStart && p < 0.25 {
-		mult = math.Min(mult, 0.35+0.65*math.Sin((p/0.25)*(math.Pi/2.0)))
+
+	// Acceleration phase when leaving a station (0.0 to accelDecelDistance)
+	if accelFromStart && p < accelDecelDistance {
+		ratio := p / accelDecelDistance
+		accelMult := minTrainSpeedFactor + (1.0-minTrainSpeedFactor)*math.Sin(ratio*(math.Pi/2.0))
+		mult = math.Min(mult, accelMult)
 	}
-	if decelAtEnd && p > 0.75 {
-		mult = math.Min(mult, 0.35+0.65*math.Sin(((1.0-p)/0.25)*(math.Pi/2.0)))
+
+	// Deceleration phase when entering a station (1.0 - accelDecelDistance to 1.0)
+	if decelAtEnd && p > (1.0-accelDecelDistance) {
+		ratio := (1.0 - p) / accelDecelDistance
+		decelMult := minTrainSpeedFactor + (1.0-minTrainSpeedFactor)*math.Sin(ratio*(math.Pi/2.0))
+		mult = math.Min(mult, decelMult)
 	}
+
 	return mult
 }
 
@@ -162,11 +179,23 @@ func (s *Simulator) moveTrains(dt float64) {
 				nextSegIdx = len(line.Stations) - 1
 			}
 		}
-		// Terminal station or loop end-point acceleration/deceleration check
-		isStartTerminal := !line.IsLoop && (tr.Segment == 0 || tr.Segment == len(line.Stations)-1)
-		isNextTerminal := !line.IsLoop && (nextSegIdx == 0 || nextSegIdx == len(line.Stations)-1)
 
-		prof := velocityProfile(tr.Progress, isStartTerminal, isNextTerminal)
+		// Check if train will stop at next station (terminal turn-around or passenger service)
+		isNextTerminal := !line.IsLoop && (nextSegIdx == 0 || nextSegIdx == len(line.Stations)-1)
+		nextStID := line.Stations[nextSegIdx]
+		nextHasService := false
+		if nextStID >= 0 && nextStID < len(s.State.Stations) {
+			nextSt := &s.State.Stations[nextStID]
+			if nextSt.Alive {
+				nextHasService = s.hasServiceWork(tr, nextSt, nextStID)
+			}
+		}
+		decelAtEnd := isNextTerminal || nextHasService
+
+		// Train accelerates from start of segment only if it stopped at tr.Segment
+		accelFromStart := tr.JustDeparted
+
+		prof := velocityProfile(tr.Progress, accelFromStart, decelAtEnd)
 		cornerMult := trackCornerMultiplier(&s.State, line, tr.Segment, tr.Direction)
 		effSpeed := trainSpeed * prof * cornerMult
 
@@ -176,6 +205,10 @@ func (s *Simulator) moveTrains(dt float64) {
 		}
 		progressDelta := (effSpeed / trainSpeed) * dt / baseTravelTime
 		tr.Progress += progressDelta
+
+		if tr.Progress >= 0.25 {
+			tr.JustDeparted = false
+		}
 
 		// Reached next station
 		for tr.Progress >= 1.0 {
@@ -200,15 +233,30 @@ func (s *Simulator) moveTrains(dt float64) {
 				}
 			}
 
-			tr.JustArrived = true
-		}
-
-		if tr.JustArrived {
+			// Check if train needs to stop at this station
 			stID := line.Stations[tr.Segment]
-			if s.State.Stations[stID].IsInterchange {
-				tr.DwellRemaining = dwellTime / 2
+			isTerminal := !line.IsLoop && (tr.Segment == 0 || tr.Segment == len(line.Stations)-1)
+			hasService := false
+			if stID >= 0 && stID < len(s.State.Stations) {
+				st := &s.State.Stations[stID]
+				if st.Alive {
+					hasService = s.hasServiceWork(tr, st, stID)
+				}
+			}
+
+			if isTerminal || hasService {
+				tr.JustArrived = true
+				tr.JustDeparted = true
+				if s.State.Stations[stID].IsInterchange {
+					tr.DwellRemaining = dwellTime / 2
+				} else {
+					tr.DwellRemaining = dwellTime
+				}
 			} else {
-				tr.DwellRemaining = dwellTime
+				// No passenger exchange & not terminal -> pass straight through without stopping!
+				tr.JustArrived = false
+				tr.JustDeparted = false
+				tr.DwellRemaining = 0
 			}
 		}
 	}

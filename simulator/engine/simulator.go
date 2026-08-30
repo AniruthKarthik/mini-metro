@@ -312,6 +312,7 @@ func (s *Simulator) spawnOrCreateTrain(lineID int) {
 			tr.Passengers = nil
 			tr.Active = true
 			tr.JustArrived = true
+			tr.JustDeparted = true
 			tr.DwellRemaining = 0
 			tr.ServiceElapsed = 0
 			return
@@ -329,6 +330,7 @@ func (s *Simulator) spawnOrCreateTrain(lineID int) {
 		Carriages:      1,
 		Active:         true,
 		JustArrived:    true,
+		JustDeparted:   true,
 		DwellRemaining: 0,
 		ServiceElapsed: 0,
 	})
@@ -699,6 +701,7 @@ func (s *Simulator) repositionTrain(a RepositionTrain) error {
 	tr.Progress = 0
 	tr.Direction = dir
 	tr.JustArrived = true
+	tr.JustDeparted = true
 	tr.DwellRemaining = 0
 
 	return nil
