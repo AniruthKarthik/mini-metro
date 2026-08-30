@@ -51,6 +51,12 @@ type AddCarriage struct {
 
 func (AddCarriage) isAction() {}
 
+type RemoveCarriage struct {
+	TrainID int
+}
+
+func (RemoveCarriage) isAction() {}
+
 type UpgradeInterchange struct {
 	StationID int
 }

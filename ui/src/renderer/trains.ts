@@ -129,19 +129,33 @@ export function computeTrainPosition(
   const n = line.stations.length;
   if (n < 2 || tr.segment < 0 || tr.segment >= n) return null;
 
-  // Segment endpoints in line station array order (0 to n-2)
-  let segIdx = tr.segment;
-  if (segIdx >= n - 1) {
-    segIdx = line.is_loop ? (n - 1) : (n - 2);
-  }
+  let st1Id: number;
+  let st2Id: number;
+  let effectiveProg: number;
+  const isMovingForward = tr.direction >= 0;
+  const rawProg = Math.max(0, Math.min(1, tr.progress));
 
-  let nextSegIdx = segIdx + 1;
-  if (line.is_loop && nextSegIdx >= n) {
-    nextSegIdx = 0;
+  if (line.is_loop) {
+    let segIdx = ((tr.segment % n) + n) % n;
+    let nextSegIdx = (segIdx + (isMovingForward ? 1 : -1) + n) % n;
+    st1Id = line.stations[segIdx];
+    st2Id = line.stations[nextSegIdx];
+    effectiveProg = rawProg;
+  } else {
+    if (isMovingForward) {
+      let segIdx = Math.max(0, Math.min(n - 2, tr.segment));
+      st1Id = line.stations[segIdx];
+      st2Id = line.stations[segIdx + 1];
+      effectiveProg = rawProg;
+    } else {
+      // Moving backward (direction = -1): train travels from tr.segment to tr.segment - 1.
+      // Physical segment is between stations[tr.segment - 1] (st1) and stations[tr.segment] (st2).
+      let segIdx = Math.max(1, Math.min(n - 1, tr.segment));
+      st1Id = line.stations[segIdx - 1];
+      st2Id = line.stations[segIdx];
+      effectiveProg = 1.0 - rawProg;
+    }
   }
-
-  const st1Id = line.stations[segIdx];
-  const st2Id = line.stations[nextSegIdx];
 
   const st1 = stationMap.get(st1Id);
   const st2 = stationMap.get(st2Id);
@@ -176,10 +190,6 @@ export function computeTrainPosition(
     return { pos: p1Offset, angle: 0 };
   }
 
-  // Determine direction along the station array (forward or backward)
-  const isMovingForward = tr.direction >= 0;
-  const rawProg = Math.max(0, Math.min(1, tr.progress));
-  const effectiveProg = isMovingForward ? rawProg : (1.0 - rawProg);
   let targetDist = effectiveProg * totalLength;
 
   // Interpolate along octilinearPts

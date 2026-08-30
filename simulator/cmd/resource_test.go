@@ -57,6 +57,44 @@ func TestActionGatingOnResources(t *testing.T) {
 	}
 }
 
+func TestAddAndRemoveCarriage(t *testing.T) {
+	sim := engine.NewSimulator([]engine.Station{
+		{ID: 0, Kind: engine.Circle, Pos: engine.Pos{X: 0, Y: 0}},
+		{ID: 1, Kind: engine.Triangle, Pos: engine.Pos{X: 10, Y: 0}},
+	})
+	_ = sim.ApplyAction(engine.AddLine{Stations: []int{0, 1}}) // Spawns train ID 0
+
+	// Initially 0 carriages in pool and train 0 has 1 carriage
+	sim.State.Resources.Grant(engine.RewardCarriage)
+	if sim.State.Resources.Carriages != 1 {
+		t.Fatalf("expected 1 carriage in pool, got %d", sim.State.Resources.Carriages)
+	}
+
+	// Add carriage to train 0
+	err := sim.ApplyAction(engine.AddCarriage{TrainID: 0})
+	if err != nil {
+		t.Fatalf("unexpected error adding carriage: %v", err)
+	}
+	if sim.State.Trains[0].Carriages != 2 {
+		t.Errorf("expected train 0 to have 2 carriages, got %d", sim.State.Trains[0].Carriages)
+	}
+	if sim.State.Resources.Carriages != 0 {
+		t.Errorf("expected 0 carriages in pool after adding to train, got %d", sim.State.Resources.Carriages)
+	}
+
+	// Remove carriage from train 0
+	err = sim.ApplyAction(engine.RemoveCarriage{TrainID: 0})
+	if err != nil {
+		t.Fatalf("unexpected error removing carriage: %v", err)
+	}
+	if sim.State.Trains[0].Carriages != 1 {
+		t.Errorf("expected train 0 to have 1 carriage after removal, got %d", sim.State.Trains[0].Carriages)
+	}
+	if sim.State.Resources.Carriages != 1 {
+		t.Errorf("expected 1 carriage refunded to pool after removal, got %d", sim.State.Resources.Carriages)
+	}
+}
+
 func TestResourceReturnOnRemoval(t *testing.T) {
 	sim := engine.NewSimulator([]engine.Station{
 		{ID: 0, Kind: engine.Circle, Pos: engine.Pos{X: 0, Y: 0}},

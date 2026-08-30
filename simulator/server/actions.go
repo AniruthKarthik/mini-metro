@@ -113,6 +113,15 @@ func ParseAction(raw []byte) (engine.Action, string, error) {
 		}
 		return engine.AddCarriage{TrainID: p.TrainID}, "", nil
 
+	case "remove_carriage":
+		var p struct {
+			TrainID int `json:"train_id"`
+		}
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return nil, "", err
+		}
+		return engine.RemoveCarriage{TrainID: p.TrainID}, "", nil
+
 	case "upgrade_interchange":
 		var p struct {
 			StationID int `json:"station_id"`

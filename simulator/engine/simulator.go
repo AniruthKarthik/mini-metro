@@ -136,6 +136,8 @@ func (s *Simulator) ApplyAction(a Action) error {
 		return s.chooseReward(v)
 	case AddCarriage:
 		return s.addCarriage(v)
+	case RemoveCarriage:
+		return s.removeCarriage(v)
 	case UpgradeInterchange:
 		return s.upgradeInterchange(v)
 	case ShortenLine:
@@ -380,6 +382,25 @@ func (s *Simulator) addCarriage(a AddCarriage) error {
 	}
 
 	tr.Carriages++
+	return nil
+}
+
+func (s *Simulator) removeCarriage(a RemoveCarriage) error {
+	if a.TrainID < 0 || a.TrainID >= len(s.State.Trains) {
+		return errors.New("invalid train ID")
+	}
+
+	tr := &s.State.Trains[a.TrainID]
+	if !tr.Active {
+		return errors.New("train is inactive")
+	}
+
+	if tr.Carriages <= 1 {
+		return errors.New("train has no extra carriages to remove")
+	}
+
+	tr.Carriages--
+	s.State.Resources.Grant(RewardCarriage)
 	return nil
 }
 
@@ -735,7 +756,7 @@ func (s *Simulator) insertStation(a InsertStation) error {
 	}
 
 	if netTunnels > 0 {
-		if !s.State.Resources.CanSpend(RewardTunnel) {
+		if s.State.Resources.Tunnels < netTunnels {
 			return errors.New("no tunnel tokens available")
 		}
 		for i := 0; i < netTunnels; i++ {

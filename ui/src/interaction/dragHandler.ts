@@ -301,7 +301,7 @@ export class DragHandler {
     return closest;
   }
 
-  private findTrainAt(pos: Pos, trains: TrainDTO[], lines: LineDTO[], stations: StationDTO[], threshold: number = 45): { trainId: number; lineId: number } | null {
+  private findTrainAt(pos: Pos, trains: TrainDTO[], lines: LineDTO[], stations: StationDTO[], threshold: number = 45): { trainId: number; lineId: number; isCarriage: boolean } | null {
     if (!trains || !lines || !stations) return null;
     const stationMap = new Map<number, StationDTO>();
     for (const st of stations) stationMap.set(st.id, st);
@@ -311,7 +311,7 @@ export class DragHandler {
 
     const sharedEdgeMap = buildSharedEdgeMap(lines);
     const px = getX(pos), py = getY(pos);
-    let closest: { trainId: number; lineId: number; dist: number } | null = null;
+    let closest: { trainId: number; lineId: number; dist: number; isCarriage: boolean } | null = null;
 
     for (const tr of trains) {
       if ((tr as any).active === false) continue;
@@ -321,18 +321,36 @@ export class DragHandler {
       const trainPos = computeTrainPosition(tr, line, stationMap, this.viewport, sharedEdgeMap);
       if (!trainPos) continue;
 
+      // 1. Check locomotive head
       const dx = getX(trainPos.pos) - px;
       const dy = getY(trainPos.pos) - py;
-      const dist = Math.sqrt(dx * dx + dy * dy);
+      const distHead = Math.sqrt(dx * dx + dy * dy);
 
-      if (dist <= threshold) {
-        if (!closest || dist < closest.dist) {
-          closest = { trainId: tr.id, lineId: tr.line_id, dist };
+      if (distHead <= threshold) {
+        if (!closest || distHead < closest.dist) {
+          closest = { trainId: tr.id, lineId: tr.line_id, dist: distHead, isCarriage: false };
+        }
+      }
+
+      // 2. Check trailing attached carriages
+      if (tr.carriages > 1) {
+        const trainX = getX(trainPos.pos);
+        const trainY = getY(trainPos.pos);
+        for (let c = 1; c < tr.carriages; c++) {
+          const trailDist = c * 26;
+          const trailX = trainX - Math.cos(trainPos.angle) * trailDist;
+          const trailY = trainY - Math.sin(trainPos.angle) * trailDist;
+          const distCarriage = Math.sqrt((trailX - px) ** 2 + (trailY - py) ** 2);
+          if (distCarriage <= threshold) {
+            if (!closest || distCarriage < closest.dist) {
+              closest = { trainId: tr.id, lineId: tr.line_id, dist: distCarriage, isCarriage: true };
+            }
+          }
         }
       }
     }
 
-    return closest ? { trainId: closest.trainId, lineId: closest.lineId } : null;
+    return closest ? { trainId: closest.trainId, lineId: closest.lineId, isCarriage: closest.isCarriage } : null;
   }
 
   private findTerminalToExtend(pos: Pos, lines: LineDTO[], stations: StationDTO[]): { lineId: number; stationId: number; fromFront: boolean } | null {
@@ -528,14 +546,22 @@ export class DragHandler {
     const res = (snap.resources || {}) as any;
     const availableLines = res.lines ?? res.Lines ?? 0;
 
-    // 0. Check active train hit box -> REPOSITION TRAIN
+    // 0. Check active train or attached carriage hit box -> REPOSITION TRAIN or REPOSITION CARRIAGE
     const trainHit = this.findTrainAt(pos, trains, lines, stations, 45);
     if (trainHit) {
-      this.dragState = {
-        source: { type: 'reposition_train', trainId: trainHit.trainId, fromLineId: trainHit.lineId } as any,
-        currentPos: pos,
-        targetStationId: null,
-      };
+      if (trainHit.isCarriage) {
+        this.dragState = {
+          source: { type: 'reposition_carriage', trainId: trainHit.trainId, fromLineId: trainHit.lineId } as any,
+          currentPos: pos,
+          targetStationId: null,
+        };
+      } else {
+        this.dragState = {
+          source: { type: 'reposition_train', trainId: trainHit.trainId, fromLineId: trainHit.lineId } as any,
+          currentPos: pos,
+          targetStationId: null,
+        };
+      }
       this.selectedStationId = null;
       return;
     }
@@ -552,24 +578,7 @@ export class DragHandler {
       return;
     }
 
-    // 2. Check station node hit box -> DRAFT A NEW LINE FROM THIS STATION
-    const st = this.findStationAt(pos, stations, 55);
-    if (st) {
-      if (availableLines > 0) {
-        const nextLineIdx = this.getNextLineIndex(lines);
-        this.dragState = {
-          source: { type: 'new_line', lineIndex: nextLineIdx, firstStationId: st.id } as any,
-          currentPos: pos,
-          targetStationId: null,
-        };
-      } else {
-        console.warn('⚠️ [FRONTEND] No available line tokens in resource pool');
-      }
-      this.selectedStationId = null;
-      return;
-    }
-
-    // 3. Check line track segment hit box -> INSERT INTERMEDIATE STATION
+    // 2. Check line track segment hit box -> INSERT INTERMEDIATE STATION (Bending existing line track)
     const segHit = this.findSegmentToInsert(pos, lines, stations);
     if (segHit) {
       this.dragState = {
@@ -583,6 +592,23 @@ export class DragHandler {
         currentPos: pos,
         targetStationId: null,
       };
+      this.selectedStationId = null;
+      return;
+    }
+
+    // 3. Check station node hit box -> DRAFT A NEW LINE FROM THIS STATION
+    const st = this.findStationAt(pos, stations, 55);
+    if (st) {
+      if (availableLines > 0) {
+        const nextLineIdx = this.getNextLineIndex(lines);
+        this.dragState = {
+          source: { type: 'new_line', lineIndex: nextLineIdx, firstStationId: st.id } as any,
+          currentPos: pos,
+          targetStationId: null,
+        };
+      } else {
+        console.warn('⚠️ [FRONTEND] No available line tokens in resource pool');
+      }
       this.selectedStationId = null;
       return;
     }
@@ -664,23 +690,50 @@ export class DragHandler {
       } else if (source.type === 'extend_line') {
         const line = lines.find((l) => l.id === source.lineId);
         if (line) {
-          // 1. Dragged endpoint into empty space -> Remove Line
+          // 1. Dragged endpoint into empty space -> CANCEL DRAG (Do not remove line!)
           if (targetStId === null) {
-            console.log(`🗑️ [FRONTEND] Dragged end off into space -> Removing Line ${line.id}`);
-            this.wsClient.sendAction({
-              type: 'remove_line',
-              payload: { line_id: line.id },
-            });
+            console.log(`❌ [FRONTEND] Dragged endpoint released in empty space -> canceling extend for line ${line.id}`);
             this.selectedStationId = null;
             this.dragState = null;
             return;
           }
 
-          // 2. Connecting opposite terminal -> Close loop
+          // 2. Shortening check (dragging endpoint back to preceding station)
           if (!line.is_loop && line.stations.length >= 2) {
             const firstStId = line.stations[0];
             const lastStId = line.stations[line.stations.length - 1];
 
+            // 2a. Shortening 2-station line back onto origin -> Remove Line
+            if (line.stations.length === 2 && (targetStId === firstStId || targetStId === lastStId)) {
+              console.log(`🗑️ [FRONTEND] Shortening 2-station line to origin -> Removing Line ${line.id}`);
+              this.wsClient.sendAction({
+                type: 'remove_line',
+                payload: { line_id: line.id },
+              });
+              this.selectedStationId = null;
+              this.dragState = null;
+              return;
+            }
+
+            // 2b. Shortening line by 1 station from endpoint
+            const secondStId = line.stations[1];
+            const secondLastStId = line.stations[line.stations.length - 2];
+            const isShortening =
+              (source.fromFront && targetStId === secondStId) ||
+              (!source.fromFront && targetStId === secondLastStId);
+
+            if (isShortening) {
+              console.log(`✂️ [FRONTEND] Shortening Line ${line.id} from ${source.fromFront ? 'front' : 'back'}`);
+              this.wsClient.sendAction({
+                type: 'shorten_line',
+                payload: { line_id: line.id, from_front: source.fromFront },
+              });
+              this.selectedStationId = null;
+              this.dragState = null;
+              return;
+            }
+
+            // 2c. Connecting opposite terminal -> Close loop
             const isOppositeTerminal =
               (source.fromStationId === firstStId && targetStId === lastStId) ||
               (source.fromStationId === lastStId && targetStId === firstStId);
@@ -695,21 +748,9 @@ export class DragHandler {
               this.dragState = null;
               return;
             }
-
-            // 3. Shortening 2-station line back onto origin -> Remove Line
-            if (line.stations.length === 2 && (targetStId === firstStId || targetStId === lastStId)) {
-              console.log(`🗑️ [FRONTEND] Shortening 2-station line to origin -> Removing Line ${line.id}`);
-              this.wsClient.sendAction({
-                type: 'remove_line',
-                payload: { line_id: line.id },
-              });
-              this.selectedStationId = null;
-              this.dragState = null;
-              return;
-            }
           }
 
-          // 4. Normal line extension
+          // 3. Normal line extension
           if (!line.stations.includes(targetStId) && source.fromStationId !== targetStId) {
             this.wsClient.sendAction({
               type: 'extend_line',
@@ -755,15 +796,56 @@ export class DragHandler {
             payload: { train_id: src.trainId, line_id: targetLine.id, segment: segIdx, direction: 1 },
           });
         }
+      } else if ((source as any).type === 'reposition_carriage') {
+        const src = source as any;
+        const closestSeg = this.findSegmentToInsert(currentPos, lines, stations, 120);
+        const targetLine = closestSeg
+          ? lines.find((l) => l.id === closestSeg.lineId) || null
+          : (targetStId !== null ? lines.find((l) => !l.removed && l.stations.includes(targetStId)) || null : null);
+
+        let targetTrain: typeof trains[0] | undefined;
+        if (targetLine) {
+          const stationMap = new Map(stations.map((s) => [s.id, s]));
+          const sharedEdgeMap = buildSharedEdgeMap(lines);
+          let minDist = Infinity;
+          for (const tr of trains) {
+            if (tr.line_id !== targetLine.id) continue;
+            const trainPos = computeTrainPosition(tr, targetLine, stationMap, this.viewport, sharedEdgeMap);
+            if (trainPos) {
+              const dx = getX(trainPos.pos) - getX(currentPos);
+              const dy = getY(trainPos.pos) - getY(currentPos);
+              const dist = Math.sqrt(dx * dx + dy * dy);
+              if (dist < minDist) {
+                minDist = dist;
+                targetTrain = tr;
+              }
+            }
+          }
+        }
+
+        if (targetTrain && targetTrain.id !== src.trainId) {
+          console.log(`🚃 [FRONTEND] Transferring carriage from Train ${src.trainId} to Train ${targetTrain.id}`);
+          this.wsClient.sendAction({
+            type: 'remove_carriage',
+            payload: { train_id: src.trainId },
+          });
+          this.wsClient.sendAction({
+            type: 'add_carriage',
+            payload: { train_id: targetTrain.id },
+          });
+        } else if (!targetLine && targetStId === null) {
+          console.log(`🚃 [FRONTEND] Removing carriage from Train ${src.trainId} back to inventory`);
+          this.wsClient.sendAction({
+            type: 'remove_carriage',
+            payload: { train_id: src.trainId },
+          });
+        }
       } else if (source.type === 'add_carriage') {
         const closestSeg = this.findSegmentToInsert(currentPos, lines, stations, 120);
         const targetLine = closestSeg
           ? lines.find((l) => l.id === closestSeg.lineId) || null
           : (targetStId !== null ? lines.find((l) => !l.removed && l.stations.includes(targetStId)) || null : null);
 
-        // BUG-18 fix: pick the *closest* active train on the target line by screen
-        // distance using computeTrainPosition (already statically imported from trains.ts),
-        // rather than always using the first train in the array.
         let train: typeof trains[0] | undefined;
         if (targetLine) {
           const stationMap = new Map(stations.map((s) => [s.id, s]));
