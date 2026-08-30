@@ -466,11 +466,7 @@ export class DragHandler {
       : null;
   }
 
-  private findLineNear(pos: Pos, lines: LineDTO[], stations: StationDTO[], threshold: number = 75): LineDTO | null {
-    const seg = this.findSegmentToInsert(pos, lines, stations, threshold);
-    if (!seg) return null;
-    return lines.find((l) => l.id === seg.lineId) || null;
-  }
+
 
   private getNextLineIndex(lines: LineDTO[]): number {
     const activeIds = new Set(lines.filter((line) => !line.removed).map((line) => line.id));
@@ -712,39 +708,53 @@ export class DragHandler {
           }
         }
       } else if (source.type === 'add_train') {
-        let line = targetStId !== null
-          ? lines.find((l) => !l.removed && l.stations.includes(targetStId))
-          : this.findLineNear(currentPos, lines, stations, 75);
+        const closestSeg = this.findSegmentToInsert(currentPos, lines, stations, 120);
+        const targetLine = closestSeg
+          ? lines.find((l) => l.id === closestSeg.lineId) || null
+          : (targetStId !== null ? lines.find((l) => !l.removed && l.stations.includes(targetStId)) || null : null);
 
-        if (line) {
+        if (targetLine) {
+          console.log(`🚂 [FRONTEND] Adding locomotive to Line ${targetLine.id}`);
           this.wsClient.sendAction({
             type: 'add_train',
-            payload: { line_id: line.id },
+            payload: { line_id: targetLine.id },
           });
         }
       } else if (source.type === 'reposition_train' || (source as any).type === 'reposition_train') {
         const src = source as any;
-        const line = targetStId !== null
-          ? lines.find((l) => !l.removed && l.stations.includes(targetStId))
-          : this.findLineNear(currentPos, lines, stations, 75);
+        const closestSeg = this.findSegmentToInsert(currentPos, lines, stations, 120);
+        let targetLine: LineDTO | null = null;
+        let segIdx = 0;
 
-        if (line) {
-          const targetSeg = this.findSegmentToInsert(currentPos, [line], stations, 75);
-          const segIdx = targetSeg ? targetSeg.insertIndex - 1 : 0;
-          console.log(`🚂 [FRONTEND] Dispatching reposition_train: Train ${src.trainId} to Line ${line.id} segment ${segIdx}`);
+        if (closestSeg) {
+          targetLine = lines.find((l) => l.id === closestSeg.lineId) || null;
+          segIdx = Math.max(0, closestSeg.insertIndex - 1);
+        } else if (targetStId !== null) {
+          targetLine = lines.find((l) => !l.removed && l.stations.includes(targetStId)) || null;
+          if (targetLine) {
+            const stIdx = targetLine.stations.indexOf(targetStId);
+            segIdx = Math.max(0, Math.min(targetLine.stations.length - 1, stIdx));
+          }
+        }
+
+        if (targetLine) {
+          console.log(`🚂 [FRONTEND] Moving Train ${src.trainId} (from Line ${src.fromLineId}) to Line ${targetLine.id} at segment ${segIdx}`);
           this.wsClient.sendAction({
             type: 'reposition_train',
-            payload: { train_id: src.trainId, line_id: line.id, segment: segIdx, direction: 1 },
+            payload: { train_id: src.trainId, line_id: targetLine.id, segment: segIdx, direction: 1 },
           });
         }
       } else if (source.type === 'add_carriage') {
-        const line = targetStId !== null
-          ? lines.find((l) => !l.removed && l.stations.includes(targetStId))
-          : this.findLineNear(currentPos, lines, stations, 75);
-        const train = line
-          ? trains.find((tr) => tr.line_id === line.id)
+        const closestSeg = this.findSegmentToInsert(currentPos, lines, stations, 120);
+        const targetLine = closestSeg
+          ? lines.find((l) => l.id === closestSeg.lineId) || null
+          : (targetStId !== null ? lines.find((l) => !l.removed && l.stations.includes(targetStId)) || null : null);
+
+        const train = targetLine
+          ? trains.find((tr) => tr.line_id === targetLine.id)
           : null;
         if (train) {
+          console.log(`🚃 [FRONTEND] Adding carriage to Train ${train.id} on Line ${targetLine!.id}`);
           this.wsClient.sendAction({
             type: 'add_carriage',
             payload: { train_id: train.id },
