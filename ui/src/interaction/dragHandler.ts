@@ -419,6 +419,7 @@ export class DragHandler {
 
     const px = getX(pos);
     const py = getY(pos);
+    let bestMatch: { lineId: number; insertIndex: number; fromStationAId: number; toStationBId: number; dist: number } | null = null;
 
     for (const line of lines) {
       if (line.removed || !line.stations || line.stations.length < 2) continue;
@@ -441,17 +442,28 @@ export class DragHandler {
         for (let k = 0; k < octPts.length - 1; k++) {
           const dist = distToSegment({ x: px, y: py }, octPts[k], octPts[k + 1]);
           if (dist <= threshold) {
-            return {
-              lineId: line.id,
-              insertIndex: i + 1,
-              fromStationAId: st1Id,
-              toStationBId: st2Id,
-            };
+            if (!bestMatch || dist < bestMatch.dist) {
+              bestMatch = {
+                lineId: line.id,
+                insertIndex: i + 1,
+                fromStationAId: st1Id,
+                toStationBId: st2Id,
+                dist,
+              };
+            }
           }
         }
       }
     }
-    return null;
+
+    return bestMatch
+      ? {
+          lineId: bestMatch.lineId,
+          insertIndex: bestMatch.insertIndex,
+          fromStationAId: bestMatch.fromStationAId,
+          toStationBId: bestMatch.toStationBId,
+        }
+      : null;
   }
 
   private findLineNear(pos: Pos, lines: LineDTO[], stations: StationDTO[], threshold: number = 75): LineDTO | null {

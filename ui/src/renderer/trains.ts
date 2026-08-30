@@ -106,20 +106,21 @@ export function computeTrainPosition(
   edgeMap: SharedEdgeMap
 ): { pos: Pos; angle: number } | null {
   const n = line.stations.length;
-  if (tr.segment < 0 || tr.segment >= n) return null;
+  if (n < 2 || tr.segment < 0 || tr.segment >= n) return null;
 
-  let st1Idx = tr.segment;
-  let st2Idx = tr.segment + tr.direction;
-
-  if (line.is_loop) {
-    st2Idx = (tr.segment + tr.direction + n) % n;
-  } else {
-    if (st2Idx < 0) st2Idx = 0;
-    if (st2Idx >= n) st2Idx = n - 1;
+  // Segment endpoints in line station array order (0 to n-2)
+  let segIdx = tr.segment;
+  if (segIdx >= n - 1) {
+    segIdx = line.is_loop ? (n - 1) : (n - 2);
   }
 
-  const st1Id = line.stations[st1Idx];
-  const st2Id = line.stations[st2Idx];
+  let nextSegIdx = segIdx + 1;
+  if (line.is_loop && nextSegIdx >= n) {
+    nextSegIdx = 0;
+  }
+
+  const st1Id = line.stations[segIdx];
+  const st2Id = line.stations[nextSegIdx];
 
   const st1 = stationMap.get(st1Id);
   const st2 = stationMap.get(st2Id);
@@ -128,20 +129,15 @@ export function computeTrainPosition(
   const p1 = viewport.mapToScreen({ x: getX(st1), y: getY(st1) });
   const p2 = viewport.mapToScreen({ x: getX(st2), y: getY(st2) });
 
+  // EXACT same parallel offset and octilinear path as lines.ts
   const { p1Offset, p2Offset } = getSegmentParallelOffset(p1, p2, st1Id, st2Id, tr.line_id, edgeMap, 8.0);
+  const octilinearPts = generateOctilinearPath([p1Offset, p2Offset]);
 
-  // Order endpoints canonically to match exact parallel track line geometry drawn by lines.ts
-  const isForward = st1Idx <= st2Idx;
-  const startP = isForward ? p1Offset : p2Offset;
-  const endP = isForward ? p2Offset : p1Offset;
-
-  // Generate the EXACT canonical 45° octilinear track path
-  const octilinearPts = generateOctilinearPath([startP, endP]);
   if (octilinearPts.length < 2) {
     return { pos: p1Offset, angle: 0 };
   }
 
-  // Calculate segment lengths along canonical octilinear path
+  // Calculate segment lengths
   const segLengths: number[] = [];
   let totalLength = 0;
 
@@ -159,11 +155,13 @@ export function computeTrainPosition(
     return { pos: p1Offset, angle: 0 };
   }
 
+  // Determine direction along the station array (forward or backward)
+  const isMovingForward = tr.direction >= 0;
   const rawProg = Math.max(0, Math.min(1, tr.progress));
-  const effectiveProg = isForward ? rawProg : 1.0 - rawProg;
+  const effectiveProg = isMovingForward ? rawProg : (1.0 - rawProg);
   let targetDist = effectiveProg * totalLength;
 
-  // Interpolate position and angle along canonical octilinear path
+  // Interpolate along octilinearPts
   for (let i = 0; i < octilinearPts.length - 1; i++) {
     const len = segLengths[i];
     const a = octilinearPts[i];
@@ -178,17 +176,16 @@ export function computeTrainPosition(
       const y = ay + (by - ay) * frac;
 
       let angle = Math.atan2(by - ay, bx - ax);
-      if (!isForward) {
-        angle += Math.PI; // Reverse train orientation when moving backward along canonical track
+      if (!isMovingForward) {
+        angle += Math.PI;
       }
 
       return { pos: { x, y }, angle };
     }
-
     targetDist -= len;
   }
 
-  return { pos: isForward ? p2Offset : p1Offset, angle: 0 };
+  return { pos: p1Offset, angle: 0 };
 }
 
 function renderTrainCar(
