@@ -38,9 +38,9 @@ const (
 	UpgradeInterchangeOffset = AddCarriageOffset + AddCarriageCount
 	UpgradeInterchangeCount  = MaxStations
 
-	// ChooseReward: choice (0..3) = 4
+	// ChooseReward: positional index into 2 offered choices (0 or 1)
 	ChooseRewardOffset = UpgradeInterchangeOffset + UpgradeInterchangeCount
-	ChooseRewardCount  = 4
+	ChooseRewardCount  = 2
 
 	// CloseLoop: line_id (0..6) = 7
 	CloseLoopOffset = ChooseRewardOffset + ChooseRewardCount
@@ -249,6 +249,64 @@ func (s *Simulator) GetActionMask(outMask []bool) []bool {
 		}
 	}
 
+	// 2b. InsertStation
+	for lID := 0; lID < len(s.State.Lines); lID++ {
+		line := &s.State.Lines[lID]
+		if line.Removed || len(line.Stations) < 2 {
+			continue
+		}
+		n := len(line.Stations)
+		for stID := 0; stID < N; stID++ {
+			if !s.State.Stations[stID].Alive {
+				continue
+			}
+
+			// check if station is already on line
+			already := false
+			for _, sIdx := range line.Stations {
+				if sIdx == stID {
+					already = true
+					break
+				}
+			}
+			if already {
+				continue
+			}
+
+			stNewPos := s.State.Stations[stID].Pos
+			for segIdx := 1; segIdx < n && segIdx <= 15; segIdx++ {
+				stPrevPos := s.State.Stations[line.Stations[segIdx-1]].Pos
+				stNextPos := s.State.Stations[line.Stations[segIdx]].Pos
+
+				cross1 := CrossesWater(stPrevPos, stNewPos, s.State.Rivers, s.State.WaterPolygons)
+				cross2 := CrossesWater(stNewPos, stNextPos, s.State.Rivers, s.State.WaterPolygons)
+
+				origTunnel := false
+				if segIdx-1 < len(line.TunnelAt) && line.TunnelAt[segIdx-1] {
+					origTunnel = true
+				}
+
+				netTunnels := 0
+				if cross1 {
+					netTunnels++
+				}
+				if cross2 {
+					netTunnels++
+				}
+				if origTunnel {
+					netTunnels--
+				}
+
+				if netTunnels <= 0 || s.State.Resources.CanSpend(RewardTunnel) {
+					idx := (lID*MaxStations+stID)*15 + (segIdx - 1)
+					if idx < InsertStationCount {
+						outMask[InsertStationOffset+idx] = true
+					}
+				}
+			}
+		}
+	}
+
 	// 3. AddTrain
 	if s.State.Resources.CanSpend(RewardTrain) {
 		for lID := 0; lID < len(s.State.Lines); lID++ {
@@ -298,7 +356,10 @@ func (s *Simulator) GetActionMask(outMask []bool) []bool {
 			continue
 		}
 
-		if !line.IsLoop && len(line.Stations) >= 2 {
+		// BUG-10 fix: closeLoop() in simulator.go rejects lines with fewer than 3 stations.
+		// The mask previously enabled CloseLoop for >= 2 stations, which would always
+		// produce an engine error — breaking the mask contract for RL agents / API callers.
+		if !line.IsLoop && len(line.Stations) >= 3 {
 			firstPos := s.State.Stations[line.Stations[0]].Pos
 			lastPos := s.State.Stations[line.Stations[len(line.Stations)-1]].Pos
 			needsTunnel := CrossesWater(lastPos, firstPos, s.State.Rivers, s.State.WaterPolygons)

@@ -5,33 +5,35 @@ import (
 )
 
 const (
-	baseSpawnRate     = 0.04    // 1 passenger every ~25 seconds per station
-	spawnAccelPerTick = 0.000015 // gentle acceleration over game ticks
-	maxSpawnRate      = 0.4     // max spawn rate cap
+	baseSpawnRate       = 0.04    // 1 passenger every ~25 seconds per station
+	spawnAccelPerSecond = 0.00045 // equivalent to the old 30 TPS tick ramp
+	maxSpawnRate        = 0.4     // max spawn rate cap
 )
 
 // CurrentSpawnRate returns the passenger spawn rate (passengers/sec per station),
-// which accelerates gently over simulation time (s.State.Tick).
+// which accelerates gently over elapsed game time.
 func (s *Simulator) CurrentSpawnRate() float64 {
-	rate := baseSpawnRate + float64(s.State.Tick)*spawnAccelPerTick
+	rate := baseSpawnRate + s.State.GameTimeSeconds*spawnAccelPerSecond
 	if rate > maxSpawnRate {
 		return maxSpawnRate
 	}
 	return rate
 }
 
-// destinationWeights defines passenger attraction demand for each station kind.
+// destinationWeights defines relative passenger attraction for each station kind.
+// All shapes use equal weight: bottlenecks arise from station scarcity, not
+// inflated intrinsic demand (as per official Mini Metro mechanics).
 var destinationWeights = map[StationKind]int{
-	Circle:   2,
-	Triangle: 3,
-	Square:   4,
-	Star:     8,
-	Pentagon: 8,
-	Gem:      8,
-	Sector:   8,
-	Cross:    8,
-	Drop:     8,
-	Oval:     8,
+	Circle:   1,
+	Triangle: 1,
+	Square:   1,
+	Star:     1,
+	Pentagon: 1,
+	Gem:      1,
+	Sector:   1,
+	Cross:    1,
+	Drop:     1,
+	Oval:     1,
 }
 
 // sampleDestinationKind selects a destination StationKind for a passenger spawning at originKind,
@@ -66,32 +68,7 @@ func sampleDestinationKind(state *GameState, originKind StationKind, rng *rand.R
 	}
 
 	if numActive == 0 {
-		var fallback [16]StationKind
-		numFallback := 0
-		for k, w := range destinationWeights {
-			if k != originKind {
-				totalWeight += w
-				if numFallback < len(fallback) {
-					fallback[numFallback] = k
-					numFallback++
-				}
-			}
-		}
-		if totalWeight <= 0 || numFallback == 0 {
-			return Circle
-		}
-		r := rng.Intn(totalWeight)
-		for j := 0; j < numFallback; j++ {
-			w := destinationWeights[fallback[j]]
-			if w <= 0 {
-				w = 1
-			}
-			r -= w
-			if r < 0 {
-				return fallback[j]
-			}
-		}
-		return fallback[0]
+		return originKind
 	}
 
 	if totalWeight <= 0 {
@@ -126,8 +103,13 @@ func (s *Simulator) spawnPassengers(dt float64) {
 		}
 		if s.RNG().Float64() < prob {
 			dest := sampleDestinationKind(&s.State, st.Kind, s.RNG())
+			if dest == st.Kind {
+				continue
+			}
+			id := s.State.NextPassengerID
+			s.State.NextPassengerID++
 			st.Queue = append(st.Queue, Passenger{
-				Origin:      st.ID,
+				ID:          id,
 				Destination: dest,
 				SpawnTick:   s.State.Tick,
 			})

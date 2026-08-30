@@ -87,8 +87,9 @@ func (s *Simulator) Step(dt float64) {
 	s.rebuildGraphIfNeeded()
 	s.spawnPassengers(dt)
 	s.moveTrains(dt)
-	s.boardAndAlight()
+	s.boardAndAlight(dt)
 	s.updateScore()
+	s.State.GameTimeSeconds += dt
 	s.State.Tick++
 
 	for _, ev := range s.State.Scheduler.Poll(s.State.Tick) {
@@ -100,13 +101,17 @@ func (s *Simulator) Step(dt float64) {
 		}
 	}
 
-	s.checkGameOver()
+	s.checkGameOver(dt)
 }
 
 func (s *Simulator) offerReward() {
-	s.State.Resources.Grant(RewardLine)
+	// BUG-6 guard: never overwrite an outstanding reward choice.
+	if len(s.State.PendingRewardChoices) > 0 {
+		return
+	}
+	// Weekly reward: always grant one locomotive, then offer choice of one upgrade.
 	s.State.Resources.Grant(RewardTrain)
-	pool := []RewardType{RewardTrain, RewardCarriage, RewardTunnel, RewardInterchange}
+	pool := []RewardType{RewardLine, RewardCarriage, RewardTunnel, RewardTunnel, RewardInterchange}
 	s.RNG().Shuffle(len(pool), func(i, j int) { pool[i], pool[j] = pool[j], pool[i] })
 	s.State.PendingRewardChoices = pool[:2]
 	s.State.Scheduler.Schedule(s.State.Tick+rewardInterval(), EventReward)
@@ -131,6 +136,8 @@ func (s *Simulator) ApplyAction(a Action) error {
 		return s.chooseReward(v)
 	case AddCarriage:
 		return s.addCarriage(v)
+	case RemoveCarriage:
+		return s.removeCarriage(v)
 	case UpgradeInterchange:
 		return s.upgradeInterchange(v)
 	case ShortenLine:
@@ -151,6 +158,9 @@ func (s *Simulator) addLine(a AddLine) error {
 		return errors.New("insufficient stations to add a new line")
 	}
 
+	// BUG-2: full uniqueness check — detect duplicate stations anywhere in the slice,
+	// not just in adjacent pairs (e.g. [0,1,0] would have been accepted before).
+	seen := make(map[int]struct{}, len(a.Stations))
 	for i, stID := range a.Stations {
 		if stID < 0 || stID >= len(s.State.Stations) {
 			return errors.New("invalid station ID in line")
@@ -158,9 +168,11 @@ func (s *Simulator) addLine(a AddLine) error {
 		if !s.State.Stations[stID].Alive {
 			return errors.New("station is not alive")
 		}
-		if i+1 < len(a.Stations) && a.Stations[i] == a.Stations[i+1] {
-			return errors.New("cannot connect station to itself")
+		if _, dup := seen[stID]; dup {
+			return errors.New("duplicate station in line")
 		}
+		seen[stID] = struct{}{}
+		_ = i // suppress unused-variable warning; index used implicitly
 	}
 
 	tunnelAt := make([]bool, len(a.Stations)-1)
@@ -214,18 +226,7 @@ func (s *Simulator) addLine(a AddLine) error {
 	// Auto-spawn initial train if train resource pool has available trains
 	if s.State.Resources.CanSpend(RewardTrain) {
 		s.State.Resources.Spend(RewardTrain)
-		trID := len(s.State.Trains)
-		s.State.Trains = append(s.State.Trains, Train{
-			ID:          trID,
-			LineID:      id,
-			Segment:     0,
-			Progress:    0,
-			Direction:   1,
-			Capacity:    6,
-			Carriages:   1,
-			Active:      true,
-			JustArrived: true,
-		})
+		s.spawnOrCreateTrain(id)
 	}
 
 	s.State.TopologyVersion++
@@ -298,6 +299,43 @@ func (s *Simulator) extendLine(a ExtendLine) error {
 	return nil
 }
 
+func (s *Simulator) spawnOrCreateTrain(lineID int) {
+	for i := range s.State.Trains {
+		tr := &s.State.Trains[i]
+		if !tr.Active {
+			tr.LineID = lineID
+			tr.Segment = 0
+			tr.Progress = 0
+			tr.Direction = 1
+			tr.Capacity = 6
+			tr.Carriages = 1
+			tr.Passengers = nil
+			tr.Active = true
+			tr.JustArrived = true
+			tr.JustDeparted = true
+			tr.DwellRemaining = 0
+			tr.ServiceElapsed = 0
+			return
+		}
+	}
+
+	trID := len(s.State.Trains)
+	s.State.Trains = append(s.State.Trains, Train{
+		ID:             trID,
+		LineID:         lineID,
+		Segment:        0,
+		Progress:       0,
+		Direction:      1,
+		Capacity:       6,
+		Carriages:      1,
+		Active:         true,
+		JustArrived:    true,
+		JustDeparted:   true,
+		DwellRemaining: 0,
+		ServiceElapsed: 0,
+	})
+}
+
 func (s *Simulator) addTrain(a AddTrain) error {
 	if a.LineID < 0 || a.LineID >= len(s.State.Lines) {
 		return errors.New("invalid line ID")
@@ -327,20 +365,7 @@ func (s *Simulator) addTrain(a AddTrain) error {
 		return errors.New("no trains available")
 	}
 
-	id := len(s.State.Trains)
-
-	s.State.Trains = append(s.State.Trains, Train{
-		ID:          id,
-		LineID:      a.LineID,
-		Segment:     0,
-		Progress:    0,
-		Direction:   1,
-		Capacity:    6,
-		Carriages:   1,
-		Active:      true,
-		JustArrived: true,
-	})
-
+	s.spawnOrCreateTrain(a.LineID)
 	return nil
 }
 
@@ -359,6 +384,25 @@ func (s *Simulator) addCarriage(a AddCarriage) error {
 	}
 
 	tr.Carriages++
+	return nil
+}
+
+func (s *Simulator) removeCarriage(a RemoveCarriage) error {
+	if a.TrainID < 0 || a.TrainID >= len(s.State.Trains) {
+		return errors.New("invalid train ID")
+	}
+
+	tr := &s.State.Trains[a.TrainID]
+	if !tr.Active {
+		return errors.New("train is inactive")
+	}
+
+	if tr.Carriages <= 1 {
+		return errors.New("train has no extra carriages to remove")
+	}
+
+	tr.Carriages--
+	s.State.Resources.Grant(RewardCarriage)
 	return nil
 }
 
@@ -399,6 +443,27 @@ func (s *Simulator) removeLine(a RemoveLine) error {
 				}
 				tr.Carriages = 1
 			}
+			// BUG-4 fix: offload passengers to the nearest station endpoint rather
+			// than always using the departure station. When progress >= 0.5 the train
+			// is closer to the next station (segment+1); otherwise use the departure
+			// station (segment). This avoids unfairly spiking the departure station's
+			// overcrowding counter when the train was near the opposite end.
+			if len(tr.Passengers) > 0 {
+				// Determine nearest station index along the line.
+				stIdx := tr.Segment
+				if tr.Progress >= 0.5 && stIdx+1 < len(line.Stations) {
+					stIdx = tr.Segment + 1
+				}
+				if stIdx < 0 || stIdx >= len(line.Stations) {
+					stIdx = 0
+				}
+				stID := line.Stations[stIdx]
+				if stID >= 0 && stID < len(s.State.Stations) {
+					st := &s.State.Stations[stID]
+					st.Queue = append(st.Queue, tr.Passengers...)
+				}
+				tr.Passengers = nil
+			}
 		}
 	}
 
@@ -410,26 +475,23 @@ func (s *Simulator) chooseReward(a ChooseReward) error {
 		return errors.New("no pending reward choice available")
 	}
 
-	var chosenType RewardType = -1
-
-	// Check if a.Choice matches enum value directly
-	for _, c := range s.State.PendingRewardChoices {
-		if c == a.Choice {
-			chosenType = c
-			break
-		}
+	// BUG-1: the API contract is strictly positional — a.Choice is always 0 (first card)
+	// or 1 (second card). Using the enum value directly would collide because RewardType
+	// values 0 and 1 are valid positional indices. The frontend always sends positional
+	// indices; any RL / API caller must do the same.
+	idx := int(a.Choice)
+	if idx < 0 || idx >= len(s.State.PendingRewardChoices) {
+		return errors.New("invalid reward choice: expected positional index 0 or 1")
 	}
+	chosenType := s.State.PendingRewardChoices[idx]
 
-	// Fallback check if a.Choice is index into PendingRewardChoices (0 <= index < len)
-	if chosenType == -1 && int(a.Choice) >= 0 && int(a.Choice) < len(s.State.PendingRewardChoices) {
-		chosenType = s.State.PendingRewardChoices[int(a.Choice)]
+	// Tunnel reward grants two tokens (as per original Mini Metro bonus mechanics).
+	if chosenType == RewardTunnel {
+		s.State.Resources.Grant(RewardTunnel)
+		s.State.Resources.Grant(RewardTunnel)
+	} else {
+		s.State.Resources.Grant(chosenType)
 	}
-
-	if chosenType == -1 {
-		return errors.New("invalid reward choice")
-	}
-
-	s.State.Resources.Grant(chosenType)
 	s.State.PendingRewardChoices = nil
 	return nil
 }
@@ -486,10 +548,13 @@ func (s *Simulator) shortenLine(a ShortenLine) error {
 				continue
 			}
 			tr.Segment--
-			if tr.Segment <= 0 {
+			// BUG-3 fix: use < 0 (not <= 0) so trains legitimately at segment 1
+			// (now segment 0) keep their existing direction. Only truly out-of-bounds
+			// trains (segment < 0) need clamping and a direction reset.
+			if tr.Segment < 0 {
 				tr.Segment = 0
+				tr.Direction = 1 // was heading toward the now-removed first station; reset forward
 				tr.Progress = 0
-				tr.Direction = 1 // was heading toward the now-removed first station; reverse
 			}
 		}
 	} else {
@@ -533,8 +598,8 @@ func (s *Simulator) closeLoop(a CloseLoop) error {
 	if line.IsLoop {
 		return errors.New("line is already a loop")
 	}
-	if len(line.Stations) < 2 {
-		return errors.New("line needs at least 2 stations to form a loop")
+	if len(line.Stations) < 3 {
+		return errors.New("line needs at least 3 stations to form a loop")
 	}
 	firstPos := s.State.Stations[line.Stations[0]].Pos
 	lastPos := s.State.Stations[line.Stations[len(line.Stations)-1]].Pos
@@ -604,10 +669,13 @@ func (s *Simulator) repositionTrain(a RepositionTrain) error {
 	if !tr.Active {
 		return errors.New("train is inactive")
 	}
-	if tr.LineID < 0 || tr.LineID >= len(s.State.Lines) {
-		return errors.New("invalid line ID")
+
+	targetLineID := tr.LineID
+	if a.LineID >= 0 && a.LineID < len(s.State.Lines) {
+		targetLineID = a.LineID
 	}
-	line := &s.State.Lines[tr.LineID]
+
+	line := &s.State.Lines[targetLineID]
 	if line.Removed || len(line.Stations) < 2 {
 		return errors.New("invalid or removed line")
 	}
@@ -628,10 +696,12 @@ func (s *Simulator) repositionTrain(a RepositionTrain) error {
 		}
 	}
 
+	tr.LineID = targetLineID
 	tr.Segment = a.Segment
 	tr.Progress = 0
 	tr.Direction = dir
 	tr.JustArrived = true
+	tr.JustDeparted = true
 	tr.DwellRemaining = 0
 
 	return nil
@@ -689,7 +759,7 @@ func (s *Simulator) insertStation(a InsertStation) error {
 	}
 
 	if netTunnels > 0 {
-		if !s.State.Resources.CanSpend(RewardTunnel) {
+		if s.State.Resources.Tunnels < netTunnels {
 			return errors.New("no tunnel tokens available")
 		}
 		for i := 0; i < netTunnels; i++ {
@@ -699,13 +769,20 @@ func (s *Simulator) insertStation(a InsertStation) error {
 		s.State.Resources.Grant(RewardTunnel)
 	}
 
-	// Insert station ID into line.Stations at Index
-	line.Stations = append(line.Stations[:a.Index], append([]int{a.StationID}, line.Stations[a.Index:]...)...)
+	// Insert station ID into line.Stations at Index without buffer aliasing
+	newStations := make([]int, 0, len(line.Stations)+1)
+	newStations = append(newStations, line.Stations[:a.Index]...)
+	newStations = append(newStations, a.StationID)
+	newStations = append(newStations, line.Stations[a.Index:]...)
+	line.Stations = newStations
 
-	// Update tunnel flags
+	// Update tunnel flags without buffer aliasing
 	if a.Index-1 < len(line.TunnelAt) {
-		line.TunnelAt[a.Index-1] = cross1
-		line.TunnelAt = append(line.TunnelAt[:a.Index], append([]bool{cross2}, line.TunnelAt[a.Index:]...)...)
+		newTunnelAt := make([]bool, 0, len(line.TunnelAt)+1)
+		newTunnelAt = append(newTunnelAt, line.TunnelAt[:a.Index-1]...)
+		newTunnelAt = append(newTunnelAt, cross1, cross2)
+		newTunnelAt = append(newTunnelAt, line.TunnelAt[a.Index:]...)
+		line.TunnelAt = newTunnelAt
 	} else {
 		line.TunnelAt = append(line.TunnelAt, cross1)
 	}
@@ -720,7 +797,7 @@ func (s *Simulator) insertStation(a InsertStation) error {
 		}
 	}
 
-	s.State.Graph = BuildGraph(&s.State)
+	s.State.TopologyVersion++
 	return nil
 }
 
@@ -729,7 +806,7 @@ type SimInfo struct {
 	StepTicks      int
 }
 
-// StepMacro applies an action and advances physics for up to duration seconds (in dt=0.1s sub-ticks)
+// StepMacro applies an action and advances physics for up to duration seconds (in fixed 30 Hz sub-ticks)
 // or until an asynchronous event (station spawn, reward choice, game over) triggers.
 func (s *Simulator) StepMacro(action Action, duration float64) (obs Observation, reward float64, done bool, info SimInfo) {
 	info.EventTriggered = "none"
@@ -740,7 +817,7 @@ func (s *Simulator) StepMacro(action Action, duration float64) (obs Observation,
 	if duration <= 0 {
 		duration = 5.0
 	}
-	dt := 0.1
+	dt := 1.0 / 30.0
 	subTicks := int(duration / dt)
 	if subTicks <= 0 {
 		subTicks = 1

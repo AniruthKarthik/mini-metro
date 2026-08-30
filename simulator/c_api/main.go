@@ -87,7 +87,7 @@ func Step(handle C.uintptr_t, actionID C.int, duration C.float, outReward *C.flo
 }
 
 //export GetObservation
-func GetObservation(handle C.uintptr_t, outNodes *C.float, outEdges *C.int32_t, outGlobals *C.float) {
+func GetObservation(handle C.uintptr_t, outNodes *C.float, outEdges *C.int32_t, outEdgeAttrs *C.float, outGlobals *C.float) {
 	sim := getSim(uintptr(handle))
 	if sim == nil {
 		return
@@ -106,7 +106,11 @@ func GetObservation(handle C.uintptr_t, outNodes *C.float, outEdges *C.int32_t, 
 		edgesBuf = unsafe.Slice((*int32)(unsafe.Pointer(outEdges)), maxEdges*2)
 	}
 
-	var edgeAttrsBuf []float32 // unused directly by python if not provided
+	var edgeAttrsBuf []float32
+	if outEdgeAttrs != nil {
+		edgeAttrsBuf = unsafe.Slice((*float32)(unsafe.Pointer(outEdgeAttrs)), maxEdges*engine.EdgeFeatureDim)
+	}
+
 	var globalsBuf []float32
 	if outGlobals != nil {
 		globalsBuf = unsafe.Slice((*float32)(unsafe.Pointer(outGlobals)), engine.GlobalFeatureDim)
@@ -114,6 +118,11 @@ func GetObservation(handle C.uintptr_t, outNodes *C.float, outEdges *C.int32_t, 
 
 	sim.WriteVectorizedObservation(nodesBuf, edgesBuf, edgeAttrsBuf, globalsBuf)
 }
+
+var (
+	boolMaskBuf []bool
+	boolMaskMu  sync.Mutex
+)
 
 //export GetActionMask
 func GetActionMask(handle C.uintptr_t, outMask *C.uint8_t) {
@@ -124,7 +133,12 @@ func GetActionMask(handle C.uintptr_t, outMask *C.uint8_t) {
 
 	maskSize := engine.MaxActionSpaceSize()
 	maskSlice := unsafe.Slice((*uint8)(unsafe.Pointer(outMask)), maskSize)
-	boolMask := make([]bool, maskSize)
+
+	boolMaskMu.Lock()
+	if len(boolMaskBuf) < maskSize {
+		boolMaskBuf = make([]bool, maskSize)
+	}
+	boolMask := boolMaskBuf[:maskSize]
 	sim.GetActionMask(boolMask)
 
 	for i := 0; i < maskSize; i++ {
@@ -134,6 +148,7 @@ func GetActionMask(handle C.uintptr_t, outMask *C.uint8_t) {
 			maskSlice[i] = 0
 		}
 	}
+	boolMaskMu.Unlock()
 }
 
 func main() {}

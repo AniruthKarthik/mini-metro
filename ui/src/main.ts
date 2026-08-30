@@ -65,6 +65,7 @@ class MiniMetroApp {
 
     this.wsClient.onState((snapshot) => {
       this.latestSnapshot = snapshot;
+      this.trainInterpolator.setSnapshot(snapshot.trains || []);
       this.hudManager.updateState(snapshot);
     });
 

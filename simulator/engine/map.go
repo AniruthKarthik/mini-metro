@@ -21,9 +21,9 @@ func LondonMap() MapConfig {
 		MaxLines:         7,
 		MaxTrainsPerLine: 4,
 		InitialResources: ResourcePool{
-			Lines:     1,
-			Trains:    1,
-			Tunnels:   1,
+			Lines:     3,
+			Trains:    3,
+			Tunnels:   3,
 			Carriages: 0,
 		},
 		Rivers: []RiverSegment{
@@ -47,9 +47,9 @@ func NYCMap() MapConfig {
 		MaxLines:         7,
 		MaxTrainsPerLine: 4,
 		InitialResources: ResourcePool{
-			Lines:     1,
-			Trains:    1,
-			Tunnels:   2,
+			Lines:     3,
+			Trains:    3,
+			Tunnels:   3,
 			Carriages: 0,
 		},
 		Rivers: []RiverSegment{
@@ -79,9 +79,9 @@ func TokyoMap() MapConfig {
 		MaxLines:         7,
 		MaxTrainsPerLine: 4,
 		InitialResources: ResourcePool{
-			Lines:     1,
-			Trains:    1,
-			Tunnels:   1,
+			Lines:     3,
+			Trains:    3,
+			Tunnels:   3,
 			Carriages: 0,
 		},
 		Rivers: []RiverSegment{

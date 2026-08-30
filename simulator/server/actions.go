@@ -38,6 +38,9 @@ func ParseAction(raw []byte) (engine.Action, string, error) {
 	case "pause", "resume", "restart":
 		return nil, env.Type, nil
 
+	case "select_map":
+		return nil, env.Type + ":" + string(env.Payload), nil
+
 	case "set_speed":
 		return nil, env.Type + ":" + string(env.Payload), nil
 
@@ -65,15 +68,14 @@ func ParseAction(raw []byte) (engine.Action, string, error) {
 
 	case "insert_station":
 		var p struct {
-			LineID    int  `json:"line_id"`
-			StationID int  `json:"station_id"`
-			Index     int  `json:"index"`
-			UseTunnel bool `json:"use_tunnel"`
+			LineID    int `json:"line_id"`
+			StationID int `json:"station_id"`
+			Index     int `json:"index"`
 		}
 		if err := json.Unmarshal(env.Payload, &p); err != nil {
 			return nil, "", err
 		}
-		return engine.InsertStation{LineID: p.LineID, StationID: p.StationID, Index: p.Index, UseTunnel: p.UseTunnel}, "", nil
+		return engine.InsertStation{LineID: p.LineID, StationID: p.StationID, Index: p.Index}, "", nil
 
 	case "add_train":
 		var p struct {
@@ -110,6 +112,15 @@ func ParseAction(raw []byte) (engine.Action, string, error) {
 			return nil, "", err
 		}
 		return engine.AddCarriage{TrainID: p.TrainID}, "", nil
+
+	case "remove_carriage":
+		var p struct {
+			TrainID int `json:"train_id"`
+		}
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return nil, "", err
+		}
+		return engine.RemoveCarriage{TrainID: p.TrainID}, "", nil
 
 	case "upgrade_interchange":
 		var p struct {
@@ -152,6 +163,7 @@ func ParseAction(raw []byte) (engine.Action, string, error) {
 	case "reposition_train":
 		var p struct {
 			TrainID   int `json:"train_id"`
+			LineID    int `json:"line_id"`
 			Segment   int `json:"segment"`
 			Direction int `json:"direction"`
 		}
@@ -160,6 +172,7 @@ func ParseAction(raw []byte) (engine.Action, string, error) {
 		}
 		return engine.RepositionTrain{
 			TrainID:   p.TrainID,
+			LineID:    p.LineID,
 			Segment:   p.Segment,
 			Direction: p.Direction,
 		}, "", nil

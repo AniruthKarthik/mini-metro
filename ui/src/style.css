@@ -62,6 +62,31 @@ button {
   position: absolute;
   top: 22px;
   left: 24px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hud-pill-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 12px;
+  border: 1.5px solid #252525;
+  border-radius: 17px;
+  background: rgba(255, 255, 255, 0.85);
+  color: #252525;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+  transition: all 0.15s ease;
+}
+
+.hud-pill-btn:hover {
+  background: #ffffff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
 }
 
 .hud-icon-btn,
@@ -418,6 +443,84 @@ button {
 
 .hud-toast.hidden {
   opacity: 0;
+}
+
+.hud-modal-card.map-select {
+  width: min(720px, calc(100vw - 32px));
+  padding: 32px 24px;
+}
+
+.hud-map-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 16px;
+  margin-top: 18px;
+}
+
+.hud-map-card {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 18px 16px;
+  border: 2px solid #252525;
+  border-radius: 10px;
+  background: #ffffff;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  text-align: left;
+}
+
+.hud-map-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.08);
+  background: #faf8f4;
+}
+
+.map-card-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.city-title-box h3 {
+  font-size: 17px;
+  font-weight: 700;
+  color: #252525;
+  line-height: 1.1;
+}
+
+.river-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(37, 37, 37, 0.55);
+}
+
+.map-desc {
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(37, 37, 37, 0.72);
+  margin-bottom: 16px;
+  line-height: 1.4;
+}
+
+.map-select-btn {
+  width: 100%;
+  padding: 8px 0;
+  border: 1.5px solid #252525;
+  border-radius: 6px;
+  background: #252525;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.hud-map-card:hover .map-select-btn {
+  background: #e64b3c;
+  border-color: #e64b3c;
 }
 
 @media (max-width: 640px) {

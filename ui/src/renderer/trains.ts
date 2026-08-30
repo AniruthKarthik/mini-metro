@@ -6,6 +6,35 @@ import type { SharedEdgeMap } from './lines';
 import { drawPassengerShape, DARK_CHARCOAL, WHITE_FILL } from './shapes';
 
 export class TrainInterpolator {
+  private previousById: Map<number, TrainDTO> = new Map();
+  private currentById: Map<number, TrainDTO> = new Map();
+  private previousAt = 0;
+  private currentAt = 0;
+
+  public setSnapshot(trains: TrainDTO[], now: number = performance.now()): void {
+    const incoming = new Map((trains || []).map((train) => [train.id, train]));
+
+    // BUG-5 fix: detect recycled train IDs. The engine reuses a deactivated train's
+    // slot index (and thus its ID) when spawning a new train. If the previous snapshot
+    // had train ID=N on lineA, and the new snapshot has train ID=N on lineB, carrying
+    // over the previous interpolation state would cause a one-frame snap/teleport.
+    // Clear the previous entry for any ID whose line has changed so interpolation
+    // starts fresh for the re-activated train.
+    const previous = this.currentById;
+    for (const [id, train] of incoming) {
+      const prev = previous.get(id);
+      if (prev && prev.line_id !== train.line_id) {
+        // Recycled slot: discard history so the new train starts without stale state.
+        previous.delete(id);
+      }
+    }
+
+    this.previousById = previous;
+    this.previousAt = this.currentAt || now;
+    this.currentById = incoming;
+    this.currentAt = now;
+  }
+
   public renderTrains(
     ctx: CanvasRenderingContext2D,
     viewport: Viewport,
@@ -27,7 +56,11 @@ export class TrainInterpolator {
 
     const sharedEdgeMap = buildSharedEdgeMap(lines);
 
-    for (const tr of trains) {
+    const elapsed = this.currentAt > this.previousAt ? this.currentAt - this.previousAt : 0;
+    const alpha = elapsed > 0 ? Math.max(0, Math.min(1, (performance.now() - this.currentAt) / elapsed)) : 1;
+
+    for (const rawTrain of trains) {
+      const tr = this.interpolateTrain(rawTrain, alpha);
       const line = lineMap.get(tr.line_id);
       if (!line || line.removed || !line.stations || line.stations.length < 2) {
         continue;
@@ -44,7 +77,7 @@ export class TrainInterpolator {
       renderTrainCar(ctx, trainPos.pos, trainPos.angle, color, locoPassengers);
 
       if (tr.carriages > 1) {
-        const carriageCap = 4;
+        const carriageCap = 6;
         for (let c = 1; c < tr.carriages; c++) {
           const trailDist = c * 26;
           const trainX = getX(trainPos.pos);
@@ -62,9 +95,31 @@ export class TrainInterpolator {
 
     ctx.restore();
   }
+
+  private interpolateTrain(current: TrainDTO, alpha: number): TrainDTO {
+    const previous = this.previousById.get(current.id);
+    if (
+      !previous ||
+      previous.line_id !== current.line_id ||
+      previous.segment !== current.segment ||
+      // BUG-15 (design): when direction flips at a terminal bounce, interpolation is
+      // aborted and the train snaps to the current frame position. This is intentional:
+      // interpolating through a direction reversal would show the train running backwards
+      // through the terminal, which is visually worse than a single-frame snap.
+      previous.direction !== current.direction ||
+      Math.abs(current.progress - previous.progress) > 0.5
+    ) {
+      return current;
+    }
+
+    return {
+      ...current,
+      progress: previous.progress + (current.progress - previous.progress) * alpha,
+    };
+  }
 }
 
-function computeTrainPosition(
+export function computeTrainPosition(
   tr: TrainDTO,
   line: LineDTO,
   stationMap: Map<number, StationDTO>,
@@ -72,20 +127,35 @@ function computeTrainPosition(
   edgeMap: SharedEdgeMap
 ): { pos: Pos; angle: number } | null {
   const n = line.stations.length;
-  if (tr.segment < 0 || tr.segment >= n) return null;
+  if (n < 2 || tr.segment < 0 || tr.segment >= n) return null;
 
-  let st1Idx = tr.segment;
-  let st2Idx = tr.segment + tr.direction;
+  let st1Id: number;
+  let st2Id: number;
+  let effectiveProg: number;
+  const isMovingForward = tr.direction >= 0;
+  const rawProg = Math.max(0, Math.min(1, tr.progress));
 
   if (line.is_loop) {
-    st2Idx = (tr.segment + tr.direction + n) % n;
+    let segIdx = ((tr.segment % n) + n) % n;
+    let nextSegIdx = (segIdx + (isMovingForward ? 1 : -1) + n) % n;
+    st1Id = line.stations[segIdx];
+    st2Id = line.stations[nextSegIdx];
+    effectiveProg = rawProg;
   } else {
-    if (st2Idx < 0) st2Idx = 0;
-    if (st2Idx >= n) st2Idx = n - 1;
+    if (isMovingForward) {
+      let segIdx = Math.max(0, Math.min(n - 2, tr.segment));
+      st1Id = line.stations[segIdx];
+      st2Id = line.stations[segIdx + 1];
+      effectiveProg = rawProg;
+    } else {
+      // Moving backward (direction = -1): train travels from tr.segment to tr.segment - 1.
+      // Physical segment is between stations[tr.segment - 1] (st1) and stations[tr.segment] (st2).
+      let segIdx = Math.max(1, Math.min(n - 1, tr.segment));
+      st1Id = line.stations[segIdx - 1];
+      st2Id = line.stations[segIdx];
+      effectiveProg = 1.0 - rawProg;
+    }
   }
-
-  const st1Id = line.stations[st1Idx];
-  const st2Id = line.stations[st2Idx];
 
   const st1 = stationMap.get(st1Id);
   const st2 = stationMap.get(st2Id);
@@ -94,20 +164,15 @@ function computeTrainPosition(
   const p1 = viewport.mapToScreen({ x: getX(st1), y: getY(st1) });
   const p2 = viewport.mapToScreen({ x: getX(st2), y: getY(st2) });
 
+  // EXACT same parallel offset and octilinear path as lines.ts
   const { p1Offset, p2Offset } = getSegmentParallelOffset(p1, p2, st1Id, st2Id, tr.line_id, edgeMap, 8.0);
+  const octilinearPts = generateOctilinearPath([p1Offset, p2Offset]);
 
-  // Order endpoints canonically to match exact parallel track line geometry drawn by lines.ts
-  const isForward = st1Idx <= st2Idx;
-  const startP = isForward ? p1Offset : p2Offset;
-  const endP = isForward ? p2Offset : p1Offset;
-
-  // Generate the EXACT canonical 45° octilinear track path
-  const octilinearPts = generateOctilinearPath([startP, endP]);
   if (octilinearPts.length < 2) {
     return { pos: p1Offset, angle: 0 };
   }
 
-  // Calculate segment lengths along canonical octilinear path
+  // Calculate segment lengths
   const segLengths: number[] = [];
   let totalLength = 0;
 
@@ -125,11 +190,9 @@ function computeTrainPosition(
     return { pos: p1Offset, angle: 0 };
   }
 
-  const rawProg = Math.max(0, Math.min(1, tr.progress));
-  const effectiveProg = isForward ? rawProg : 1.0 - rawProg;
   let targetDist = effectiveProg * totalLength;
 
-  // Interpolate position and angle along canonical octilinear path
+  // Interpolate along octilinearPts
   for (let i = 0; i < octilinearPts.length - 1; i++) {
     const len = segLengths[i];
     const a = octilinearPts[i];
@@ -144,17 +207,16 @@ function computeTrainPosition(
       const y = ay + (by - ay) * frac;
 
       let angle = Math.atan2(by - ay, bx - ax);
-      if (!isForward) {
-        angle += Math.PI; // Reverse train orientation when moving backward along canonical track
+      if (!isMovingForward) {
+        angle += Math.PI;
       }
 
       return { pos: { x, y }, angle };
     }
-
     targetDist -= len;
   }
 
-  return { pos: isForward ? p2Offset : p1Offset, angle: 0 };
+  return { pos: p1Offset, angle: 0 };
 }
 
 function renderTrainCar(

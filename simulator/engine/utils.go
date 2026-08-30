@@ -153,7 +153,5 @@ func PosInWater(p Pos, rivers []RiverSegment, polygons []WaterPolygon, margin fl
 }
 
 func rewardInterval() uint64 {
-	return 700
+	return 4200
 }
-
-

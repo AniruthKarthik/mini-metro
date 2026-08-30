@@ -51,7 +51,7 @@ type stateKey struct {
 	direction int
 }
 
-// calcHeuristic computes Euclidean distance to nearest alive destKind station / trainSpeed.
+// calcHeuristic computes optimistic straight-line travel time to the nearest alive destination kind.
 func calcHeuristic(state *GameState, stationID int, destKind StationKind) float64 {
 	if stationID < 0 || stationID >= len(state.Stations) {
 		return math.MaxFloat64
@@ -72,7 +72,16 @@ func calcHeuristic(state *GameState, stationID int, destKind StationKind) float6
 	if !found {
 		return math.MaxFloat64
 	}
-	return minDist / trainSpeed
+	return minDist / (trainSpeed * 10.0)
+}
+
+func lineStationIndex(line *Line, stationID int) int {
+	for i, stID := range line.Stations {
+		if stID == stationID {
+			return i
+		}
+	}
+	return -1
 }
 
 // getSegmentDirection determines the direction (+1 or -1) along lineID from u to v.
@@ -165,12 +174,9 @@ func expectedTrainWaitTime(state *GameState, stationID, lineID, direction int) f
 			}
 
 			// travel time for segment seg -> nextSeg
-			st1 := line.Stations[seg]
-			st2 := line.Stations[nextSeg]
-			d := distance(state.Stations[st1].Pos, state.Stations[st2].Pos)
-			segTime := d / trainSpeed
+			segTime := segmentTravelTime(state, line, seg, nextSeg)
 
-			timeOnSeg := (1.0 - prog) * segTime + dwell
+			timeOnSeg := (1.0-prog)*segTime + dwell
 			totalTime += timeOnSeg
 			prog = 0
 			dwell = 0
@@ -195,24 +201,14 @@ func expectedTrainWaitTime(state *GameState, stationID, lineID, direction int) f
 		}
 
 		if !found && minWait == math.MaxFloat64 {
-			// Fallback wait time estimate
-			totalTime := float64(N) * 10.0
-			if totalTime < minWait {
-				minWait = totalTime
-			}
+			// BUG-9 fix: the old code declared a local `totalTime` that shadowed the outer
+			// loop variable and then guarded it with `if totalTime < minWait` which is
+			// always true when minWait == math.MaxFloat64. Simplify to a direct assignment.
+			minWait = float64(N) * 10.0
 		}
 	}
 
-	// Add queue capacity delay factor
-	queueWait := 0.0
-	if stationID >= 0 && stationID < len(state.Stations) {
-		qLen := len(state.Stations[stationID].Queue)
-		if qLen > 0 {
-			queueWait = math.Floor(float64(qLen)/6.0) * 10.0
-		}
-	}
-
-	return minWait + queueWait
+	return minWait
 }
 
 // FindOptimalRoute runs A* on the (stationID, lineID, direction) state space.
@@ -275,8 +271,9 @@ func FindOptimalRoute(g *NetworkGraph, state *GameState, fromID int, destKind St
 				dir := getSegmentDirection(line, cur.stationID, nb)
 
 				// Calculate edge cost: segment ride time + dwell at nb
-				segDist := distance(state.Stations[cur.stationID].Pos, state.Stations[nb].Pos)
-				rideTime := segDist / trainSpeed
+				curIdx := lineStationIndex(line, cur.stationID)
+				nbIdx := lineStationIndex(line, nb)
+				rideTime := segmentTravelTime(state, line, curIdx, nbIdx)
 				var dwell float64
 				if state.Stations[nb].IsInterchange {
 					dwell = dwellTime / 2.0
@@ -369,4 +366,3 @@ func FindRoute(g *NetworkGraph, state *GameState, fromID int, destKind StationKi
 func CanReach(g *NetworkGraph, state *GameState, fromID int, destKind StationKind) bool {
 	return FindOptimalRoute(g, state, fromID, destKind).Reachable
 }
-

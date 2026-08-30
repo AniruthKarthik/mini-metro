@@ -3,7 +3,7 @@ package engine
 import "math"
 
 const (
-	AlphaCrowdPenalty    = 0.05
+	AlphaCrowdPenalty   = 0.05
 	BetaGameOverPenalty = 50.0
 )
 
@@ -23,11 +23,7 @@ func StationCrowdPenalty(st *Station) float64 {
 	penalty := overflowRatio * overflowRatio
 
 	if st.OvercrowdingTimer >= 0 {
-		timerRatio := st.OvercrowdingTimer / overcrowdingGrace
-		if timerRatio < 0 {
-			timerRatio = 0
-		}
-		penalty += math.Exp(1.0 - timerRatio)
+		penalty += math.Exp(OvercrowdingProgress(st))
 	}
 
 	return penalty

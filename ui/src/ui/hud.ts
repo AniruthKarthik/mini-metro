@@ -4,6 +4,7 @@ import { GameWSClient } from '../ws/client';
 import { getLineColor } from '../renderer/lines';
 
 const DAYS = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
+const TICKS_PER_DAY = 600;
 
 const REWARD_LABELS: Record<number, string> = {
   0: 'Line',
@@ -38,6 +39,9 @@ export class HUD {
   private interchangeToken!: HTMLElement;
   private interchangeCount!: HTMLElement;
 
+  private mapBtn!: HTMLButtonElement;
+  private mapNameText!: HTMLElement;
+  private mapModal!: HTMLElement;
   private rewardModal!: HTMLElement;
   private rewardOptions!: HTMLElement;
   private gameOverModal!: HTMLElement;
@@ -59,6 +63,12 @@ export class HUD {
     this.container.innerHTML = `
       <!-- Top Left Bar -->
       <div class="hud-top-left">
+        <button id="hud-map-btn" class="hud-pill-btn" title="Select City Map">
+          <span id="hud-map-name">London</span>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="6 9 12 15 18 9"></polyline>
+          </svg>
+        </button>
         <button id="hud-reset-btn" class="hud-icon-btn" title="Reset Game">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="23 4 23 10 17 10"></polyline>
@@ -149,6 +159,48 @@ export class HUD {
         </div>
       </div>
 
+      <!-- Map Selection Modal -->
+      <div id="hud-map-modal" class="hud-modal-overlay">
+        <div class="hud-modal-card map-select">
+          <h1>SELECT CITY</h1>
+          <p>Choose a metropolitan network to manage</p>
+          <div class="hud-map-options">
+            <div class="hud-map-card" data-map="london">
+              <div class="map-card-header">
+                <div class="city-title-box">
+                  <h3>London</h3>
+                  <span class="river-name">River Thames</span>
+                </div>
+              </div>
+              <p class="map-desc">Classic transit network spanning the River Thames.</p>
+              <button class="map-select-btn">SELECT LONDON</button>
+            </div>
+
+            <div class="hud-map-card" data-map="nyc">
+              <div class="map-card-header">
+                <div class="city-title-box">
+                  <h3>New York</h3>
+                  <span class="river-name">Hudson & East Rivers</span>
+                </div>
+              </div>
+              <p class="map-desc">Dense island borough network with wide water channels.</p>
+              <button class="map-select-btn">SELECT NEW YORK</button>
+            </div>
+
+            <div class="hud-map-card" data-map="tokyo">
+              <div class="map-card-header">
+                <div class="city-title-box">
+                  <h3>Tokyo</h3>
+                  <span class="river-name">Sumida River & Bay</span>
+                </div>
+              </div>
+              <p class="map-desc">High-capacity metropolitan network around Tokyo Bay.</p>
+              <button class="map-select-btn">SELECT TOKYO</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Weekly Reward Choice Modal -->
       <div id="hud-reward-modal" class="hud-modal-overlay hidden">
         <div class="hud-modal-card">
@@ -174,6 +226,10 @@ export class HUD {
       <!-- Toast Container -->
       <div id="hud-toast" class="hud-toast hidden"></div>
     `;
+
+    this.mapBtn = document.getElementById('hud-map-btn') as HTMLButtonElement;
+    this.mapNameText = document.getElementById('hud-map-name')!;
+    this.mapModal = document.getElementById('hud-map-modal')!;
 
     this.dayText = document.getElementById('hud-day-text')!;
     this.scoreText = document.getElementById('hud-score-text')!;
@@ -248,6 +304,24 @@ export class HUD {
       }
     });
 
+    this.mapBtn.addEventListener('click', () => {
+      this.mapModal.classList.remove('hidden');
+    });
+
+    const mapCards = this.container.querySelectorAll('.hud-map-card');
+    mapCards.forEach((card) => {
+      card.addEventListener('click', () => {
+        const mapId = card.getAttribute('data-map');
+        if (mapId) {
+          this.wsClient.sendAction({
+            type: 'select_map',
+            payload: { map: mapId },
+          });
+        }
+        this.mapModal.classList.add('hidden');
+      });
+    });
+
     document.getElementById('hud-reset-btn')?.addEventListener('click', () => {
       this.wsClient.sendAction({ type: 'restart' });
     });
@@ -269,14 +343,19 @@ export class HUD {
   private currentRewardChoicesKey: string = '';
 
   public updateState(snap: StateSnapshot): void {
+    // 0. Map Name
+    if (snap.map_name) {
+      this.mapNameText.innerText = snap.map_name;
+    }
+
     // 1. Score
     this.scoreText.innerText = String(snap.score);
 
-    // 2. Day & Clock (1 day = 100 ticks)
-    const dayIdx = Math.floor(snap.tick / 100) % 7;
+    // 2. Day & Clock
+    const dayIdx = Math.floor(snap.tick / TICKS_PER_DAY) % 7;
     this.dayText.innerText = DAYS[dayIdx];
 
-    const clockAngle = ((snap.tick % 100) / 100) * 360;
+    const clockAngle = ((snap.tick % TICKS_PER_DAY) / TICKS_PER_DAY) * 360;
     this.clockHand.setAttribute('transform', `rotate(${clockAngle} 18 18)`);
 
     // 3. Speed status
@@ -386,7 +465,7 @@ export class HUD {
 
   private showRewardModal(choices: RewardType[]): void {
     this.rewardOptions.innerHTML = '';
-    choices.forEach((choice) => {
+    choices.forEach((choice, index) => {
       const card = document.createElement('div');
       card.className = 'hud-reward-card';
 
@@ -397,9 +476,12 @@ export class HUD {
       `;
 
       card.addEventListener('click', () => {
+        // BUG-19 fix: explicitly send the positional index (0 = first card, 1 = second card)
+        // rather than the RewardType enum value. The server's chooseReward() now enforces
+        // a strictly positional contract (see BUG-1 fix), so these must stay in sync.
         this.wsClient.sendAction({
           type: 'choose_reward',
-          payload: { choice: choice },
+          payload: { choice: index },   // `index` = 0 or 1 (positional, not RewardType enum)
         });
         this.rewardModal.classList.add('hidden');
       });

@@ -1,11 +1,13 @@
 package engine
 
+import "math"
+
 type Observation struct {
 	MapName              string
 	StationKinds         []StationKind
 	StationQueues        []int
 	StationCapacities    []int     // max queue per station
-	StationTimers        []float64 // overcrowding countdown per station; -1 = not active
+	StationTimers        []float64 // overcrowding countdown seconds per station; -1 = not active
 	TrainLineIDs         []int
 	TrainSegments        []int
 	TrainLoads           []int
@@ -113,10 +115,7 @@ func (s *Simulator) WriteVectorizedObservation(outNodes []float32, outEdges []in
 		if st.OvercrowdingTimer < 0 {
 			outNodes[base+22] = 0.0
 		} else {
-			outNodes[base+22] = float32(1.0 - st.OvercrowdingTimer/overcrowdingGrace)
-			if outNodes[base+22] < 0 {
-				outNodes[base+22] = 0.0
-			}
+			outNodes[base+22] = float32(OvercrowdingProgress(st))
 		}
 
 		degree := len(s.State.Graph.Neighbours(st.ID))
@@ -200,7 +199,8 @@ func (s *Simulator) WriteVectorizedObservation(outNodes []float32, outEdges []in
 		outGlobals[2] = float32(s.State.Resources.Carriages)
 		outGlobals[3] = float32(s.State.Resources.Tunnels)
 		outGlobals[4] = float32(s.State.Resources.Interchanges)
-		outGlobals[5] = float32(s.State.Tick%rewardInterval()) / float32(rewardInterval())
+		weekSeconds := float64(rewardInterval()) / 30.0 // canonical seconds per week (140s)
+		outGlobals[5] = float32(math.Mod(s.State.GameTimeSeconds, weekSeconds) / weekSeconds)
 		outGlobals[6] = float32(s.State.Score)
 		activeTrains := 0
 		for _, tr := range s.State.Trains {
@@ -217,8 +217,8 @@ func (s *Simulator) WriteVectorizedObservation(outNodes []float32, outEdges []in
 func (s *Simulator) VectorizedObservation() VectorizedObservation {
 	N := len(s.State.Stations)
 	nodes := make([]float32, N*NodeFeatureDim)
-	edges := make([]int32, 200*2)
-	edgeAttrs := make([]float32, 200*EdgeFeatureDim)
+	edges := make([]int32, 600*2)
+	edgeAttrs := make([]float32, 600*EdgeFeatureDim)
 	globals := make([]float32, GlobalFeatureDim)
 
 	numNodes, numEdges := s.WriteVectorizedObservation(nodes, edges, edgeAttrs, globals)

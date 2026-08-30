@@ -2,8 +2,13 @@ package engine
 
 import "math"
 
-const trainSpeed = 1.8
-const dwellTime = 0.4 // seconds a train pauses at each station for boarding/alighting
+const (
+	trainSpeed           = 1.8
+	dwellTime            = 0.4  // seconds a train pauses at each station for boarding/alighting
+	passengerServiceTime = 0.5  // seconds per passenger boarding/alighting
+	minTrainSpeedFactor  = 0.30 // minimum speed factor (30% of cruising speed) when departing or approaching a station platform
+	accelDecelDistance   = 0.25 // fraction of segment distance used for acceleration / deceleration (0.0 to 0.25 accel, 0.75 to 1.0 decel)
+)
 
 type Train struct {
 	ID             int
@@ -16,10 +21,15 @@ type Train struct {
 	Passengers     []Passenger
 	Active         bool
 	JustArrived    bool
+	JustDeparted   bool // true if train recently departed a station where it stopped (for smooth acceleration)
 	DwellRemaining float64
+	ServiceElapsed float64
 }
 
-// velocityProfile returns a smooth acceleration/deceleration multiplier in [0.35, 1.0] based on segment progress p in [0, 1].
+// velocityProfile returns a smooth, symmetric acceleration/deceleration multiplier in [minTrainSpeedFactor, 1.0].
+// - Leaving a station (0.0 <= p < 0.25): accelerates smoothly from minTrainSpeedFactor to 1.0 (constant cruising speed).
+// - Intermediate path (0.25 <= p <= 0.75): constant cruising speed (1.0).
+// - Entering a station (0.75 < p <= 1.0): decelerates smoothly from 1.0 down to minTrainSpeedFactor with exact symmetric rate.
 func velocityProfile(p float64, accelFromStart bool, decelAtEnd bool) float64 {
 	if p < 0.0 {
 		p = 0.0
@@ -29,12 +39,21 @@ func velocityProfile(p float64, accelFromStart bool, decelAtEnd bool) float64 {
 	}
 
 	mult := 1.0
-	if accelFromStart && p < 0.25 {
-		mult = math.Min(mult, 0.35+0.65*math.Sin((p/0.25)*(math.Pi/2.0)))
+
+	// Acceleration phase when leaving a station (0.0 to accelDecelDistance)
+	if accelFromStart && p < accelDecelDistance {
+		ratio := p / accelDecelDistance
+		accelMult := minTrainSpeedFactor + (1.0-minTrainSpeedFactor)*math.Sin(ratio*(math.Pi/2.0))
+		mult = math.Min(mult, accelMult)
 	}
-	if decelAtEnd && p > 0.75 {
-		mult = math.Min(mult, 0.35+0.65*math.Sin(((1.0-p)/0.25)*(math.Pi/2.0)))
+
+	// Deceleration phase when entering a station (1.0 - accelDecelDistance to 1.0)
+	if decelAtEnd && p > (1.0-accelDecelDistance) {
+		ratio := (1.0 - p) / accelDecelDistance
+		decelMult := minTrainSpeedFactor + (1.0-minTrainSpeedFactor)*math.Sin(ratio*(math.Pi/2.0))
+		mult = math.Min(mult, decelMult)
 	}
+
 	return mult
 }
 
@@ -103,6 +122,22 @@ func trackCornerMultiplier(state *GameState, line *Line, stationIndex int, dir i
 	return mult
 }
 
+func segmentTravelTime(state *GameState, line *Line, fromIdx, toIdx int) float64 {
+	if line == nil || fromIdx < 0 || fromIdx >= len(line.Stations) || toIdx < 0 || toIdx >= len(line.Stations) {
+		return 0
+	}
+	st1ID := line.Stations[fromIdx]
+	st2ID := line.Stations[toIdx]
+	if st1ID < 0 || st1ID >= len(state.Stations) || st2ID < 0 || st2ID >= len(state.Stations) {
+		return 0
+	}
+	segLen := distance(state.Stations[st1ID].Pos, state.Stations[st2ID].Pos)
+	if segLen <= 0 {
+		segLen = 10.0
+	}
+	return segLen / (trainSpeed * 10.0)
+}
+
 func (s *Simulator) moveTrains(dt float64) {
 	for i := range s.State.Trains {
 		tr := &s.State.Trains[i]
@@ -111,12 +146,14 @@ func (s *Simulator) moveTrains(dt float64) {
 			continue
 		}
 
-		if tr.DwellRemaining > 0 {
-			tr.DwellRemaining -= dt
+		if tr.JustArrived {
 			if tr.DwellRemaining > 0 {
-				continue
+				tr.DwellRemaining -= dt
+				if tr.DwellRemaining < 0 {
+					tr.DwellRemaining = 0
+				}
 			}
-			tr.DwellRemaining = 0
+			continue
 		}
 
 		if tr.LineID < 0 || tr.LineID >= len(s.State.Lines) {
@@ -129,7 +166,6 @@ func (s *Simulator) moveTrains(dt float64) {
 			continue
 		}
 
-		st1ID := line.Stations[tr.Segment]
 		var nextSegIdx int
 		if line.IsLoop {
 			n := len(line.Stations)
@@ -143,22 +179,36 @@ func (s *Simulator) moveTrains(dt float64) {
 				nextSegIdx = len(line.Stations) - 1
 			}
 		}
-		st2ID := line.Stations[nextSegIdx]
-		segLen := distance(s.State.Stations[st1ID].Pos, s.State.Stations[st2ID].Pos)
-		if segLen <= 0 {
-			segLen = 10.0
-		}
 
-		// Terminal station or loop end-point acceleration/deceleration check
-		isStartTerminal := !line.IsLoop && (tr.Segment == 0 || tr.Segment == len(line.Stations)-1)
+		// Check if train will stop at next station (terminal turn-around or passenger service)
 		isNextTerminal := !line.IsLoop && (nextSegIdx == 0 || nextSegIdx == len(line.Stations)-1)
+		nextStID := line.Stations[nextSegIdx]
+		nextHasService := false
+		if nextStID >= 0 && nextStID < len(s.State.Stations) {
+			nextSt := &s.State.Stations[nextStID]
+			if nextSt.Alive {
+				nextHasService = s.hasServiceWork(tr, nextSt, nextStID)
+			}
+		}
+		decelAtEnd := isNextTerminal || nextHasService
 
-		prof := velocityProfile(tr.Progress, isStartTerminal, isNextTerminal)
+		// Train accelerates from start of segment only if it stopped at tr.Segment
+		accelFromStart := tr.JustDeparted
+
+		prof := velocityProfile(tr.Progress, accelFromStart, decelAtEnd)
 		cornerMult := trackCornerMultiplier(&s.State, line, tr.Segment, tr.Direction)
 		effSpeed := trainSpeed * prof * cornerMult
 
-		progressDelta := (effSpeed * 10.0 / segLen) * dt
+		baseTravelTime := segmentTravelTime(&s.State, line, tr.Segment, nextSegIdx)
+		if baseTravelTime <= 0 {
+			continue
+		}
+		progressDelta := (effSpeed / trainSpeed) * dt / baseTravelTime
 		tr.Progress += progressDelta
+
+		if tr.Progress >= 0.25 {
+			tr.JustDeparted = false
+		}
 
 		// Reached next station
 		for tr.Progress >= 1.0 {
@@ -183,29 +233,42 @@ func (s *Simulator) moveTrains(dt float64) {
 				}
 			}
 
-			tr.JustArrived = true
-		}
-
-		if tr.JustArrived {
+			// Check if train needs to stop at this station
 			stID := line.Stations[tr.Segment]
-			if s.State.Stations[stID].IsInterchange {
-				tr.DwellRemaining = dwellTime / 2
+			isTerminal := !line.IsLoop && (tr.Segment == 0 || tr.Segment == len(line.Stations)-1)
+			hasService := false
+			if stID >= 0 && stID < len(s.State.Stations) {
+				st := &s.State.Stations[stID]
+				if st.Alive {
+					hasService = s.hasServiceWork(tr, st, stID)
+				}
+			}
+
+			if isTerminal || hasService {
+				tr.JustArrived = true
+				tr.JustDeparted = true
+				if s.State.Stations[stID].IsInterchange {
+					tr.DwellRemaining = dwellTime / 2
+				} else {
+					tr.DwellRemaining = dwellTime
+				}
 			} else {
-				tr.DwellRemaining = dwellTime
+				// No passenger exchange & not terminal -> pass straight through without stopping!
+				tr.JustArrived = false
+				tr.JustDeparted = false
+				tr.DwellRemaining = 0
 			}
 		}
 	}
 }
 
-func (s *Simulator) boardAndAlight() {
+func (s *Simulator) boardAndAlight(dt float64) {
 	for i := range s.State.Trains {
 		tr := &s.State.Trains[i]
 
 		if !tr.Active || !tr.JustArrived {
 			continue
 		}
-
-		tr.JustArrived = false
 
 		if tr.LineID < 0 || tr.LineID >= len(s.State.Lines) {
 			continue
@@ -230,54 +293,123 @@ func (s *Simulator) boardAndAlight() {
 			continue
 		}
 
-		// Alight
-		remainingPassengers := make([]Passenger, 0, len(tr.Passengers))
-		for _, p := range tr.Passengers {
-			if p.Destination == st.Kind {
-				s.State.Score++
-			} else {
-				route := FindOptimalRoute(&s.State.Graph, &s.State, stationID, p.Destination)
-				if route.Reachable && route.NextLineID == tr.LineID && (route.NextDirection == 0 || route.NextDirection == tr.Direction) {
-					remainingPassengers = append(remainingPassengers, p)
-				} else {
-					st.Queue = append(st.Queue, p)
-				}
-			}
+		serviceTime := passengerServiceTime
+		if st.IsInterchange {
+			serviceTime /= 2
 		}
-		tr.Passengers = remainingPassengers
+		if serviceTime <= 0 {
+			serviceTime = passengerServiceTime
+		}
 
-		// Board
+		// BUG-7 fix: only accumulate service time once the dwell phase has ended.
+		// Previously, ServiceElapsed accumulated even while DwellRemaining > 0,
+		// causing boarding to begin immediately on arrival, overlapping with the
+		// dwell phase. At large dt values this could process more passengers per
+		// step than intended.
+		if dt > 0 && tr.DwellRemaining <= 0 {
+			tr.ServiceElapsed += dt
+		}
+
+		for tr.ServiceElapsed >= serviceTime {
+			if !s.serviceOnePassenger(tr, st, stationID) {
+				break
+			}
+			tr.ServiceElapsed -= serviceTime
+		}
+
+		if tr.DwellRemaining <= 0 && !s.hasServiceWork(tr, st, stationID) {
+			tr.JustArrived = false
+			tr.ServiceElapsed = 0
+		}
+	}
+}
+
+func trainCapacity(tr *Train) int {
+	totalCapacity := tr.Capacity
+	if tr.Carriages > 1 {
+		totalCapacity += (tr.Carriages - 1) * 6
+	}
+	return totalCapacity
+}
+
+func (s *Simulator) hasServiceWork(tr *Train, st *Station, stationID int) bool {
+	for _, p := range tr.Passengers {
+		if p.Destination == st.Kind {
+			return true
+		}
+		route := FindOptimalRoute(&s.State.Graph, &s.State, stationID, p.Destination)
+		if !route.Reachable || route.NextLineID != tr.LineID || (route.NextDirection != 0 && route.NextDirection != tr.Direction) {
+			return true
+		}
+	}
+
+	if len(tr.Passengers) >= trainCapacity(tr) {
+		return false
+	}
+	for _, p := range st.Queue {
+		route := FindOptimalRoute(&s.State.Graph, &s.State, stationID, p.Destination)
+		if route.Reachable && route.NextLineID == tr.LineID && (route.NextDirection == 0 || route.NextDirection == tr.Direction) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Simulator) serviceOnePassenger(tr *Train, st *Station, stationID int) bool {
+	for idx, p := range tr.Passengers {
+		if p.Destination == st.Kind {
+			tr.Passengers = append(tr.Passengers[:idx], tr.Passengers[idx+1:]...)
+			s.State.Score++
+			return true
+		}
+	}
+
+	for idx, p := range tr.Passengers {
+		route := FindOptimalRoute(&s.State.Graph, &s.State, stationID, p.Destination)
+		if !route.Reachable || route.NextLineID != tr.LineID || (route.NextDirection != 0 && route.NextDirection != tr.Direction) {
+			tr.Passengers = append(tr.Passengers[:idx], tr.Passengers[idx+1:]...)
+			st.Queue = append(st.Queue, p)
+			return true
+		}
+	}
+
+	if len(tr.Passengers) >= trainCapacity(tr) {
+		return false
+	}
+
+	// BUG-8 (design): this is a FIFO queue — an ineligible passenger at the head
+	// blocks the slot for one full passengerServiceTime (0.5 s) before the next
+	// candidate is tried. This mirrors real-world transit behaviour. If the front
+	// passenger has no reachable route at all (network disconnected), every call to
+	// serviceOnePassenger wastes 0.5 s while nothing boards. This is intentional;
+	// the gameplay consequence is that a disconnected destination creates a queue jam.
+	remaining := st.Queue[:0]
+	boarded := false
+	for _, p := range st.Queue {
+		if boarded {
+			remaining = append(remaining, p)
+			continue
+		}
 		totalCapacity := tr.Capacity
 		if tr.Carriages > 1 {
 			totalCapacity += (tr.Carriages - 1) * 6
 		}
 
-		routeCache := make(map[StationKind]RouteInfo)
-		getRoute := func(dest StationKind) RouteInfo {
-			if r, ok := routeCache[dest]; ok {
-				return r
-			}
-			r := FindOptimalRoute(&s.State.Graph, &s.State, stationID, dest)
-			routeCache[dest] = r
-			return r
-		}
-
-		remaining := make([]Passenger, 0, len(st.Queue))
-		for _, p := range st.Queue {
-			route := getRoute(p.Destination)
-			canBoard := len(tr.Passengers) < totalCapacity &&
-				route.Reachable &&
-				route.NextLineID == tr.LineID &&
-				(route.NextDirection == 0 || route.NextDirection == tr.Direction)
-			if canBoard {
-				tr.Passengers = append(tr.Passengers, p)
-			} else {
-				remaining = append(remaining, p)
-			}
-		}
-		st.Queue = remaining
-		if len(st.Queue) == 0 {
-			st.Queue = nil
+		route := FindOptimalRoute(&s.State.Graph, &s.State, stationID, p.Destination)
+		canBoard := len(tr.Passengers) < totalCapacity &&
+			route.Reachable &&
+					route.NextLineID == tr.LineID &&
+					(route.NextDirection == 0 || route.NextDirection == tr.Direction)
+		if canBoard {
+			tr.Passengers = append(tr.Passengers, p)
+			boarded = true
+		} else {
+			remaining = append(remaining, p)
 		}
 	}
+	st.Queue = remaining
+	if len(st.Queue) == 0 {
+		st.Queue = nil
+	}
+	return boarded
 }
