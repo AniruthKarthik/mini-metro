@@ -280,6 +280,30 @@ func (s *Server) handleServerCommand(cmd string) {
 			<-s.actionCh
 		}
 		log.Println("🔄 Simulation restarted cleanly with London map")
+	case strings.HasPrefix(cmd, "select_map:"):
+		payload := strings.TrimPrefix(cmd, "select_map:")
+		var p struct {
+			Map string `json:"map"`
+		}
+		var cfg engine.MapConfig
+		if err := json.Unmarshal([]byte(payload), &p); err == nil && p.Map != "" {
+			switch strings.ToLower(p.Map) {
+			case "nyc", "new york", "new york city":
+				cfg = engine.NYCMap()
+			case "tokyo":
+				cfg = engine.TokyoMap()
+			default:
+				cfg = engine.LondonMap()
+			}
+		} else {
+			cfg = engine.LondonMap()
+		}
+		s.sim = engine.NewSimulatorWithMap(cfg)
+		s.paused = false
+		for len(s.actionCh) > 0 {
+			<-s.actionCh
+		}
+		log.Printf("🗺️ Simulation started with map: %s", cfg.Name)
 	case strings.HasPrefix(cmd, "set_speed:"):
 		// payload is a raw JSON object {"tps":60}
 		payload := strings.TrimPrefix(cmd, "set_speed:")

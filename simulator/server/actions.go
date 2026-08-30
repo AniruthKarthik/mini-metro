@@ -38,6 +38,9 @@ func ParseAction(raw []byte) (engine.Action, string, error) {
 	case "pause", "resume", "restart":
 		return nil, env.Type, nil
 
+	case "select_map":
+		return nil, env.Type + ":" + string(env.Payload), nil
+
 	case "set_speed":
 		return nil, env.Type + ":" + string(env.Payload), nil
 

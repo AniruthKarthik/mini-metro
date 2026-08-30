@@ -39,6 +39,9 @@ export class HUD {
   private interchangeToken!: HTMLElement;
   private interchangeCount!: HTMLElement;
 
+  private mapBtn!: HTMLButtonElement;
+  private mapNameText!: HTMLElement;
+  private mapModal!: HTMLElement;
   private rewardModal!: HTMLElement;
   private rewardOptions!: HTMLElement;
   private gameOverModal!: HTMLElement;
@@ -60,6 +63,12 @@ export class HUD {
     this.container.innerHTML = `
       <!-- Top Left Bar -->
       <div class="hud-top-left">
+        <button id="hud-map-btn" class="hud-pill-btn" title="Select City Map">
+          <span id="hud-map-name">London</span>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="6 9 12 15 18 9"></polyline>
+          </svg>
+        </button>
         <button id="hud-reset-btn" class="hud-icon-btn" title="Reset Game">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="23 4 23 10 17 10"></polyline>
@@ -150,6 +159,51 @@ export class HUD {
         </div>
       </div>
 
+      <!-- Map Selection Modal -->
+      <div id="hud-map-modal" class="hud-modal-overlay">
+        <div class="hud-modal-card map-select">
+          <h1>SELECT CITY</h1>
+          <p>Choose a metropolitan network to manage</p>
+          <div class="hud-map-options">
+            <div class="hud-map-card" data-map="london">
+              <div class="map-card-header">
+                <span class="city-flag">🇬🇧</span>
+                <div class="city-title-box">
+                  <h3>London</h3>
+                  <span class="river-name">River Thames</span>
+                </div>
+              </div>
+              <p class="map-desc">Classic transit network spanning the River Thames.</p>
+              <button class="map-select-btn">SELECT LONDON</button>
+            </div>
+
+            <div class="hud-map-card" data-map="nyc">
+              <div class="map-card-header">
+                <span class="city-flag">🇺🇸</span>
+                <div class="city-title-box">
+                  <h3>New York</h3>
+                  <span class="river-name">Hudson & East Rivers</span>
+                </div>
+              </div>
+              <p class="map-desc">Dense island borough network with wide water channels.</p>
+              <button class="map-select-btn">SELECT NEW YORK</button>
+            </div>
+
+            <div class="hud-map-card" data-map="tokyo">
+              <div class="map-card-header">
+                <span class="city-flag">🇯🇵</span>
+                <div class="city-title-box">
+                  <h3>Tokyo</h3>
+                  <span class="river-name">Sumida River & Bay</span>
+                </div>
+              </div>
+              <p class="map-desc">High-capacity metropolitan network around Tokyo Bay.</p>
+              <button class="map-select-btn">SELECT TOKYO</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Weekly Reward Choice Modal -->
       <div id="hud-reward-modal" class="hud-modal-overlay hidden">
         <div class="hud-modal-card">
@@ -175,6 +229,10 @@ export class HUD {
       <!-- Toast Container -->
       <div id="hud-toast" class="hud-toast hidden"></div>
     `;
+
+    this.mapBtn = document.getElementById('hud-map-btn') as HTMLButtonElement;
+    this.mapNameText = document.getElementById('hud-map-name')!;
+    this.mapModal = document.getElementById('hud-map-modal')!;
 
     this.dayText = document.getElementById('hud-day-text')!;
     this.scoreText = document.getElementById('hud-score-text')!;
@@ -249,13 +307,31 @@ export class HUD {
       }
     });
 
+    this.mapBtn.addEventListener('click', () => {
+      this.mapModal.classList.remove('hidden');
+    });
+
+    const mapCards = this.container.querySelectorAll('.hud-map-card');
+    mapCards.forEach((card) => {
+      card.addEventListener('click', () => {
+        const mapId = card.getAttribute('data-map');
+        if (mapId) {
+          this.wsClient.sendAction({
+            type: 'select_map',
+            payload: { map: mapId },
+          });
+        }
+        this.mapModal.classList.add('hidden');
+      });
+    });
+
     document.getElementById('hud-reset-btn')?.addEventListener('click', () => {
       this.wsClient.sendAction({ type: 'restart' });
     });
 
     document.getElementById('hud-restart-btn')?.addEventListener('click', () => {
-      this.wsClient.sendAction({ type: 'restart' });
       this.gameOverModal.classList.add('hidden');
+      this.mapModal.classList.remove('hidden');
     });
 
     this.wsClient.onError((msg) => this.showToast(msg));
@@ -270,6 +346,11 @@ export class HUD {
   private currentRewardChoicesKey: string = '';
 
   public updateState(snap: StateSnapshot): void {
+    // 0. Map Name
+    if (snap.map_name) {
+      this.mapNameText.innerText = snap.map_name;
+    }
+
     // 1. Score
     this.scoreText.innerText = String(snap.score);
 
