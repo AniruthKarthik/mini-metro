@@ -186,7 +186,7 @@ func (s *Simulator) GetActionMask(outMask []bool) []bool {
 	N := len(s.State.Stations)
 
 	// 1. AddLine
-	if s.State.Resources.CanSpend(RewardLine) {
+	if s.State.Resources.CanSpend(RewardLine) && s.State.Resources.CanSpend(RewardTrain) {
 		currIdx := 0
 		for u := 0; u < MaxStations; u++ {
 			for v := u + 1; v < MaxStations; v++ {
