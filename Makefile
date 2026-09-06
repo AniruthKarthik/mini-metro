@@ -1,4 +1,4 @@
-.PHONY: back front clean fnlist
+.PHONY: back front clean fnlist game
 
 back:
 	@echo "Starting Mini Metro Go backend server on port 6969..."
@@ -22,3 +22,12 @@ fnlist:
 			sed -E 's/^[[:space:]]*func[[:space:]]+/  - /'; \
 			echo; \
 		done
+
+game: clean
+	@echo "Starting UI, Backend, and AI. Press Ctrl+C to stop."
+	@trap "echo 'Shutting down...'; kill 0" EXIT; \
+	(cd ui && npm run dev -- --port 3000 --host 2>&1 | sed -e 's/^/\x1b[36m[UI]\x1b[0m /') & \
+	(cd simulator && go run cmd/server/main.go -addr :6969 -map london 2>&1 | sed -e 's/^/\x1b[32m[BACKEND]\x1b[0m /') & \
+	(cd ml && source venv/bin/activate && PYTHONUNBUFFERED=1 python agent.py 2>&1 | sed -e 's/^/\x1b[35m[AI]\x1b[0m /') & \
+	sleep 3 && (xdg-open http://localhost:3000 2>/dev/null || python -m webbrowser http://localhost:3000); \
+	wait

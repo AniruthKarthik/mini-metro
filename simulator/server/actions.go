@@ -35,7 +35,7 @@ func ParseAction(raw []byte) (engine.Action, string, error) {
 
 	switch env.Type {
 	// ── server-side controls ─────────────────────────────────────
-	case "pause", "resume", "restart":
+	case "pause", "resume", "restart", "toggle_ai":
 		return nil, env.Type, nil
 
 	case "select_map":
@@ -176,6 +176,16 @@ func ParseAction(raw []byte) (engine.Action, string, error) {
 			Segment:   p.Segment,
 			Direction: p.Direction,
 		}, "", nil
+
+	case "action_by_id":
+		var p struct {
+			ActionID int `json:"action_id"`
+		}
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return nil, "", err
+		}
+		action, _ := engine.ActionFromIndex(p.ActionID)
+		return action, "", nil
 
 	default:
 		return nil, "", fmt.Errorf("unknown action type: %q", env.Type)
