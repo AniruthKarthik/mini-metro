@@ -79,6 +79,9 @@ def main():
                         
                         action_id = action.item()
                         
+                        if action_id == 0:
+                            continue  # No-Op, don't spam the server
+                            
                         # Send action
                         payload = {
                             "type": "action_by_id",

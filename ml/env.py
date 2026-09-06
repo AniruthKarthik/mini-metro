@@ -169,6 +169,11 @@ class MiniMetroEnv(gym.Env):
         lib.Step(self.handle, action_id, duration, ctypes.byref(self._out_reward), ctypes.byref(self._out_done))
         
         reward = float(self._out_reward.value)
+        
+        # Action penalty to discourage the AI from spamming useless actions
+        if action_id != 0:
+            reward -= 0.05
+            
         done = bool(self._out_done.value)
         
         obs = self._get_obs()
