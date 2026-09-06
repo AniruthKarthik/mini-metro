@@ -14,6 +14,10 @@ class PPO:
         self.vf_coef = vf_coef
         self.max_grad_norm = max_grad_norm
 
+    @property
+    def raw_model(self):
+        return self.model.module if isinstance(self.model, nn.DataParallel) else self.model
+
     def compute_gae(self, rewards, values, next_value, dones, next_done):
         advantages = torch.zeros_like(rewards)
         lastgaelam = 0
@@ -47,7 +51,7 @@ class PPO:
                 
                 mb_obs = {k: v[mbinds] for k, v in b_obs.items()}
                 
-                _, newlogprob, entropy, newvalue = self.model.get_action_and_value(mb_obs, b_actions[mbinds], mask=b_masks[mbinds])
+                _, newlogprob, entropy, newvalue = self.raw_model.get_action_and_value(mb_obs, b_actions[mbinds], mask=b_masks[mbinds])
                 logratio = newlogprob - b_logprobs[mbinds]
                 ratio = logratio.exp()
                 

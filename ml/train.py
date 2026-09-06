@@ -17,25 +17,41 @@ def make_env(seed, map_id=0):
     return thunk
 
 def run_training():
-    # Optimized for Intel Core Ultra 7 155H (16 cores) and 16GB RAM
-    num_envs = 8
-    num_steps = 256
-    total_timesteps = 1000000
+    # MAX PERFORMANCE SETTINGS FOR KAGGLE DUAL GPUs
+    # Run 32 parallel games to feed massive batches to the GPUs
+    num_envs = 32
+    num_steps = 512
+    total_timesteps = 10000000
     batch_size = num_envs * num_steps
     num_updates = total_timesteps // batch_size
-    
-    # Restrict PyTorch CPU threads to avoid system freeze / oversubscription
-    torch.set_num_threads(6)
     
     os.makedirs("runs/minimetro_ppo", exist_ok=True)
     writer = SummaryWriter("runs/minimetro_ppo")
     
     # Use AsyncVectorEnv with 'spawn' to prevent Go runtime crashes on fork
     envs = gym.vector.AsyncVectorEnv([make_env(i) for i in range(num_envs)], context='spawn')
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
+    device = torch.device("cpu")
+    if torch.cuda.is_available():
+        try:
+            major, minor = torch.cuda.get_device_capability()
+            if major >= 7:
+                device = torch.device("cuda")
+            else:
+                print(f"⚠️ Warning: GPU {torch.cuda.get_device_name(0)} has CUDA capability sm_{major}{minor}, which is not supported by PyTorch 2.x wheels (requires sm_70+).", flush=True)
+                print(f"👉 Please switch Kaggle Accelerator setting to 'GPU T4 x2' or 'GPU T4' in the right sidebar panel! Falling back to CPU for now.", flush=True)
+        except Exception as e:
+            print(f"⚠️ GPU check error: {e}. Defaulting to CPU.", flush=True)
+            
+    print(f"Using device: {device}", flush=True)
     
-    model = MiniMetroActorCritic().to(device)
+    base_model = MiniMetroActorCritic(hidden_dim=256).to(device)
+    if device.type == "cuda" and torch.cuda.device_count() > 1:
+        print(f"🔥 Enabling DataParallel across {torch.cuda.device_count()} T4 GPUs!", flush=True)
+        model = torch.nn.DataParallel(base_model)
+    else:
+        model = base_model
+        
+    raw_model = base_model
     agent = PPO(model)
     
     obs = {k: torch.zeros((num_steps, num_envs) + v.shape).to(device) for k, v in envs.single_observation_space.items()}
@@ -54,7 +70,7 @@ def run_training():
     
     for update in range(1, num_updates + 1):
         if update % 50 == 0:
-            torch.save(model.state_dict(), f"runs/minimetro_ppo/model_{update}.pt")
+            torch.save(raw_model.state_dict(), f"runs/minimetro_ppo/model_{update}.pt")
 
         for step in range(num_steps):
             global_step += num_envs
@@ -65,7 +81,7 @@ def run_training():
             
             with torch.no_grad():
                 mask = next_obs_tensor["action_mask"].bool()
-                action, logprob, _, value = model.get_action_and_value(next_obs_tensor, mask=mask)
+                action, logprob, _, value = raw_model.get_action_and_value(next_obs_tensor, mask=mask)
                 values[step] = value.flatten()
             
             actions[step] = action
@@ -81,12 +97,12 @@ def run_training():
             if "final_info" in infos:
                 for idx, info in enumerate(infos["final_info"]):
                     if info and "episode" in info:
-                        print(f"global_step={global_step}, episodic_return={info['episode']['r']}, length={info['episode']['l']}")
+                        print(f"global_step={global_step}, episodic_return={info['episode']['r']}, length={info['episode']['l']}", flush=True)
                         writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
                         writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
 
         with torch.no_grad():
-            next_value = model.get_value(next_obs_tensor).reshape(1, -1)
+            next_value = raw_model.get_value(next_obs_tensor).reshape(1, -1)
             advantages, returns = agent.compute_gae(rewards, values, next_value, dones, next_done)
             
         b_obs = {k: v.reshape((-1,) + envs.single_observation_space[k].shape) for k, v in obs.items()}
@@ -105,7 +121,7 @@ def run_training():
         writer.add_scalar("losses/clipfrac", clipfrac, global_step)
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
         
-        print(f"Update: {update}/{num_updates}, SPS: {int(global_step / (time.time() - start_time))}, v_loss: {v_loss:.4f}, pg_loss: {pg_loss:.4f}, entropy: {ent_loss:.4f}")
+        print(f"Update: {update}/{num_updates}, SPS: {int(global_step / (time.time() - start_time))}, v_loss: {v_loss:.4f}, pg_loss: {pg_loss:.4f}, entropy: {ent_loss:.4f}", flush=True)
         
     envs.close()
     writer.close()
