@@ -35,6 +35,10 @@ def main():
                     if data.get("paused") or not data.get("alive"):
                         continue
                     
+                    # Match training frequency: 1 action per in-game second (30 ticks)
+                    if data.get("tick", 0) % 30 != 0:
+                        continue
+                        
                     # Fetch vectorized obs
                     try:
                         resp = requests.get("http://localhost:6969/api/obs", timeout=1.0)

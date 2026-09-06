@@ -372,12 +372,13 @@ func (s *Simulator) GetActionMask(outMask []bool) []bool {
 			outMask[OpenLoopOffset+lID] = true
 		}
 
-		outMask[RemoveLineOffset+lID] = true
-
-		if len(line.Stations) > 2 && !line.IsLoop {
-			outMask[ShortenLineOffset+lID*2+0] = true
-			outMask[ShortenLineOffset+lID*2+1] = true
-		}
+		// Action disabled per user request to prevent AI from messing up passenger progress:
+		// outMask[RemoveLineOffset+lID] = true
+		// 
+		// if len(line.Stations) > 2 && !line.IsLoop {
+		// 	outMask[ShortenLineOffset+lID*2+0] = true
+		// 	outMask[ShortenLineOffset+lID*2+1] = true
+		// }
 	}
 
 	return outMask
