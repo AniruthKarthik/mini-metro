@@ -1,4 +1,8 @@
 import torch
+try:
+    import intel_extension_for_pytorch as ipex
+except ImportError:
+    pass
 import numpy as np
 import gymnasium as gym
 from torch.utils.tensorboard import SummaryWriter
@@ -30,6 +34,8 @@ def run_training():
     
     # Use AsyncVectorEnv with 'spawn' to prevent Go runtime crashes on fork
     envs = gym.vector.AsyncVectorEnv([make_env(i) for i in range(num_envs)], context='spawn')
+    torch.set_num_threads(8)
+    
     device = torch.device("cpu")
     if torch.cuda.is_available():
         try:
@@ -41,8 +47,21 @@ def run_training():
                 print(f"👉 Please switch Kaggle Accelerator setting to 'GPU T4 x2' or 'GPU T4' in the right sidebar panel! Falling back to CPU for now.", flush=True)
         except Exception as e:
             print(f"⚠️ GPU check error: {e}. Defaulting to CPU.", flush=True)
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        device = torch.device("mps")
+    elif hasattr(torch, "xpu") and torch.xpu.is_available():
+        device = torch.device("xpu")
             
-    print(f"Using device: {device}", flush=True)
+    print("=" * 70)
+    print("MiniMetro PPO Training")
+    print("=" * 70)
+    print(f"Device          : {device}")
+    print(f"Num environments : {num_envs}")
+    print(f"Steps/update    : {num_steps}")
+    print(f"Rollout size    : {batch_size}")
+    print(f"Target steps    : {total_timesteps}")
+    print(f"Total updates   : {num_updates}")
+    print("=" * 70, flush=True)
     
     base_model = MiniMetroActorCritic(hidden_dim=256).to(device)
     if device.type == "cuda" and torch.cuda.device_count() > 1:
@@ -65,10 +84,13 @@ def run_training():
     start_time = time.time()
     
     next_obs, _ = envs.reset()
-    next_obs_tensor = {k: torch.tensor(v).to(device) for k, v in next_obs.items()}
+    next_obs_tensor = {k: torch.as_tensor(v, device=device) for k, v in next_obs.items()}
     next_done = torch.zeros(num_envs).to(device)
     
     for update in range(1, num_updates + 1):
+        update_start_time = time.time()
+        print(f"\n⏳ Performing {update}/{num_updates}...", flush=True)
+        
         if update % 50 == 0:
             torch.save(raw_model.state_dict(), f"runs/minimetro_ppo/model_{update}.pt")
 
@@ -91,7 +113,7 @@ def run_training():
             done = np.logical_or(terminated, truncated)
             
             rewards[step] = torch.tensor(reward).to(device).view(-1)
-            next_obs_tensor = {k: torch.tensor(v).to(device) for k, v in next_obs.items()}
+            next_obs_tensor = {k: torch.as_tensor(v, device=device) for k, v in next_obs.items()}
             next_done = torch.tensor(done, dtype=torch.float32).to(device)
             
             if "final_info" in infos:
@@ -121,7 +143,8 @@ def run_training():
         writer.add_scalar("losses/clipfrac", clipfrac, global_step)
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
         
-        print(f"Update: {update}/{num_updates}, SPS: {int(global_step / (time.time() - start_time))}, v_loss: {v_loss:.4f}, pg_loss: {pg_loss:.4f}, entropy: {ent_loss:.4f}", flush=True)
+        update_time = time.time() - update_start_time
+        print(f"✅ Completed {update}/{num_updates} | steps={global_step} | SPS={int(global_step / max(time.time() - start_time, 1e-6))} | v_loss={v_loss:.4f} | pg_loss={pg_loss:.4f} | entropy={ent_loss:.4f} | KL={approx_kl:.6f} | time={update_time:.2f}s", flush=True)
         
     envs.close()
     writer.close()

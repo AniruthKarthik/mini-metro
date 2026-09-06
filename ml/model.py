@@ -13,34 +13,40 @@ class DenseGCNLayer(nn.Module):
     def forward(self, nodes, edges, edge_attrs, num_nodes, num_edges):
         B, N, _ = nodes.shape
         _, _, E = edges.shape
+        H = self.node_proj.out_features
         
         x = F.relu(self.node_proj(nodes)) # [B, N, H]
         e = F.relu(self.edge_proj(edge_attrs)) # [B, E, H]
         
-        out_nodes = torch.zeros_like(x)
+        src = edges[:, 0, :].long() # [B, E]
+        dst = edges[:, 1, :].long() # [B, E]
         
-        for b in range(B):
-            n_edges = int(num_edges[b, 0].item())
-            if n_edges == 0:
-                out_nodes[b] = x[b]
-                continue
-                
-            e_idx = edges[b, :, :n_edges].long() # [2, e]
-            e_feat = e[b, :n_edges] # [e, H]
-            
-            src = e_idx[0]
-            dst = e_idx[1]
-            
-            src_feat = x[b, src] # [e, H]
-            
-            msg = F.relu(self.msg_proj(torch.cat([src_feat, e_feat], dim=-1))) # [e, H]
-            
-            aggr = torch.zeros(N, x.shape[-1], device=x.device)
-            aggr.index_add_(0, dst, msg)
-            
-            new_x = F.relu(self.update_proj(torch.cat([x[b], aggr], dim=-1)))
-            out_nodes[b] = new_x
-            
+        # Clamp to avoid out of bounds on invalid edges
+        src = src.clamp(min=0, max=N-1)
+        dst = dst.clamp(min=0, max=N-1)
+        
+        src_feat = torch.gather(x, 1, src.unsqueeze(-1).expand(-1, -1, H)) # [B, E, H]
+        
+        msg = F.relu(self.msg_proj(torch.cat([src_feat, e], dim=-1))) # [B, E, H]
+        
+        # Mask out invalid edges
+        edge_mask = torch.arange(E, device=x.device).unsqueeze(0) < num_edges # [B, E]
+        msg = msg * edge_mask.unsqueeze(-1)
+        
+        batch_offsets = torch.arange(B, device=x.device).unsqueeze(-1) * N # [B, 1]
+        flat_dst = (dst + batch_offsets).view(-1)
+        flat_msg = msg.view(-1, H)
+        
+        aggr = torch.zeros(B * N, H, device=x.device)
+        aggr.index_add_(0, flat_dst, flat_msg)
+        aggr = aggr.view(B, N, H)
+        
+        new_x = F.relu(self.update_proj(torch.cat([x, aggr], dim=-1)))
+        
+        # Where n_edges == 0, old code just outputs x
+        no_edges_mask = (num_edges == 0).unsqueeze(-1)
+        out_nodes = torch.where(no_edges_mask, x, new_x)
+        
         return out_nodes
 
 class MiniMetroActorCritic(nn.Module):
@@ -102,11 +108,8 @@ class MiniMetroActorCritic(nn.Module):
         x = self.gcn2(x, edges, edge_attrs, num_nodes, num_edges)
         
         B, N, H = x.shape
-        pooled = torch.zeros(B, H, device=x.device)
-        for b in range(B):
-            n_n = int(num_nodes[b, 0].item())
-            if n_n > 0:
-                pooled[b] = x[b, :n_n].mean(dim=0)
+        node_mask = torch.arange(N, device=x.device).unsqueeze(0) < num_nodes # [B, N]
+        pooled = (x * node_mask.unsqueeze(-1)).sum(dim=1) / num_nodes.clamp(min=1).float()
                 
         g = self.global_proj(globals_feat)
         combined = torch.cat([pooled, g], dim=-1)

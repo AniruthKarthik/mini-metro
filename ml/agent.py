@@ -1,25 +1,49 @@
 import torch
+try:
+    import intel_extension_for_pytorch as ipex
+except ImportError:
+    pass
 import json
 import requests
 import time
 import glob
+import os
 from websockets.sync.client import connect
 from model import MiniMetroActorCritic
 
 def main():
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        device = torch.device("mps")
+    elif hasattr(torch, "xpu") and torch.xpu.is_available():
+        device = torch.device("xpu")
+    else:
+        device = torch.device("cpu")
     print(f"[AI] Using device: {device}")
 
-    # Load latest model
-    model = MiniMetroActorCritic().to(device)
-    model_files = glob.glob("runs/minimetro_ppo/model_*.pt")
-    if model_files:
-        model_files.sort(key=lambda x: int(x.split('_')[-1].split('.')[0]))
-        model_path = model_files[-1]
-        print(f"[AI] Loading latest model: {model_path}")
+    # Find latest models from both local and default training scripts
+    local_files = glob.glob("runs/minimetro_ppo_local/model_*.pt") + glob.glob("runs/minimetro_ppo_local/checkpoint_*.pt")
+    default_files = glob.glob("runs/minimetro_ppo/model_*.pt") + glob.glob("runs/minimetro_ppo/checkpoint_*.pt")
+    
+    all_files = local_files + default_files
+    if all_files:
+        # Sort by modification time to get the absolute latest model
+        all_files.sort(key=os.path.getmtime)
+        model_path = all_files[-1]
+        
+        # Select the correct architecture dimension based on which script trained it
+        if "minimetro_ppo_local" in model_path:
+            hidden_dim = 32
+        else:
+            hidden_dim = 256
+            
+        print(f"[AI] Loading latest model: {model_path} (hidden_dim={hidden_dim})")
+        model = MiniMetroActorCritic(hidden_dim=hidden_dim).to(device)
         model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
     else:
         print("[AI] No saved models found. Using random initialized weights.")
+        model = MiniMetroActorCritic(hidden_dim=32).to(device)
     
     model.eval()
 

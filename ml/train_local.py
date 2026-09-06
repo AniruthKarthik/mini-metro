@@ -1,0 +1,1032 @@
+import os
+import time
+import glob
+
+import numpy as np
+import torch
+import gymnasium as gym
+try:
+    import intel_extension_for_pytorch as ipex
+except ImportError:
+    pass
+from torch.utils.tensorboard import SummaryWriter
+
+from env import MiniMetroEnv
+from model import MiniMetroActorCritic
+from ppo import PPO
+
+
+# ============================================================
+# ENVIRONMENT
+# ============================================================
+
+def make_env(seed, map_id=0):
+    def thunk():
+        env = MiniMetroEnv(
+            map_id=map_id,
+            seed=seed
+        )
+
+        env = gym.wrappers.RecordEpisodeStatistics(env)
+
+        return env
+
+    return thunk
+
+
+# ============================================================
+# CHECKPOINT HELPERS
+# ============================================================
+
+CHECKPOINT_DIR = "runs/minimetro_ppo_local"
+
+
+def save_checkpoint(
+    model,
+    agent,
+    update,
+    global_step,
+    checkpoint_dir=CHECKPOINT_DIR,
+):
+    """
+    Save everything needed to resume training.
+
+    Saves:
+        - model parameters
+        - optimizer state (if available)
+        - current update
+        - global step
+        - RNG states
+    """
+
+    os.makedirs(checkpoint_dir, exist_ok=True)
+
+    checkpoint_path = os.path.join(
+        checkpoint_dir,
+        f"checkpoint_{update:05d}.pt"
+    )
+
+    checkpoint = {
+        "update": update,
+        "global_step": global_step,
+        "model_state_dict": model.state_dict(),
+    }
+
+    # PPO implementation may expose optimizer as agent.optimizer.
+    if hasattr(agent, "optimizer"):
+        checkpoint["optimizer_state_dict"] = (
+            agent.optimizer.state_dict()
+        )
+
+    # Save RNG states so resumed training is more reproducible.
+    checkpoint["torch_rng_state"] = torch.get_rng_state()
+
+    if torch.cuda.is_available():
+        checkpoint["cuda_rng_state"] = torch.cuda.get_rng_state_all()
+
+    checkpoint["numpy_rng_state"] = np.random.get_state()
+
+    torch.save(
+        checkpoint,
+        checkpoint_path
+    )
+
+    print(
+        f"💾 Checkpoint saved: {checkpoint_path}",
+        flush=True
+    )
+
+    return checkpoint_path
+
+
+def find_latest_checkpoint(checkpoint_dir=CHECKPOINT_DIR):
+    """
+    Find the checkpoint with the highest update number.
+    """
+
+    pattern = os.path.join(
+        checkpoint_dir,
+        "checkpoint_*.pt"
+    )
+
+    checkpoints = glob.glob(pattern)
+
+    if not checkpoints:
+        return None
+
+    checkpoints.sort()
+
+    return checkpoints[-1]
+
+
+def load_checkpoint(
+    checkpoint_path,
+    model,
+    agent,
+    device,
+):
+    """
+    Load model/optimizer/RNG state.
+
+    Returns:
+        update,
+        global_step
+    """
+
+    print(
+        f"🔄 Loading checkpoint: {checkpoint_path}",
+        flush=True
+    )
+
+    checkpoint = torch.load(
+        checkpoint_path,
+        map_location=device,
+        weights_only=False,
+    )
+
+    model.load_state_dict(
+        checkpoint["model_state_dict"]
+    )
+
+    if (
+        "optimizer_state_dict" in checkpoint
+        and hasattr(agent, "optimizer")
+    ):
+        agent.optimizer.load_state_dict(
+            checkpoint["optimizer_state_dict"]
+        )
+
+    # Restore RNG state when available.
+    if "torch_rng_state" in checkpoint:
+        torch.set_rng_state(
+            checkpoint["torch_rng_state"]
+        )
+
+    if (
+        torch.cuda.is_available()
+        and "cuda_rng_state" in checkpoint
+    ):
+        torch.cuda.set_rng_state_all(
+            checkpoint["cuda_rng_state"]
+        )
+
+    if "numpy_rng_state" in checkpoint:
+        np.random.set_state(
+            checkpoint["numpy_rng_state"]
+        )
+
+    update = int(
+        checkpoint.get("update", 0)
+    )
+
+    global_step = int(
+        checkpoint.get("global_step", 0)
+    )
+
+    print(
+        f"✅ Resumed from update {update} "
+        f"| global_step={global_step}",
+        flush=True
+    )
+
+    return update, global_step
+
+
+# ============================================================
+# MAIN TRAINING
+# ============================================================
+
+def run_training():
+
+    # --------------------------------------------------------
+    # TRAINING CONFIGURATION
+    # --------------------------------------------------------
+
+    num_envs = 16
+    num_steps = 128
+
+    total_timesteps = 40_000
+
+    # Number of environment transitions per update.
+    rollout_size = num_envs * num_steps
+
+    # Ceiling instead of silently stopping below total_timesteps.
+    num_updates = int(
+        np.ceil(total_timesteps / rollout_size)
+    )
+
+    # CPU configuration.
+    torch.set_num_threads(8)
+
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        # Apple Silicon integrated graphics
+        device = torch.device("mps")
+    elif hasattr(torch, "xpu") and torch.xpu.is_available():
+        # Intel integrated graphics
+        device = torch.device("xpu")
+    else:
+        device = torch.device("cpu")
+
+    print("=" * 70)
+    print("MiniMetro PPO Training")
+    print("=" * 70)
+    print(f"Device          : {device}")
+    print(f"Num environments : {num_envs}")
+    print(f"Steps/update    : {num_steps}")
+    print(f"Rollout size    : {rollout_size}")
+    print(f"Target steps    : {total_timesteps}")
+    print(f"Total updates   : {num_updates}")
+    print("=" * 70)
+
+    # --------------------------------------------------------
+    # DIRECTORIES
+    # --------------------------------------------------------
+
+    os.makedirs(
+        CHECKPOINT_DIR,
+        exist_ok=True
+    )
+
+    # TensorBoard logs.
+    writer = SummaryWriter(
+        log_dir=CHECKPOINT_DIR
+    )
+
+    # --------------------------------------------------------
+    # ENVIRONMENTS
+    # --------------------------------------------------------
+
+    print(
+        "Creating vectorized environments...",
+        flush=True
+    )
+
+    envs = gym.vector.SyncVectorEnv(
+        [
+            make_env(i)
+            for i in range(num_envs)
+        ]
+    )
+
+    print(
+        "✅ Environments created.",
+        flush=True
+    )
+
+    # --------------------------------------------------------
+    # MODEL
+    # --------------------------------------------------------
+
+    model = MiniMetroActorCritic(
+        hidden_dim=32
+    ).to(device)
+
+    agent = PPO(model)
+
+    # --------------------------------------------------------
+    # RESUME TRAINING
+    # --------------------------------------------------------
+
+    latest_checkpoint = find_latest_checkpoint()
+
+    start_update = 1
+    global_step = 0
+
+    if latest_checkpoint is not None:
+
+        try:
+
+            previous_update, global_step = load_checkpoint(
+                latest_checkpoint,
+                model,
+                agent,
+                device,
+            )
+
+            start_update = previous_update + 1
+
+        except Exception as e:
+
+            print(
+                f"⚠️ Could not load checkpoint:\n{e}",
+                flush=True
+            )
+
+            print(
+                "Starting a new training run.",
+                flush=True
+            )
+
+    else:
+
+        print(
+            "🆕 No checkpoint found. "
+            "Starting new training run.",
+            flush=True
+        )
+
+    # --------------------------------------------------------
+    # ROLLOUT STORAGE
+    # --------------------------------------------------------
+
+    obs = {
+        k: torch.zeros(
+            (num_steps, num_envs) + v.shape,
+            dtype=torch.float32,
+            device=device,
+        )
+        for k, v in envs.single_observation_space.items()
+        if k != "action_mask"
+    }
+
+    # Store action mask separately because it may be
+    # integer/bool rather than float.
+    obs["action_mask"] = torch.zeros(
+        (num_steps, num_envs)
+        + envs.single_observation_space["action_mask"].shape,
+        dtype=torch.bool,
+        device=device,
+    )
+
+    actions = torch.zeros(
+        (num_steps, num_envs),
+        dtype=torch.long,
+        device=device,
+    )
+
+    logprobs = torch.zeros(
+        (num_steps, num_envs),
+        dtype=torch.float32,
+        device=device,
+    )
+
+    rewards = torch.zeros(
+        (num_steps, num_envs),
+        dtype=torch.float32,
+        device=device,
+    )
+
+    dones = torch.zeros(
+        (num_steps, num_envs),
+        dtype=torch.float32,
+        device=device,
+    )
+
+    values = torch.zeros(
+        (num_steps, num_envs),
+        dtype=torch.float32,
+        device=device,
+    )
+
+    # --------------------------------------------------------
+    # INITIAL ENV RESET
+    # --------------------------------------------------------
+
+    next_obs, _ = envs.reset()
+
+    next_obs_tensor = {
+        k: torch.as_tensor(
+            v,
+            device=device
+        )
+        for k, v in next_obs.items()
+    }
+
+    # Make sure action mask is boolean.
+    next_obs_tensor["action_mask"] = (
+        next_obs_tensor["action_mask"].bool()
+    )
+
+    next_done = torch.zeros(
+        num_envs,
+        dtype=torch.float32,
+        device=device,
+    )
+
+    start_time = time.time()
+
+    # --------------------------------------------------------
+    # TRAINING LOOP
+    # --------------------------------------------------------
+
+    try:
+
+        for update in range(
+            start_update,
+            num_updates + 1
+        ):
+
+            print(
+                f"\n⏳ Performing "
+                f"{update}/{num_updates}...",
+                flush=True
+            )
+
+            update_start_time = time.time()
+
+            # ------------------------------------------------
+            # COLLECT ROLLOUT
+            # ------------------------------------------------
+
+            for step in range(num_steps):
+
+                global_step += num_envs
+
+                # Store observations.
+                for k in obs.keys():
+                    obs[k][step].copy_(
+                        next_obs_tensor[k]
+                    )
+
+                # Store done state BEFORE taking action.
+                dones[step].copy_(
+                    next_done
+                )
+
+                # --------------------------------------------
+                # ACTION
+                # --------------------------------------------
+
+                with torch.no_grad():
+
+                    mask = (
+                        next_obs_tensor[
+                            "action_mask"
+                        ].bool()
+                    )
+
+                    action, logprob, _, value = (
+                        model.get_action_and_value(
+                            next_obs_tensor,
+                            mask=mask,
+                        )
+                    )
+
+                values[step].copy_(
+                    value.flatten()
+                )
+
+                actions[step].copy_(
+                    action.flatten().long()
+                )
+
+                logprobs[step].copy_(
+                    logprob.flatten()
+                )
+
+                # --------------------------------------------
+                # ENV STEP
+                # --------------------------------------------
+
+                next_obs, reward, terminated, truncated, infos = (
+                    envs.step(
+                        action.detach()
+                        .cpu()
+                        .numpy()
+                    )
+                )
+
+                done = np.logical_or(
+                    terminated,
+                    truncated
+                )
+
+                # --------------------------------------------
+                # STORE REWARD
+                # --------------------------------------------
+
+                rewards[step].copy_(
+                    torch.as_tensor(
+                        reward,
+                        dtype=torch.float32,
+                        device=device,
+                    ).view(-1)
+                )
+
+                # --------------------------------------------
+                # NEXT OBSERVATION
+                # --------------------------------------------
+
+                next_obs_tensor = {
+                    k: torch.as_tensor(
+                        v,
+                        device=device
+                    )
+                    for k, v in next_obs.items()
+                }
+
+                next_obs_tensor[
+                    "action_mask"
+                ] = (
+                    next_obs_tensor[
+                        "action_mask"
+                    ].bool()
+                )
+
+                next_done = torch.as_tensor(
+                    done,
+                    dtype=torch.float32,
+                    device=device,
+                )
+
+                # --------------------------------------------
+                # EPISODE STATISTICS
+                # --------------------------------------------
+
+                if "final_info" in infos:
+
+                    final_infos = infos[
+                        "final_info"
+                    ]
+
+                    for idx, info in enumerate(
+                        final_infos
+                    ):
+
+                        if (
+                            info is not None
+                            and "episode" in info
+                        ):
+
+                            episode_return = (
+                                info[
+                                    "episode"
+                                ]["r"]
+                            )
+
+                            episode_length = (
+                                info[
+                                    "episode"
+                                ]["l"]
+                            )
+
+                            # Convert possible numpy
+                            # scalars to Python values.
+                            try:
+                                episode_return = (
+                                    float(
+                                        np.asarray(
+                                            episode_return
+                                        ).reshape(-1)[0]
+                                    )
+                                )
+                            except Exception:
+                                pass
+
+                            try:
+                                episode_length = (
+                                    int(
+                                        np.asarray(
+                                            episode_length
+                                        ).reshape(-1)[0]
+                                    )
+                                )
+                            except Exception:
+                                pass
+
+                            print(
+                                f"global_step="
+                                f"{global_step}, "
+                                f"env={idx}, "
+                                f"episodic_return="
+                                f"{episode_return:.3f}, "
+                                f"length="
+                                f"{episode_length}",
+                                flush=True
+                            )
+
+                            writer.add_scalar(
+                                "charts/episodic_return",
+                                episode_return,
+                                global_step,
+                            )
+
+                            writer.add_scalar(
+                                "charts/episodic_length",
+                                episode_length,
+                                global_step,
+                            )
+
+            # ------------------------------------------------
+            # GAE
+            # ------------------------------------------------
+
+            with torch.no_grad():
+
+                next_value = (
+                    model.get_value(
+                        next_obs_tensor
+                    )
+                    .reshape(1, -1)
+                )
+
+                advantages, returns = (
+                    agent.compute_gae(
+                        rewards,
+                        values,
+                        next_value,
+                        dones,
+                        next_done,
+                    )
+                )
+
+            # ------------------------------------------------
+            # FLATTEN BATCH
+            # ------------------------------------------------
+
+            b_obs = {
+                k: v.reshape(
+                    (-1,)
+                    + envs.single_observation_space[
+                        k
+                    ].shape
+                )
+                for k, v in obs.items()
+            }
+
+            b_actions = actions.reshape(-1)
+
+            b_logprobs = logprobs.reshape(-1)
+
+            b_advantages = advantages.reshape(-1)
+
+            b_returns = returns.reshape(-1)
+
+            b_masks = (
+                b_obs[
+                    "action_mask"
+                ].bool()
+            )
+
+            # ------------------------------------------------
+            # PPO UPDATE
+            # ------------------------------------------------
+
+            pg_loss, v_loss, ent_loss, clipfrac, approx_kl = (
+                agent.update(
+                    b_obs,
+                    b_actions,
+                    b_logprobs,
+                    b_advantages,
+                    b_returns,
+                    b_masks,
+                )
+            )
+
+            # Convert tensors/numpy scalars safely.
+            pg_loss = float(
+                np.asarray(
+                    pg_loss
+                )
+            )
+
+            v_loss = float(
+                np.asarray(
+                    v_loss
+                )
+            )
+
+            ent_loss = float(
+                np.asarray(
+                    ent_loss
+                )
+            )
+
+            clipfrac = float(
+                np.asarray(
+                    clipfrac
+                )
+            )
+
+            approx_kl = float(
+                np.asarray(
+                    approx_kl
+                )
+            )
+
+            # ------------------------------------------------
+            # NaN DETECTION
+            # ------------------------------------------------
+
+            if not all(
+                np.isfinite(x)
+                for x in [
+                    pg_loss,
+                    v_loss,
+                    ent_loss,
+                    clipfrac,
+                    approx_kl,
+                ]
+            ):
+
+                print(
+                    "⚠️ WARNING: "
+                    "Non-finite PPO metric detected!",
+                    flush=True
+                )
+
+            # ------------------------------------------------
+            # METRICS
+            # ------------------------------------------------
+
+            elapsed = time.time() - start_time
+
+            sps = int(
+                global_step / max(
+                    elapsed,
+                    1e-6
+                )
+            )
+
+            update_time = (
+                time.time()
+                - update_start_time
+            )
+
+            writer.add_scalar(
+                "losses/value_loss",
+                v_loss,
+                global_step,
+            )
+
+            writer.add_scalar(
+                "losses/policy_loss",
+                pg_loss,
+                global_step,
+            )
+
+            writer.add_scalar(
+                "losses/entropy",
+                ent_loss,
+                global_step,
+            )
+
+            writer.add_scalar(
+                "losses/approx_kl",
+                approx_kl,
+                global_step,
+            )
+
+            writer.add_scalar(
+                "losses/clipfrac",
+                clipfrac,
+                global_step,
+            )
+
+            writer.add_scalar(
+                "charts/SPS",
+                sps,
+                global_step,
+            )
+
+            writer.add_scalar(
+                "charts/update_time",
+                update_time,
+                global_step,
+            )
+
+            writer.flush()
+
+            # ------------------------------------------------
+            # PRINT UPDATE
+            # ------------------------------------------------
+
+            print(
+                f"✅ Completed "
+                f"{update}/{num_updates} | "
+                f"steps={global_step} | "
+                f"SPS={sps} | "
+                f"v_loss={v_loss:.4f} | "
+                f"pg_loss={pg_loss:.4f} | "
+                f"entropy={ent_loss:.4f} | "
+                f"KL={approx_kl:.6f} | "
+                f"time={update_time:.2f}s",
+                flush=True
+            )
+
+            # ------------------------------------------------
+            # SAVE CHECKPOINT
+            # ------------------------------------------------
+            #
+            # IMPORTANT:
+            # Save EVERY update.
+            #
+            # This means if Kaggle kills the session after
+            # 6 hours, at worst you lose the current update
+            # rather than several hours of work.
+            #
+
+            save_checkpoint(
+                model,
+                agent,
+                update,
+                global_step,
+            )
+
+    except KeyboardInterrupt:
+
+        print(
+            "\n🛑 Training interrupted by user.",
+            flush=True
+        )
+
+        # Try to save the current model even if
+        # interruption happens between checkpoints.
+        try:
+
+            emergency_path = os.path.join(
+                CHECKPOINT_DIR,
+                "checkpoint_interrupted.pt"
+            )
+
+            emergency_checkpoint = {
+                "update": update
+                if "update" in locals()
+                else 0,
+
+                "global_step": global_step,
+
+                "model_state_dict":
+                    model.state_dict(),
+
+                "torch_rng_state":
+                    torch.get_rng_state(),
+
+                "numpy_rng_state":
+                    np.random.get_state(),
+            }
+
+            if hasattr(
+                agent,
+                "optimizer"
+            ):
+
+                emergency_checkpoint[
+                    "optimizer_state_dict"
+                ] = (
+                    agent.optimizer.state_dict()
+                )
+
+            torch.save(
+                emergency_checkpoint,
+                emergency_path
+            )
+
+            print(
+                f"💾 Emergency checkpoint saved: "
+                f"{emergency_path}",
+                flush=True
+            )
+
+        except Exception as e:
+
+            print(
+                f"⚠️ Could not save emergency "
+                f"checkpoint: {e}",
+                flush=True
+            )
+
+    except Exception as e:
+
+        print(
+            "\n❌ TRAINING FAILED",
+            flush=True
+        )
+
+        print(
+            f"Error: {type(e).__name__}: {e}",
+            flush=True
+        )
+
+        # Save emergency checkpoint.
+        try:
+
+            emergency_path = os.path.join(
+                CHECKPOINT_DIR,
+                "checkpoint_error.pt"
+            )
+
+            emergency_checkpoint = {
+                "update": update
+                if "update" in locals()
+                else 0,
+
+                "global_step": global_step,
+
+                "model_state_dict":
+                    model.state_dict(),
+
+                "torch_rng_state":
+                    torch.get_rng_state(),
+
+                "numpy_rng_state":
+                    np.random.get_state(),
+            }
+
+            if hasattr(
+                agent,
+                "optimizer"
+            ):
+
+                emergency_checkpoint[
+                    "optimizer_state_dict"
+                ] = (
+                    agent.optimizer.state_dict()
+                )
+
+            torch.save(
+                emergency_checkpoint,
+                emergency_path
+            )
+
+            print(
+                f"💾 Emergency checkpoint saved: "
+                f"{emergency_path}",
+                flush=True
+            )
+
+        except Exception as save_error:
+
+            print(
+                f"⚠️ Could not save emergency "
+                f"checkpoint: {save_error}",
+                flush=True
+            )
+
+        # Re-raise so the actual traceback is visible.
+        raise
+
+    finally:
+
+        # ----------------------------------------------------
+        # FINAL MODEL
+        # ----------------------------------------------------
+
+        try:
+
+            final_model_path = os.path.join(
+                CHECKPOINT_DIR,
+                "model_final.pt"
+            )
+
+            torch.save(
+                model.state_dict(),
+                final_model_path
+            )
+
+            print(
+                f"💾 Final model saved: "
+                f"{final_model_path}",
+                flush=True
+            )
+
+        except Exception as e:
+
+            print(
+                f"⚠️ Could not save final model: {e}",
+                flush=True
+            )
+
+        # ----------------------------------------------------
+        # CLOSE ENVIRONMENTS
+        # ----------------------------------------------------
+
+        try:
+            envs.close()
+        except Exception:
+            pass
+
+        # ----------------------------------------------------
+        # CLOSE TENSORBOARD
+        # ----------------------------------------------------
+
+        try:
+            writer.close()
+        except Exception:
+            pass
+
+    # --------------------------------------------------------
+    # FINISHED
+    # --------------------------------------------------------
+
+    print("\n" + "=" * 70)
+    print("✅ TRAINING FINISHED")
+    print("=" * 70)
+    print(
+        f"Total environment steps: {global_step}"
+    )
+    print(
+        f"Final model: "
+        f"{os.path.join(CHECKPOINT_DIR, 'model_final.pt')}"
+    )
+    print("=" * 70)
+
+
+# ============================================================
+# ENTRY POINT
+# ============================================================
+
+if __name__ == "__main__":
+    run_training()

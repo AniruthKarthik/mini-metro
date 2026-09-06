@@ -36,7 +36,7 @@ class PPO:
         returns = advantages + values
         return advantages, returns
 
-    def update(self, b_obs, b_actions, b_logprobs, b_advantages, b_returns, b_masks, update_epochs=4, num_minibatches=4):
+    def update(self, b_obs, b_actions, b_logprobs, b_advantages, b_returns, b_masks, update_epochs=2, num_minibatches=2):
         b_size = b_actions.shape[0]
         minibatch_size = b_size // num_minibatches
         
