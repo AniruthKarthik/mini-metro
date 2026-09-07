@@ -87,7 +87,7 @@ func Step(handle C.uintptr_t, actionID C.int, duration C.float, outReward *C.flo
 }
 
 //export GetObservation
-func GetObservation(handle C.uintptr_t, outNodes *C.float, outEdges *C.int32_t, outEdgeAttrs *C.float, outGlobals *C.float) {
+func GetObservation(handle C.uintptr_t, outNodes *C.float, outEdges *C.int32_t, outEdgeAttrs *C.float, outGlobals *C.float, outNumNodes *C.int32_t, outNumEdges *C.int32_t) {
 	sim := getSim(uintptr(handle))
 	if sim == nil {
 		return
@@ -116,7 +116,15 @@ func GetObservation(handle C.uintptr_t, outNodes *C.float, outEdges *C.int32_t, 
 		globalsBuf = unsafe.Slice((*float32)(unsafe.Pointer(outGlobals)), engine.GlobalFeatureDim)
 	}
 
-	sim.WriteVectorizedObservation(nodesBuf, edgesBuf, edgeAttrsBuf, globalsBuf)
+	numNodes, numEdges := sim.WriteVectorizedObservation(nodesBuf, edgesBuf, edgeAttrsBuf, globalsBuf)
+
+	// PHASE-2: return exact counts so Python can avoid fragile heuristic detection.
+	if outNumNodes != nil {
+		*outNumNodes = C.int32_t(numNodes)
+	}
+	if outNumEdges != nil {
+		*outNumEdges = C.int32_t(numEdges)
+	}
 }
 
 var (

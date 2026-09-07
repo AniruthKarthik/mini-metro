@@ -50,7 +50,8 @@ class DenseGCNLayer(nn.Module):
         return out_nodes
 
 class MiniMetroActorCritic(nn.Module):
-    def __init__(self, node_dim=25, edge_dim=10, global_dim=8, action_space_size=4108, hidden_dim=128):
+    def __init__(self, node_dim=29, edge_dim=10, global_dim=13, action_space_size=4108, hidden_dim=128):
+        # PHASE-2: node_dim 25→29, global_dim 8→13 to match updated observation.go
         super().__init__()
         
         self.gcn1 = DenseGCNLayer(node_dim, edge_dim, hidden_dim)
@@ -63,15 +64,15 @@ class MiniMetroActorCritic(nn.Module):
         )
         
         self.fc_actor = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.Linear(hidden_dim * 3, hidden_dim),  # PHASE-2: *3 for [mean_pool, max_pool, global]
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, action_space_size)
         )
-        
+
         self.fc_critic = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.Linear(hidden_dim * 3, hidden_dim),  # PHASE-2: *3 for [mean_pool, max_pool, global]
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
@@ -108,11 +109,17 @@ class MiniMetroActorCritic(nn.Module):
         x = self.gcn2(x, edges, edge_attrs, num_nodes, num_edges)
         
         B, N, H = x.shape
-        node_mask = torch.arange(N, device=x.device).unsqueeze(0) < num_nodes # [B, N]
-        pooled = (x * node_mask.unsqueeze(-1)).sum(dim=1) / num_nodes.clamp(min=1).float()
-                
-        g = self.global_proj(globals_feat)
-        combined = torch.cat([pooled, g], dim=-1)
+        node_mask = torch.arange(N, device=x.device).unsqueeze(0) < num_nodes  # [B, N]
+
+        # PHASE-2: mean+max pooling so the actor can detect the single worst station.
+        # mean_pool captures average state; max_pool captures the most urgent node.
+        mean_pool = (x * node_mask.unsqueeze(-1)).sum(dim=1) / num_nodes.clamp(min=1).float()
+        x_for_max = x.masked_fill(~node_mask.unsqueeze(-1), -1e9)
+        max_pool  = x_for_max.max(dim=1).values
+        pooled    = torch.cat([mean_pool, max_pool], dim=-1)  # [B, 2H]
+
+        g        = self.global_proj(globals_feat)
+        combined = torch.cat([pooled, g], dim=-1)  # [B, 3H]
         
         logits = self.fc_actor(combined)
         value = self.fc_critic(combined)

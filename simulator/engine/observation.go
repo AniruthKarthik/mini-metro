@@ -63,9 +63,9 @@ func (s *Simulator) Observation() Observation {
 }
 
 const (
-	NodeFeatureDim   = 25
+	NodeFeatureDim   = 29 // PHASE-2: was 25; added fill_ratio, lines_serving, timer_norm, queue_norm
 	EdgeFeatureDim   = 10
-	GlobalFeatureDim = 8
+	GlobalFeatureDim = 13 // PHASE-2: was 8; added station_count, max_fill, overcrowd_count, pending_reward, game_time
 )
 
 type VectorizedObservation struct {
@@ -85,6 +85,21 @@ func (s *Simulator) WriteVectorizedObservation(outNodes []float32, outEdges []in
 
 	N := len(s.State.Stations)
 	numNodes = N
+
+	// ---- Build lines-per-station lookup (needed for node feature [26]) ----
+	linesServingStation := make([]int, N)
+	for _, line := range s.State.Lines {
+		if line.Removed {
+			continue
+		}
+		seen := make(map[int]bool)
+		for _, stID := range line.Stations {
+			if stID >= 0 && stID < N && !seen[stID] {
+				linesServingStation[stID]++
+				seen[stID] = true
+			}
+		}
+	}
 
 	for i := 0; i < N; i++ {
 		st := &s.State.Stations[i]
@@ -126,6 +141,30 @@ func (s *Simulator) WriteVectorizedObservation(outNodes []float32, outEdges []in
 		} else {
 			outNodes[base+24] = 0.0
 		}
+
+		// ---- PHASE-2 new node features ----
+
+		// [25] fill ratio: queue / capacity (0 = empty, 1 = full = game-over imminent)
+		cap := st.Capacity
+		if cap <= 0 {
+			cap = defaultStationCapacity
+		}
+		outNodes[base+25] = float32(len(st.Queue)) / float32(cap)
+
+		// [26] fraction of lines serving this station (0 = isolated, 1 = all 7 lines)
+		outNodes[base+26] = float32(linesServingStation[i]) / 7.0
+
+		// [27] overcrowding timer normalized: 0 if inactive, else (1 - timer/failSeconds)
+		// Values near 1.0 = almost dead; 0 = no timer active
+		if st.OvercrowdingTimer < 0 {
+			outNodes[base+27] = 0.0
+		} else {
+			outNodes[base+27] = float32(1.0 - st.OvercrowdingTimer/overcrowdingFailureSeconds)
+		}
+
+		// [28] total queue normalized by capacity (same signal as [25] but kept separate
+		//      so the GNN can distinguish "4/6" from "4/8" even if fill ratio is similar)
+		outNodes[base+28] = float32(len(st.Queue)) / float32(defaultStationCapacity)
 	}
 
 	edgeCount := 0
@@ -199,7 +238,7 @@ func (s *Simulator) WriteVectorizedObservation(outNodes []float32, outEdges []in
 		outGlobals[2] = float32(s.State.Resources.Carriages)
 		outGlobals[3] = float32(s.State.Resources.Tunnels)
 		outGlobals[4] = float32(s.State.Resources.Interchanges)
-		weekSeconds := float64(rewardInterval()) / 30.0 // canonical seconds per week (140s)
+		weekSeconds := float64(rewardInterval()) / 30.0
 		outGlobals[5] = float32(math.Mod(s.State.GameTimeSeconds, weekSeconds) / weekSeconds)
 		// PHASE-1 fix BUG-D: normalize score so it stays in [0,~1] range like all other
 		// global features. Raw cumulative score (0–10000+) dominated global_proj MLP gradients.
@@ -211,6 +250,47 @@ func (s *Simulator) WriteVectorizedObservation(outNodes []float32, outEdges []in
 			}
 		}
 		outGlobals[7] = float32(activeTrains)
+
+		// ---- PHASE-2 new global features ----
+
+		// [8] station count normalized (how large is the current network)
+		outGlobals[8] = float32(N) / 30.0
+
+		// [9] max fill ratio across all stations (best single predictor of imminent game-over)
+		maxFill := float32(0)
+		numOvercrowding := 0
+		for i := 0; i < N; i++ {
+			st := &s.State.Stations[i]
+			cap := st.Capacity
+			if cap <= 0 {
+				cap = defaultStationCapacity
+			}
+			fill := float32(len(st.Queue)) / float32(cap)
+			if fill > maxFill {
+				maxFill = fill
+			}
+			if st.OvercrowdingTimer >= 0 {
+				numOvercrowding++
+			}
+		}
+		outGlobals[9] = maxFill
+
+		// [10] fraction of stations currently overcrowding
+		if N > 0 {
+			outGlobals[10] = float32(numOvercrowding) / float32(N)
+		} else {
+			outGlobals[10] = 0
+		}
+
+		// [11] pending reward choices flag (1 = agent must choose a reward, all other actions masked)
+		if len(s.State.PendingRewardChoices) > 0 {
+			outGlobals[11] = 1.0
+		} else {
+			outGlobals[11] = 0.0
+		}
+
+		// [12] game time fraction (capped at 1 for very long games ~1 hour)
+		outGlobals[12] = float32(math.Min(s.State.GameTimeSeconds/3600.0, 1.0))
 	}
 
 	return numNodes, numEdges

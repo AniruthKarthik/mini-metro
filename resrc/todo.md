@@ -517,13 +517,35 @@ LR decaying correctly, all losses finite.
 
 Retrain from scratch for 5M steps. Measure: episode length, game score, NoOp rate.
 
-### Phase 2 — Improve Observation (~1–2 days)
+### Phase 2 — Improve Observation ✅ COMPLETED (branch: fixes)
 
 | # | Change | File(s) |
 |---|---|---|
 | 8 | Add fill_ratio + timer + line_count to nodes (NodeDim: 25→29) | `observation.go` + `env.py` + `model.py` |
 | 9 | Add max_queue, overcrowding_count, pending_reward flag to globals (GlobalDim: 8→13) | `observation.go` + `env.py` + `model.py` |
 | 10 | Expose num_nodes/num_edges from C API; remove heuristic | `c_api/main.go` + `env.py` + `agent.py` |
+
+**Status**: All 3 tasks applied and smoke-tested on branch `fixes`.
+
+**Changes**:
+| File | Changes |
+|---|---|
+| `simulator/engine/observation.go` | NodeDim 25→29 (+fill_ratio, lines_serving, timer_norm, queue_norm); GlobalDim 8→13 (+station_count, max_fill, overcrowd_count, pending_reward, game_time) |
+| `simulator/c_api/main.go` | GetObservation now returns numNodes/numEdges via int32 output params |
+| `ml/env.py` | Updated dims; new C API call; removed fragile heuristic node/edge counting |
+| `ml/model.py` | Updated default dims (node 25→29, global 8→13); mean+max pooling; fc dims ×2→×3 |
+
+**Test results**:
+```
+PASS node shape (30, 29), global shape (13,)
+PASS num_nodes from C API = 3  (no heuristic)
+PASS new globals: station_count=0.100 max_fill=0.000 overcrowd=0.000 pending=0 gametime=0.000
+PASS model forward: action=2 logprob=-1.4402 entropy=1.3800 value=-0.1020
+PASS mean+max pool: fc_actor input = 96 = 3*H
+PASS all losses finite across 3 PPO updates
+```
+
+**Next**: Phase 3 — Fix GNN Architecture (dst_feat in messages, 3rd GCN layer, edge update MLP).
 
 Retrain for 10M steps. Verify: congested stations get served more reliably.
 
