@@ -42,9 +42,10 @@ def run_training():
             major, minor = torch.cuda.get_device_capability()
             if major >= 7:
                 device = torch.device("cuda")
+                # Enable TensorFloat-32 (TF32) for massive speedups on RTX 3000/4000 series GPUs (like in the Lenovo Yoga)
+                torch.set_float32_matmul_precision('high')
             else:
-                print(f"⚠️ Warning: GPU {torch.cuda.get_device_name(0)} has CUDA capability sm_{major}{minor}, which is not supported by PyTorch 2.x wheels (requires sm_70+).", flush=True)
-                print(f"👉 Please switch Kaggle Accelerator setting to 'GPU T4 x2' or 'GPU T4' in the right sidebar panel! Falling back to CPU for now.", flush=True)
+                print(f"⚠️ Warning: GPU {torch.cuda.get_device_name(0)} has CUDA capability sm_{major}{minor}, which is not supported by PyTorch 2.x wheels. Falling back to CPU.", flush=True)
         except Exception as e:
             print(f"⚠️ GPU check error: {e}. Defaulting to CPU.", flush=True)
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
