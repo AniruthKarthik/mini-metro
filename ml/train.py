@@ -1,3 +1,5 @@
+import os
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import torch
 try:
     import intel_extension_for_pytorch as ipex
@@ -6,7 +8,6 @@ except ImportError:
 import numpy as np
 import gymnasium as gym
 from torch.utils.tensorboard import SummaryWriter
-import os
 import time
 
 from env import MiniMetroEnv
@@ -21,12 +22,13 @@ def make_env(seed, map_id=0):
     return thunk
 
 def run_training():
-    # MAX PERFORMANCE SETTINGS FOR KAGGLE DUAL GPUs
-    # Run 32 parallel games to feed massive batches to the GPUs
     num_envs = 32
-    num_steps = 512
+    num_steps = 128
     total_timesteps = 10000000
     batch_size = num_envs * num_steps
+    num_minibatches = 4
+    minibatch_size = batch_size // num_minibatches
+    update_epochs = 2
     num_updates = total_timesteps // batch_size
     
     os.makedirs("runs/minimetro_ppo", exist_ok=True)
@@ -60,6 +62,8 @@ def run_training():
     print(f"Num environments : {num_envs}")
     print(f"Steps/update    : {num_steps}")
     print(f"Rollout size    : {batch_size}")
+    print(f"Minibatch size  : {minibatch_size} ({num_minibatches} minibatches)")
+    print(f"Update epochs   : {update_epochs}")
     print(f"Target steps    : {total_timesteps}")
     print(f"Total updates   : {num_updates}")
     print("=" * 70, flush=True)
@@ -135,7 +139,10 @@ def run_training():
         b_returns = returns.reshape(-1)
         b_masks = b_obs["action_mask"].bool()
         
-        pg_loss, v_loss, ent_loss, clipfrac, approx_kl = agent.update(b_obs, b_actions, b_logprobs, b_advantages, b_returns, b_masks)
+        pg_loss, v_loss, ent_loss, clipfrac, approx_kl = agent.update(
+            b_obs, b_actions, b_logprobs, b_advantages, b_returns, b_masks,
+            update_epochs=update_epochs, num_minibatches=num_minibatches
+        )
         
         writer.add_scalar("losses/value_loss", v_loss, global_step)
         writer.add_scalar("losses/policy_loss", pg_loss, global_step)

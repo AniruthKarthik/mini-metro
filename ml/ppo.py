@@ -36,12 +36,15 @@ class PPO:
         returns = advantages + values
         return advantages, returns
 
-    def update(self, b_obs, b_actions, b_logprobs, b_advantages, b_returns, b_masks, update_epochs=2, num_minibatches=2):
+    def update(self, b_obs, b_actions, b_logprobs, b_advantages, b_returns, b_masks, update_epochs=2, num_minibatches=4):
         b_size = b_actions.shape[0]
         minibatch_size = b_size // num_minibatches
         
         inds = torch.arange(b_size)
         clipfracs = []
+        
+        use_amp = b_actions.device.type == "cuda"
+        amp_dtype = torch.bfloat16 if (use_amp and torch.cuda.is_bf16_supported()) else torch.float16
         
         for epoch in range(update_epochs):
             torch.randperm(b_size, out=inds)
@@ -51,28 +54,29 @@ class PPO:
                 
                 mb_obs = {k: v[mbinds] for k, v in b_obs.items()}
                 
-                _, newlogprob, entropy, newvalue = self.raw_model.get_action_and_value(mb_obs, b_actions[mbinds], mask=b_masks[mbinds])
-                logratio = newlogprob - b_logprobs[mbinds]
-                ratio = logratio.exp()
-                
-                with torch.no_grad():
-                    old_approx_kl = (-logratio).mean()
-                    approx_kl = ((ratio - 1) - logratio).mean()
-                    clipfracs += [((ratio - 1.0).abs() > self.clip_coef).float().mean().item()]
-                
-                mb_advantages = b_advantages[mbinds]
-                mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
-                
-                pg_loss1 = -mb_advantages * ratio
-                pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - self.clip_coef, 1 + self.clip_coef)
-                pg_loss = torch.max(pg_loss1, pg_loss2).mean()
-                
-                newvalue = newvalue.view(-1)
-                v_loss = 0.5 * ((newvalue - b_returns[mbinds]) ** 2).mean()
-                
-                entropy_loss = entropy.mean()
-                
-                loss = pg_loss - self.ent_coef * entropy_loss + v_loss * self.vf_coef
+                with torch.amp.autocast(device_type=b_actions.device.type, dtype=amp_dtype, enabled=use_amp):
+                    _, newlogprob, entropy, newvalue = self.raw_model.get_action_and_value(mb_obs, b_actions[mbinds], mask=b_masks[mbinds])
+                    logratio = newlogprob - b_logprobs[mbinds]
+                    ratio = logratio.exp()
+                    
+                    with torch.no_grad():
+                        old_approx_kl = (-logratio).mean()
+                        approx_kl = ((ratio - 1) - logratio).mean()
+                        clipfracs += [((ratio - 1.0).abs() > self.clip_coef).float().mean().item()]
+                    
+                    mb_advantages = b_advantages[mbinds]
+                    mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
+                    
+                    pg_loss1 = -mb_advantages * ratio
+                    pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - self.clip_coef, 1 + self.clip_coef)
+                    pg_loss = torch.max(pg_loss1, pg_loss2).mean()
+                    
+                    newvalue = newvalue.view(-1)
+                    v_loss = 0.5 * ((newvalue - b_returns[mbinds]) ** 2).mean()
+                    
+                    entropy_loss = entropy.mean()
+                    
+                    loss = pg_loss - self.ent_coef * entropy_loss + v_loss * self.vf_coef
                 
                 self.optimizer.zero_grad()
                 loss.backward()

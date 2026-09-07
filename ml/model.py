@@ -37,7 +37,7 @@ class DenseGCNLayer(nn.Module):
         flat_dst = (dst + batch_offsets).view(-1)
         flat_msg = msg.view(-1, H)
         
-        aggr = torch.zeros(B * N, H, device=x.device)
+        aggr = torch.zeros(B * N, H, device=x.device, dtype=flat_msg.dtype)
         aggr.index_add_(0, flat_dst, flat_msg)
         aggr = aggr.view(B, N, H)
         
