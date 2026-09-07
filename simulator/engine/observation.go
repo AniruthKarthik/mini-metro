@@ -201,7 +201,9 @@ func (s *Simulator) WriteVectorizedObservation(outNodes []float32, outEdges []in
 		outGlobals[4] = float32(s.State.Resources.Interchanges)
 		weekSeconds := float64(rewardInterval()) / 30.0 // canonical seconds per week (140s)
 		outGlobals[5] = float32(math.Mod(s.State.GameTimeSeconds, weekSeconds) / weekSeconds)
-		outGlobals[6] = float32(s.State.Score)
+		// PHASE-1 fix BUG-D: normalize score so it stays in [0,~1] range like all other
+		// global features. Raw cumulative score (0–10000+) dominated global_proj MLP gradients.
+		outGlobals[6] = float32(s.State.Score) / 500.0
 		activeTrains := 0
 		for _, tr := range s.State.Trains {
 			if tr.Active {

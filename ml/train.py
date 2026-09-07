@@ -23,12 +23,12 @@ def make_env(seed, map_id=0):
 
 def run_training():
     num_envs = 32
-    num_steps = 128
+    num_steps = 512          # PHASE-1 fix: was 128; longer rollout → credit assignment
     total_timesteps = 10000000
     batch_size = num_envs * num_steps
     num_minibatches = 4
     minibatch_size = batch_size // num_minibatches
-    update_epochs = 2
+    update_epochs = 4        # PHASE-1 fix: was 2; more gradient steps per rollout
     num_updates = total_timesteps // batch_size
     
     os.makedirs("runs/minimetro_ppo", exist_ok=True)
@@ -96,7 +96,7 @@ def run_training():
         update_start_time = time.time()
         print(f"\n⏳ Performing {update}/{num_updates}...", flush=True)
         
-        if update % 50 == 0:
+        if update % 10 == 0:
             torch.save(raw_model.state_dict(), f"runs/minimetro_ppo/model_{update}.pt")
 
         for step in range(num_steps):
@@ -138,6 +138,15 @@ def run_training():
         b_advantages = advantages.reshape(-1)
         b_returns = returns.reshape(-1)
         b_masks = b_obs["action_mask"].bool()
+
+        # PHASE-1 fix PPO-1: normalize over FULL batch, not per-minibatch.
+        # Per-minibatch normalization caused exploding gradients when std≈0 (sparse reward).
+        b_advantages = (b_advantages - b_advantages.mean()) / (b_advantages.std() + 1e-8)
+
+        # PHASE-1 fix PPO-4: linear LR decay toward 0 over training.
+        frac = 1.0 - (update - 1.0) / num_updates
+        for param_group in agent.optimizer.param_groups:
+            param_group["lr"] = 3e-4 * frac
         
         pg_loss, v_loss, ent_loss, clipfrac, approx_kl = agent.update(
             b_obs, b_actions, b_logprobs, b_advantages, b_returns, b_masks,
@@ -150,6 +159,11 @@ def run_training():
         writer.add_scalar("losses/approx_kl", approx_kl, global_step)
         writer.add_scalar("losses/clipfrac", clipfrac, global_step)
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
+        writer.add_scalar("charts/learning_rate", agent.optimizer.param_groups[0]["lr"], global_step)
+
+        # PHASE-1 diagnostic: monitor NoOp rate (high = agent learned passivity).
+        noop_rate = (b_actions == 0).float().mean().item()
+        writer.add_scalar("charts/noop_rate", noop_rate, global_step)
         
         update_time = time.time() - update_start_time
         print(f"✅ Completed {update}/{num_updates} | steps={global_step} | SPS={int(global_step / max(time.time() - start_time, 1e-6))} | v_loss={v_loss:.4f} | pg_loss={pg_loss:.4f} | entropy={ent_loss:.4f} | KL={approx_kl:.6f} | time={update_time:.2f}s", flush=True)

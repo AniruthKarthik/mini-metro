@@ -4,7 +4,7 @@ import torch.optim as optim
 import numpy as np
 
 class PPO:
-    def __init__(self, model, lr=3e-4, gamma=0.99, gae_lambda=0.95, clip_coef=0.2, ent_coef=0.01, vf_coef=0.5, max_grad_norm=0.5):
+    def __init__(self, model, lr=3e-4, gamma=0.99, gae_lambda=0.95, clip_coef=0.2, ent_coef=0.05, vf_coef=0.5, max_grad_norm=0.5):  # ent_coef raised 0.01→0.05 (PPO-3 fix)
         self.model = model
         self.optimizer = optim.Adam(self.model.parameters(), lr=lr, eps=1e-5)
         self.gamma = gamma
@@ -36,7 +36,7 @@ class PPO:
         returns = advantages + values
         return advantages, returns
 
-    def update(self, b_obs, b_actions, b_logprobs, b_advantages, b_returns, b_masks, update_epochs=2, num_minibatches=4):
+    def update(self, b_obs, b_actions, b_logprobs, b_advantages, b_returns, b_masks, update_epochs=4, num_minibatches=4):  # update_epochs raised 2→4 (PPO-2 fix)
         b_size = b_actions.shape[0]
         minibatch_size = b_size // num_minibatches
         
@@ -64,8 +64,10 @@ class PPO:
                         approx_kl = ((ratio - 1) - logratio).mean()
                         clipfracs += [((ratio - 1.0).abs() > self.clip_coef).float().mean().item()]
                     
+                    # PPO-1 fix: advantages are normalized over the FULL batch before this
+                    # call (in the training loop). Per-minibatch normalization caused exploding
+                    # gradients when std ≈ 0 (common in early training with sparse rewards).
                     mb_advantages = b_advantages[mbinds]
-                    mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
                     
                     pg_loss1 = -mb_advantages * ratio
                     pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - self.clip_coef, 1 + self.clip_coef)

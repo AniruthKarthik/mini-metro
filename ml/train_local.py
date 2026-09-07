@@ -263,11 +263,14 @@ def run_training():
         flush=True
     )
 
-    envs = gym.vector.SyncVectorEnv(
+    # PHASE-1 fix MAJOR-H: SyncVectorEnv risks Go CGO goroutine interference.
+    # AsyncVectorEnv(context='spawn') creates isolated subprocesses — matches train.py.
+    envs = gym.vector.AsyncVectorEnv(
         [
             make_env(i)
             for i in range(num_envs)
-        ]
+        ],
+        context='spawn',
     )
 
     print(

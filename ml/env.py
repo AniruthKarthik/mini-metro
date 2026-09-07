@@ -167,18 +167,38 @@ class MiniMetroEnv(gym.Env):
         duration = 1.0 
         
         lib.Step(self.handle, action_id, duration, ctypes.byref(self._out_reward), ctypes.byref(self._out_done))
-        
-        reward = float(self._out_reward.value)
-        
-        # Action penalty to discourage the AI from spamming useless actions
-        if action_id != 0:
-            reward -= 0.05
-            
+
+        # Read done FIRST before using it in survival bonus check.
         done = bool(self._out_done.value)
-        
+        reward = float(self._out_reward.value)
+
+        # PHASE-1 reward fixes:
+        # - REMOVED flat -0.05 action penalty (trained passivity / NoOp as safe default)
+        # - Added survival bonus: small dense signal so the agent learns to stay alive
+        # - Added early overcrowding gradient: pressure at 80% fill, before game-over
+
+        # Survival bonus: +0.01 per step survived (dense signal during sparse delivery phases).
+        if not done:
+            reward += 0.01
+
+        # Early overcrowding gradient from the Python side.
+        # Go-side AlphaCrowdPenalty (0.05) is 22x too weak vs deliveries.
+        # This adds pressure at 80% fill — well before the game-over overcrowding timer starts.
         obs = self._get_obs()
+        num_stations = int(obs["num_nodes"][0])
+        for i in range(num_stations):
+            node = obs["nodes"][i]
+            # node[22] = overcrowding_progress [0,1] (non-zero only when timer is active)
+            overcrowd_progress = float(node[22])
+            if overcrowd_progress > 0:
+                reward -= 0.3 * overcrowd_progress  # strong gradient as timer counts down
+            # node[12:22] = passenger destination counts (raw); capacity default = 6
+            raw_queue_total = float(node[12:22].sum())
+            fill_approx = raw_queue_total / 6.0
+            if fill_approx > 0.8:
+                reward -= 0.1 * (fill_approx - 0.8)  # early-warning gradient
+
         info = {}
-        
         return obs, reward, done, False, info
         
     def close(self):
