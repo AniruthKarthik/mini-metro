@@ -276,7 +276,7 @@ export class HUD {
 
     this.fastBtn.addEventListener('click', () => {
       this.wsClient.sendAction({ type: 'resume' });
-      this.wsClient.sendAction({ type: 'set_speed', payload: { tps: 75 } });
+      this.wsClient.sendAction({ type: 'set_speed', payload: { tps: 300 } });
       this.updateSpeedButtons('fast');
     });
 
