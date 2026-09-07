@@ -46,5 +46,12 @@ pnpm-debug.log*
 .gemini/
 
 
-
 *.zip
+
+# ML Checkpoints
+ml/runs/**/*.pt
+!ml/runs/**/model_final.pt
+ml/runs/**/events.out.tfevents.*
+
+# Python
+__pycache__/
