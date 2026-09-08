@@ -86,8 +86,8 @@ def run_training():
     values = torch.zeros((num_steps, num_envs)).to(device)
     
     hidden_dim = 256
-    lstm_hx = torch.zeros((num_steps, num_envs, hidden_dim * 3)).to(device)
-    lstm_cx = torch.zeros((num_steps, num_envs, hidden_dim * 3)).to(device)
+    lstm_hx = torch.zeros((num_steps, num_envs, hidden_dim * 5)).to(device)
+    lstm_cx = torch.zeros((num_steps, num_envs, hidden_dim * 5)).to(device)
     
     global_step = 0
     start_time = time.time()
@@ -95,8 +95,8 @@ def run_training():
     next_obs, _ = envs.reset()
     next_obs_tensor = {k: torch.as_tensor(v, device=device) for k, v in next_obs.items()}
     next_done = torch.zeros(num_envs).to(device)
-    next_lstm_state = (torch.zeros(1, num_envs, hidden_dim * 3).to(device),
-                       torch.zeros(1, num_envs, hidden_dim * 3).to(device))
+    next_lstm_state = (torch.zeros(1, num_envs, hidden_dim * 5).to(device),
+                       torch.zeros(1, num_envs, hidden_dim * 5).to(device))
     
     for update in range(1, num_updates + 1):
         update_start_time = time.time()

@@ -12,53 +12,64 @@ import torch.nn.functional as F
 #      two GCN layers adds almost no expressiveness for the edge modality.
 # ---------------------------------------------------------------------------
 class GNNLayer(nn.Module):
-    def __init__(self, node_dim, edge_dim, hidden_dim):
+    def __init__(self, node_dim, edge_dim, global_dim, hidden_dim):
         super().__init__()
-        self.node_proj = nn.Linear(node_dim, hidden_dim)
+        self.node_proj = nn.Linear(node_dim + global_dim, hidden_dim)
         self.edge_proj = nn.Linear(edge_dim, hidden_dim)
 
-        # PHASE-3 fix GNN-2: message uses [src, dst, edge] — destination-aware
         self.msg_proj    = nn.Linear(hidden_dim * 3, hidden_dim)
+        self.attn_proj   = nn.Linear(hidden_dim * 3, 1)
         self.update_proj = nn.Linear(hidden_dim * 2, hidden_dim)
 
-        # PHASE-3 fix GNN-1: edge update MLP — edges evolve between layers
         self.edge_update = nn.Linear(hidden_dim * 3, hidden_dim)
+        
+        self.global_update = nn.Sequential(
+            nn.Linear(hidden_dim + global_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim)
+        )
 
-    def forward(self, nodes, edges, edge_feats, num_nodes, num_edges):
+    def forward(self, nodes, edges, edge_feats, global_ctx, num_nodes, num_edges):
         """
-        Args:
-            nodes:      [B, N, node_dim]
-            edges:      [B, 2, E]  — edges[:, 0] = src, edges[:, 1] = dst
-            edge_feats: [B, E, edge_dim]  — raw OR updated edge features
-            num_nodes:  [B] or [B, 1]
-            num_edges:  [B] or [B, 1]
-        Returns:
-            new_nodes:  [B, N, H]
-            new_edges:  [B, E, H]  — updated edge embeddings to pass to next layer
+        global_ctx: [B, global_dim]
         """
         B, N, _ = nodes.shape
         _, _, E = edges.shape
         H = self.msg_proj.out_features
 
-        x = F.relu(self.node_proj(nodes))       # [B, N, H]
-        e = F.relu(self.edge_proj(edge_feats))  # [B, E, H]
+        global_ctx_broadcast = global_ctx.unsqueeze(1).expand(-1, N, -1)
+        nodes_with_ctx = torch.cat([nodes, global_ctx_broadcast], dim=-1)
+
+        x = F.relu(self.node_proj(nodes_with_ctx))       # [B, N, H]
+        e = F.relu(self.edge_proj(edge_feats))           # [B, E, H]
 
         src = edges[:, 0, :].long().clamp(0, N - 1)  # [B, E]
         dst = edges[:, 1, :].long().clamp(0, N - 1)  # [B, E]
 
         src_feat = torch.gather(x, 1, src.unsqueeze(-1).expand(-1, -1, H))  # [B, E, H]
         dst_feat = torch.gather(x, 1, dst.unsqueeze(-1).expand(-1, -1, H))  # [B, E, H]
+        
+        cat_feat = torch.cat([src_feat, dst_feat, e], dim=-1)
 
-        # PHASE-3 GNN-2: destination-aware message
-        msg = F.relu(self.msg_proj(torch.cat([src_feat, dst_feat, e], dim=-1)))  # [B, E, H]
+        msg = F.relu(self.msg_proj(cat_feat))  # [B, E, H]
+        attn_score = F.leaky_relu(self.attn_proj(cat_feat).squeeze(-1), 0.2) # [B, E]
 
-        # Mask invalid edges
         edge_mask = (torch.arange(E, device=x.device).unsqueeze(0) < num_edges)  # [B, E]
+        
+        attn_score = attn_score.masked_fill(~edge_mask, -1e9)
+        exp_score = torch.exp(attn_score) * edge_mask.float()
+        
+        sum_exp = torch.zeros(B * N, device=x.device, dtype=exp_score.dtype)
+        offsets = torch.arange(B, device=x.device).unsqueeze(-1) * N  # [B, 1]
+        flat_dst = (dst + offsets).view(-1)
+        sum_exp.index_add_(0, flat_dst, exp_score.view(-1))
+        
+        edge_sum_exp = torch.gather(sum_exp.view(B, N), 1, dst) + 1e-9
+        alpha = exp_score / edge_sum_exp # [B, E]
+        
+        msg = msg * alpha.unsqueeze(-1)
         msg = msg * edge_mask.unsqueeze(-1)
 
-        # Aggregate messages at destination nodes
-        offsets  = torch.arange(B, device=x.device).unsqueeze(-1) * N  # [B, 1]
-        flat_dst = (dst + offsets).view(-1)
         flat_msg = msg.view(-1, H)
         aggr = torch.zeros(B * N, H, device=x.device, dtype=flat_msg.dtype)
         aggr.index_add_(0, flat_dst, flat_msg)
@@ -68,11 +79,14 @@ class GNNLayer(nn.Module):
         no_edges = (num_edges == 0).unsqueeze(-1)
         new_nodes = torch.where(no_edges, x, new_x)
 
-        # PHASE-3 GNN-1: update edge embeddings for the next layer
-        new_edges = F.relu(self.edge_update(torch.cat([src_feat, dst_feat, e], dim=-1)))
-        new_edges = new_edges * edge_mask.unsqueeze(-1)  # zero out invalid
+        new_edges = F.relu(self.edge_update(cat_feat))
+        new_edges = new_edges * edge_mask.unsqueeze(-1)
+        
+        node_mask = (torch.arange(N, device=x.device).unsqueeze(0) < num_nodes)
+        mean_pool = (new_nodes * node_mask.unsqueeze(-1)).sum(dim=1) / num_nodes.clamp(min=1).float()
+        new_global_ctx = self.global_update(torch.cat([mean_pool, global_ctx], dim=-1))
 
-        return new_nodes, new_edges
+        return new_nodes, new_edges, new_global_ctx
 
 
 # ---------------------------------------------------------------------------
@@ -116,25 +130,26 @@ class MiniMetroActorCritic(nn.Module):
         self.hidden_dim = hidden_dim
 
         # GNN passes
-        self.gcn1 = GNNLayer(node_dim, edge_dim, hidden_dim)
-        self.gcn2 = GNNLayer(hidden_dim, hidden_dim, hidden_dim)
-        self.gcn3 = GNNLayer(hidden_dim, hidden_dim, hidden_dim)
+        self.gcn1 = GNNLayer(node_dim, edge_dim, global_dim, hidden_dim)
+        self.gcn2 = GNNLayer(hidden_dim, hidden_dim, hidden_dim, hidden_dim)
+        self.gcn3 = GNNLayer(hidden_dim, hidden_dim, hidden_dim, hidden_dim)
 
-        self.global_proj = nn.Sequential(
-            nn.Linear(global_dim, hidden_dim),
+        # PHASE-2: Hierarchical Pooling (DiffPool) assignment network
+        self.diffpool_assign = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim)
+            nn.Linear(hidden_dim, 4)
         )
 
-        # PHASE-1: LSTM for recurrent policy
-        self.lstm = nn.LSTM(hidden_dim * 3, hidden_dim * 3, batch_first=True)
+        # PHASE-1: LSTM for recurrent policy (input: 4H DiffPool + 1H Global = 5H)
+        self.lstm = nn.LSTM(hidden_dim * 5, hidden_dim * 5, batch_first=True)
 
         # -------------------------------------------------------------------
         # PHASE-5 Task 19: Hierarchical 12-way Action Type Selector
         # Eliminates the 76.7% InsertStation dominance bias.
         # -------------------------------------------------------------------
         self.type_net = nn.Sequential(
-            nn.Linear(hidden_dim * 3, hidden_dim),
+            nn.Linear(hidden_dim * 5, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, 12)
         )
@@ -155,27 +170,27 @@ class MiniMetroActorCritic(nn.Module):
         # ExtendLine (420): Factored line-end embedding scored against station embeddings
         self.ext_line_emb = nn.Embedding(7, hidden_dim)
         self.ext_end_emb = nn.Embedding(2, hidden_dim)
-        self.ext_context = nn.Linear(hidden_dim * 3, hidden_dim)
+        self.ext_context = nn.Linear(hidden_dim * 5, hidden_dim)
         self.ext_proj = nn.Linear(hidden_dim, hidden_dim)
 
         # InsertStation (3150): Factored line-segment embedding scored against station embeddings
         self.ins_line_emb = nn.Embedding(7, hidden_dim)
         self.ins_seg_emb = nn.Embedding(15, hidden_dim)
-        self.ins_context = nn.Linear(hidden_dim * 3, hidden_dim)
+        self.ins_context = nn.Linear(hidden_dim * 5, hidden_dim)
         self.ins_proj = nn.Linear(hidden_dim, hidden_dim)
 
         # Non-spatial action heads (52 actions total):
         # NoOp(1), AddTrain(7), AddCarriage(7), ChooseReward(2),
         # CloseLoop(7), OpenLoop(7), RemoveLine(7), ShortenLine(14)
         self.non_spatial_head = nn.Sequential(
-            nn.Linear(hidden_dim * 3, hidden_dim),
+            nn.Linear(hidden_dim * 5, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, 52)
         )
 
         # Fallback flat actor head (for baseline ablation)
         self.fc_actor = nn.Sequential(
-            nn.Linear(hidden_dim * 3, hidden_dim),
+            nn.Linear(hidden_dim * 5, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
@@ -184,7 +199,7 @@ class MiniMetroActorCritic(nn.Module):
 
         # Critic value head
         self.fc_critic = nn.Sequential(
-            nn.Linear(hidden_dim * 3, hidden_dim),
+            nn.Linear(hidden_dim * 5, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
@@ -336,8 +351,8 @@ class MiniMetroActorCritic(nn.Module):
 
         is_sequence = nodes.dim() == 4
         if is_sequence:
-            B, T, N, F = nodes.shape
-            nodes = nodes.view(B * T, N, F)
+            B, T, N, Feat = nodes.shape
+            nodes = nodes.view(B * T, N, Feat)
             edges = edges.view(B * T, 2, -1)
             edge_attrs = edge_attrs.view(B * T, -1, edge_attrs.shape[-1])
             globals_feat = globals_feat.view(B * T, -1)
@@ -350,24 +365,26 @@ class MiniMetroActorCritic(nn.Module):
             T = 1
 
         # PHASE-3: thread updated edge embeddings between layers
-        x, e   = self.gcn1(nodes, edges, edge_attrs, num_nodes, num_edges)
-        x2, e2 = self.gcn2(x, edges, e, num_nodes, num_edges)
+        x, e, g   = self.gcn1(nodes, edges, edge_attrs, globals_feat, num_nodes, num_edges)
+        x2, e2, g2 = self.gcn2(x, edges, e, g, num_nodes, num_edges)
 
         # PHASE-3 GNN-3: 3rd layer with residual connection
-        x3, _  = self.gcn3(x2, edges, e2, num_nodes, num_edges)
+        x3, _, g3  = self.gcn3(x2, edges, e2, g2, num_nodes, num_edges)
         x3 = x3 + x2
 
         B_flat, N, H = x3.shape
         node_mask = torch.arange(N, device=x3.device).unsqueeze(0) < num_nodes  # [B_flat, N]
 
-        # PHASE-2: mean+max pooling
-        mean_pool = (x3 * node_mask.unsqueeze(-1)).sum(dim=1) / num_nodes.clamp(min=1).float()
-        x_for_max = x3.masked_fill(~node_mask.unsqueeze(-1), -1e9)
-        max_pool  = x_for_max.max(dim=1).values
-        pooled    = torch.cat([mean_pool, max_pool], dim=-1)  # [B_flat, 2H]
-
-        g        = self.global_proj(globals_feat)
-        combined = torch.cat([pooled, g], dim=-1)  # [B_flat, 3H]
+        # PHASE-2: Hierarchical Pooling (DiffPool)
+        assign_logits = self.diffpool_assign(x3) # [B_flat, N, 4]
+        assign_logits = assign_logits.masked_fill(~node_mask.unsqueeze(-1), -1e9)
+        S = F.softmax(assign_logits, dim=1) # Softmax over nodes [B_flat, N, 4]
+        
+        # cluster features: S^T * X
+        cluster_feats = torch.bmm(S.transpose(1, 2), x3) # [B_flat, 4, H]
+        pooled = cluster_feats.view(B_flat, 4 * H)
+        
+        combined = torch.cat([pooled, g3], dim=-1)  # [B_flat, 5H]
 
         # LSTM pass
         combined_seq = combined.view(B, T, -1)

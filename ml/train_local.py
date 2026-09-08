@@ -389,13 +389,13 @@ def run_training():
 
     hidden_dim = 32
     lstm_hx = torch.zeros(
-        (num_steps, num_envs, hidden_dim * 3),
+        (num_steps, num_envs, hidden_dim * 5),
         dtype=torch.float32,
         device=device,
     )
 
     lstm_cx = torch.zeros(
-        (num_steps, num_envs, hidden_dim * 3),
+        (num_steps, num_envs, hidden_dim * 5),
         dtype=torch.float32,
         device=device,
     )
@@ -426,8 +426,8 @@ def run_training():
     )
 
     next_lstm_state = (
-        torch.zeros(1, num_envs, hidden_dim * 3, device=device),
-        torch.zeros(1, num_envs, hidden_dim * 3, device=device)
+        torch.zeros(1, num_envs, hidden_dim * 5, device=device),
+        torch.zeros(1, num_envs, hidden_dim * 5, device=device)
     )
 
     start_time = time.time()
