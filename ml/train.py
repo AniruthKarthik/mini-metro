@@ -14,7 +14,7 @@ from env import MiniMetroEnv
 from model import MiniMetroActorCritic
 from ppo import PPO
 
-def make_env(seed, map_id=0):
+def make_env(seed, map_id=-1):
     def thunk():
         env = MiniMetroEnv(map_id=map_id, seed=seed)
         env = gym.wrappers.RecordEpisodeStatistics(env)
@@ -26,9 +26,9 @@ def run_training():
     num_steps = 512          # PHASE-1 fix: was 128; longer rollout → credit assignment
     total_timesteps = 10000000
     batch_size = num_envs * num_steps
-    num_minibatches = 4
+    num_minibatches = 8      # PHASE-3: Increased capacity from 4
     minibatch_size = batch_size // num_minibatches
-    update_epochs = 4        # PHASE-1 fix: was 2; more gradient steps per rollout
+    update_epochs = 8        # PHASE-3: Increased capacity from 4
     num_updates = total_timesteps // batch_size
     
     os.makedirs("runs/minimetro_ppo", exist_ok=True)
@@ -163,6 +163,9 @@ def run_training():
         frac = 1.0 - (update - 1.0) / num_updates
         for param_group in agent.optimizer.param_groups:
             param_group["lr"] = 3e-4 * frac
+            
+        # PHASE-3: Entropy Annealing
+        agent.ent_coef = 0.05 * frac
         
         pg_loss, v_loss, ent_loss, clipfrac, approx_kl = agent.update(
             b_obs, b_actions, b_logprobs, b_advantages, b_returns, b_masks,

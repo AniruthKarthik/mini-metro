@@ -43,7 +43,7 @@ class MiniMetroEnv(gym.Env):
     """
     Gymnasium environment wrapper for the Mini Metro Go simulator.
     """
-    def __init__(self, map_id=0, seed=None):
+    def __init__(self, map_id=-1, seed=None):
         super().__init__()
         
         self.map_id = map_id
@@ -97,7 +97,12 @@ class MiniMetroEnv(gym.Env):
         if self.handle is not None:
             lib.FreeSimulator(self.handle)
             
-        self.handle = lib.CreateSimulator(self.map_id, self._seed_val)
+        # Curriculum Learning: Random Map Selection
+        current_map = self.map_id
+        if current_map == -1:
+            current_map = int(np.random.choice([0, 1, 2])) # London, NYC, Tokyo
+            
+        self.handle = lib.CreateSimulator(current_map, self._seed_val)
         
         obs = self._get_obs()
         info = {}
