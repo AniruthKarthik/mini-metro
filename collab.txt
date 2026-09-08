@@ -1,42 +1,12 @@
-# Option 1: Run cell-by-cell in Google Colab
-
-# Cell 1: Clone repository and switch to fixes branch
-!git clone -b fixes https://github.com/AniruthKarthik/mini-metro.git
-%cd mini-metro
-!git checkout fixes
-
-# Cell 2: Install Go (required to compile the simulator)
-!wget -q https://go.dev/dl/go1.21.0.linux-amd64.tar.gz
-!rm -rf /usr/local/go && tar -C /usr/local -xzf go1.21.0.linux-amd64.tar.gz
-
-# Cell 3: Build simulator shared library
-!export PATH=$PATH:/usr/local/go/bin && cd ml && bash build_lib.sh
-
-# Cell 4: Install required Python dependencies
-!pip install -r ml/requirements.txt
-
-# Cell 5: Run training
-!export PATH=$PATH:/usr/local/go/bin && python ml/train.py
 
 
-# -----------------------------------------------------------
-# Option 2: All-in-one cell (copy-paste into a single Colab cell)
-
-%%bash
-git clone -b fixes https://github.com/AniruthKarthik/mini-metro.git
-cd mini-metro
-git checkout fixes
-
-# Install Go
-wget -q https://go.dev/dl/go1.21.0.linux-amd64.tar.gz
-rm -rf /usr/local/go && tar -C /usr/local -xzf go1.21.0.linux-amd64.tar.gz
-export PATH=$PATH:/usr/local/go/bin
-
-# Build simulator library
-cd ml && bash build_lib.sh && cd ..
-
-# Install Python requirements
-pip install -r ml/requirements.txt
-
-# Start training
-python ml/train.py
+!git clone -b fixes https://github.com/AniruthKarthik/mini-metro.git && \
+cd mini-metro && \
+git checkout fixes && \
+wget -c https://go.dev/dl/go1.21.0.linux-amd64.tar.gz && \
+rm -rf /usr/local/go && tar -C /usr/local -xzf go1.21.0.linux-amd64.tar.gz && \
+export PATH=$PATH:/usr/local/go/bin && \
+cd ml && bash build_lib.sh && cd .. && \
+pip install -r ml/requirements.txt && \
+export PYTHONUNBUFFERED=1 && \
+python -u ml/train.py

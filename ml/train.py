@@ -22,9 +22,13 @@ def make_env(seed, map_id=-1):
     return thunk
 
 def run_training():
-    num_envs = 32
-    num_steps = 512          # PHASE-1 fix: was 128; longer rollout → credit assignment
+    cpu_cores = os.cpu_count() or 2
+    # In Colab/cloud environments (typically 2 vCPUs, ~12GB RAM), spawning 32 processes
+    # triggers OS OOM-killer (SIGKILL) and BrokenPipeError. 8 envs is safe, efficient, and robust.
+    num_envs = int(os.environ.get("NUM_ENVS", min(8, max(4, cpu_cores * 4))))
     total_timesteps = 10000000
+    target_rollout_size = 16384
+    num_steps = target_rollout_size // num_envs
     batch_size = num_envs * num_steps
     num_minibatches = 8      # PHASE-3: Increased capacity from 4
     minibatch_size = batch_size // num_minibatches
@@ -34,9 +38,13 @@ def run_training():
     os.makedirs("runs/minimetro_ppo", exist_ok=True)
     writer = SummaryWriter("runs/minimetro_ppo")
     
-    # Use AsyncVectorEnv with 'spawn' to prevent Go runtime crashes on fork
-    envs = gym.vector.AsyncVectorEnv([make_env(i) for i in range(num_envs)], context='spawn')
-    torch.set_num_threads(8)
+    # Use AsyncVectorEnv with 'spawn' and shared_memory=False to prevent Python 3.13 BufferError and POSIX semaphore leaks
+    envs = gym.vector.AsyncVectorEnv(
+        [make_env(i) for i in range(num_envs)],
+        context='spawn',
+        shared_memory=False
+    )
+    torch.set_num_threads(min(4, max(1, cpu_cores)))
     
     device = torch.device("cpu")
     if torch.cuda.is_available():
@@ -59,7 +67,10 @@ def run_training():
     print("MiniMetro PPO Training")
     print("=" * 70)
     print(f"Device          : {device}")
-    print(f"Num environments : {num_envs}")
+    if device.type == "cuda":
+        print(f"GPU Model       : {torch.cuda.get_device_name(0)}")
+        print(f"GPU VRAM        : {torch.cuda.get_device_properties(0).total_memory / (1024**3):.1f} GB")
+    print(f"Num environments: {num_envs}")
     print(f"Steps/update    : {num_steps}")
     print(f"Rollout size    : {batch_size}")
     print(f"Minibatch size  : {minibatch_size} ({num_minibatches} minibatches)")
@@ -186,9 +197,14 @@ def run_training():
         
         update_time = time.time() - update_start_time
         print(f"✅ Completed {update}/{num_updates} | steps={global_step} | SPS={int(global_step / max(time.time() - start_time, 1e-6))} | v_loss={v_loss:.4f} | pg_loss={pg_loss:.4f} | entropy={ent_loss:.4f} | KL={approx_kl:.6f} | time={update_time:.2f}s", flush=True)
+
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
         
     envs.close()
     writer.close()
+    torch.save(raw_model.state_dict(), "runs/minimetro_ppo/model_final.pt")
+    print("\n🎉 Training finished! Saved final model to runs/minimetro_ppo/model_final.pt", flush=True)
 
 if __name__ == "__main__":
     run_training()
