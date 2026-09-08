@@ -583,7 +583,7 @@ PASS: 3 PPO updates — all losses finite, KL < 0.001
 
 Retrain. Verify: policy selects different actions for different congested stations.
 
-### Phase 4 — Fix Action Space & Reward (~1 week)
+### Phase 4 — Fix Action Space & Reward ✅ COMPLETED (branch: fixes)
 
 | # | Change | File(s) |
 |---|---|---|
@@ -591,6 +591,30 @@ Retrain. Verify: policy selects different actions for different congested statio
 | 16 | Implement improved reward with survival bonus + connectivity bonus | `scoring.go` + `env.py` |
 | 17 | Increase BetaGameOverPenalty to 200 | `scoring.go` |
 | 18 | Add `pending_reward` binary flag to globals | `observation.go` |
+
+**Status**: Tasks 15, 16, 17 applied and smoke-tested. Task 18 (pending_reward global flag) was completed in Phase 2.
+
+**Changes**:
+| Task | File(s) | Change |
+|---|---|---|
+| 15: AddCarriage by lineID | `engine/action_space.go`, `engine/actions.go`, `engine/simulator.go`, `server/actions.go` | `AddCarriage{TrainID}`→`AddCarriage{LineID}`; action space 4108→4087; agent now targets a line it can reason about, not an opaque train slot |
+| 16: Improved reward | `engine/scoring.go` | Added `ConnectivityBonus=2.0` — reward per reachable distinct-type station pair; eliminates positive gradient for redundant connections |
+| 16: Survival bonus | already in `env.py` | Kept from Phase 1 (+0.01/step) |
+| 17: BetaGameOverPenalty×4 | `engine/scoring.go` | 50→200; game-over signal now dominates |
+| 17: AlphaCrowdPenalty×6 | `engine/scoring.go` | 0.05→0.30; crowding penalty now meaningful vs delivery reward |
+| 18: pending_reward flag | `engine/observation.go` | globals[11] — done in Phase 2 |
+
+**Test results**:
+```
+PASS: action_space_size=4087 (was 4108)
+PASS: model output dim=4087
+PASS: rewards include positive signal (connectivity bonus + survival)
+PASS: mean reward=0.010 over non-gameover steps
+PASS: forward pass — action=0 ent=1.0980
+Go build: ALL OK (libminimetro.so rebuilt)
+```
+
+**Next**: Phase 5 — Advanced Architecture (hierarchical action head, bilinear scoring, train position features, value clipping).
 
 ### Phase 5 — Advanced Architecture (experimental)
 

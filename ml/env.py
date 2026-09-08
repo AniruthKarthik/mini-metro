@@ -60,7 +60,7 @@ class MiniMetroEnv(gym.Env):
         self.node_dim = 29    # PHASE-2: was 25; +fill_ratio, lines_serving, timer_norm, queue_norm
         self.edge_dim = 10
         self.global_dim = 13  # PHASE-2: was 8; +station_count, max_fill, overcrowd_ct, pending_reward, game_time
-        self.action_space_size = 4108 # Calculated from action_space.go
+        self.action_space_size = 4087  # PHASE-4: was 4108; AddCarriage reduced 28→7 (now lineID-indexed)
 
         # Observation space definition
         self.observation_space = spaces.Dict({

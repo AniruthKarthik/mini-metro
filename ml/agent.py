@@ -17,7 +17,7 @@ EDGE_DIM   = 10
 GLOBAL_DIM = 13   # PHASE-2: was 8
 MAX_NODES  = 30
 MAX_EDGES  = 200
-ACTION_SPACE_SIZE = 4108
+ACTION_SPACE_SIZE = 4087  # PHASE-4: was 4108; AddCarriage 28→7 slots
 
 
 def load_model(device):

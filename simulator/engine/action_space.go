@@ -30,9 +30,11 @@ const (
 	AddTrainOffset = InsertStationOffset + InsertStationCount
 	AddTrainCount  = MaxLines
 
-	// AddCarriage: train_id (0..27) = 28
+	// PHASE-4: AddCarriage now indexed by lineID (0..6), not trainID (0..27).
+	// Agent can meaningfully correlate "add carriage to line X" with the line it knows.
+	// Action space: 7 (was 28).
 	AddCarriageOffset = AddTrainOffset + AddTrainCount
-	AddCarriageCount  = MaxTrains
+	AddCarriageCount  = MaxLines
 
 	// UpgradeInterchange: station_id (0..29) = 30
 	UpgradeInterchangeOffset = AddCarriageOffset + AddCarriageCount
@@ -116,8 +118,9 @@ func ActionFromIndex(id int) (Action, error) {
 	}
 
 	if id >= AddCarriageOffset && id < AddCarriageOffset+AddCarriageCount {
-		trID := id - AddCarriageOffset
-		return AddCarriage{TrainID: trID}, nil
+		// PHASE-4: decode lineID (not trainID)
+		lineID := id - AddCarriageOffset
+		return AddCarriage{LineID: lineID}, nil
 	}
 
 	if id >= UpgradeInterchangeOffset && id < UpgradeInterchangeOffset+UpgradeInterchangeCount {
@@ -330,11 +333,19 @@ func (s *Simulator) GetActionMask(outMask []bool) []bool {
 		}
 	}
 
-	// 4. AddCarriage
+	// 4. AddCarriage — PHASE-4: index by lineID so agent can target underserved lines.
 	if s.State.Resources.CanSpend(RewardCarriage) {
-		for trID := 0; trID < len(s.State.Trains); trID++ {
-			if s.State.Trains[trID].Active && trID < AddCarriageCount {
-				outMask[AddCarriageOffset+trID] = true
+		for lID := 0; lID < len(s.State.Lines) && lID < MaxLines; lID++ {
+			line := &s.State.Lines[lID]
+			if line.Removed {
+				continue
+			}
+			// Enable if at least one active train is on this line
+			for _, tr := range s.State.Trains {
+				if tr.Active && tr.LineID == lID {
+					outMask[AddCarriageOffset+lID] = true
+					break
+				}
 			}
 		}
 	}

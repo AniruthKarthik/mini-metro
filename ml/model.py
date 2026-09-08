@@ -76,9 +76,10 @@ class GNNLayer(nn.Module):
 
 
 class MiniMetroActorCritic(nn.Module):
-    def __init__(self, node_dim=29, edge_dim=10, global_dim=13, action_space_size=4108, hidden_dim=128):
+    def __init__(self, node_dim=29, edge_dim=10, global_dim=13, action_space_size=4087, hidden_dim=128):
         # PHASE-2: node_dim 25→29, global_dim 8→13 to match updated observation.go
         # PHASE-3: DenseGCNLayer→GNNLayer (dst_feat + edge update); 3rd layer + residual
+        # PHASE-4: action_space_size 4108→4087 (AddCarriage now lineID-indexed, 28→7 slots)
         super().__init__()
 
         # PHASE-3: use improved GNNLayer for all three passes

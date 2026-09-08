@@ -69,7 +69,7 @@ func main() {
 	check(err != nil, "4th train rejected when pool empty")
 
 	// No carriages yet
-	err = sim.ApplyAction(engine.AddCarriage{TrainID: 0})
+	err = sim.ApplyAction(engine.AddCarriage{LineID: 0})
 	check(err != nil, "carriage rejected when pool empty")
 
 	// --- 3. Resource return on line removal ---

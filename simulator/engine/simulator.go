@@ -373,20 +373,30 @@ func (s *Simulator) addTrain(a AddTrain) error {
 }
 
 func (s *Simulator) addCarriage(a AddCarriage) error {
-	if a.TrainID < 0 || a.TrainID >= len(s.State.Trains) {
-		return errors.New("invalid train ID")
+	if a.LineID < 0 || a.LineID >= len(s.State.Lines) {
+		return errors.New("invalid line ID for AddCarriage")
+	}
+	if s.State.Lines[a.LineID].Removed {
+		return errors.New("line is removed")
 	}
 
-	tr := &s.State.Trains[a.TrainID]
-	if !tr.Active {
-		return errors.New("train is inactive")
+	// PHASE-4: find any active train on the given line (agent targets line, not slot)
+	trID := -1
+	for i := range s.State.Trains {
+		if s.State.Trains[i].Active && s.State.Trains[i].LineID == a.LineID {
+			trID = i
+			break
+		}
+	}
+	if trID < 0 {
+		return errors.New("no active train on line for AddCarriage")
 	}
 
 	if !s.State.Resources.Spend(RewardCarriage) {
 		return errors.New("no carriages available")
 	}
 
-	tr.Carriages++
+	s.State.Trains[trID].Carriages++
 	return nil
 }
 
