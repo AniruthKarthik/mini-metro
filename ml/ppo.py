@@ -4,7 +4,7 @@ import torch.optim as optim
 import numpy as np
 
 class PPO:
-    def __init__(self, model, lr=3e-4, gamma=0.99, gae_lambda=0.95, clip_coef=0.2, ent_coef=0.01, vf_coef=0.5, max_grad_norm=0.5):
+    def __init__(self, model, lr=3e-4, gamma=0.995, gae_lambda=0.95, clip_coef=0.2, ent_coef=0.05, vf_coef=0.5, max_grad_norm=0.5):  # ent_coef=0.05 (PPO-3), gamma=0.995 (PPO-6)
         self.model = model
         self.optimizer = optim.Adam(self.model.parameters(), lr=lr, eps=1e-5)
         self.gamma = gamma
@@ -36,15 +36,38 @@ class PPO:
         returns = advantages + values
         return advantages, returns
 
-    def update(self, b_obs, b_actions, b_logprobs, b_advantages, b_returns, b_masks, update_epochs=2, num_minibatches=4):
-        b_size = b_actions.shape[0]
+    def update(self, obs, actions, logprobs, advantages, returns, masks, values=None, init_lstm_hx=None, init_lstm_cx=None, update_epochs=4, num_minibatches=4, seq_len=16):
+        T, B = actions.shape
+        num_chunks = T // seq_len
+        b_size = B * num_chunks
         minibatch_size = b_size // num_minibatches
         
         inds = torch.arange(b_size)
         clipfracs = []
         
-        use_amp = b_actions.device.type == "cuda"
+        use_amp = actions.device.type == "cuda"
         amp_dtype = torch.bfloat16 if (use_amp and torch.cuda.is_bf16_supported()) else torch.float16
+        
+        # Reshape inputs to [num_chunks, B, seq_len, ...] and then flatten chunk and B dims
+        # So shape becomes [b_size, seq_len, ...]
+        def reshape_to_chunks(t):
+            # t is [T, B, ...] -> [num_chunks, seq_len, B, ...] -> [num_chunks, B, seq_len, ...] -> [b_size, seq_len, ...]
+            chunked = t.view(num_chunks, seq_len, B, *t.shape[2:])
+            return chunked.transpose(1, 2).reshape(b_size, seq_len, *t.shape[2:])
+            
+        b_obs = {k: reshape_to_chunks(v) for k, v in obs.items()}
+        b_actions = reshape_to_chunks(actions)
+        b_logprobs = reshape_to_chunks(logprobs)
+        b_advantages = reshape_to_chunks(advantages)
+        b_returns = reshape_to_chunks(returns)
+        b_masks = reshape_to_chunks(masks)
+        if values is not None:
+            b_values = reshape_to_chunks(values)
+            
+        # Extract initial LSTM states for each chunk. Shape: [T, B, H] -> [num_chunks, seq_len, B, H]
+        # We only need the state at the first step of each chunk
+        b_hx = init_lstm_hx.view(num_chunks, seq_len, B, -1)[:, 0, :, :].reshape(b_size, -1)
+        b_cx = init_lstm_cx.view(num_chunks, seq_len, B, -1)[:, 0, :, :].reshape(b_size, -1)
         
         for epoch in range(update_epochs):
             torch.randperm(b_size, out=inds)
@@ -53,9 +76,17 @@ class PPO:
                 mbinds = inds[start:end]
                 
                 mb_obs = {k: v[mbinds] for k, v in b_obs.items()}
+                mb_hx = b_hx[mbinds].unsqueeze(0)  # [1, minibatch_size, H]
+                mb_cx = b_cx[mbinds].unsqueeze(0)
+                mb_lstm_state = (mb_hx, mb_cx)
                 
-                with torch.amp.autocast(device_type=b_actions.device.type, dtype=amp_dtype, enabled=use_amp):
-                    _, newlogprob, entropy, newvalue = self.raw_model.get_action_and_value(mb_obs, b_actions[mbinds], mask=b_masks[mbinds])
+                with torch.amp.autocast(device_type=actions.device.type, dtype=amp_dtype, enabled=use_amp):
+                    # For action and value, get_action_and_value handles [B, T, ...] correctly
+                    _, newlogprob, entropy, newvalue, _ = self.raw_model.get_action_and_value(
+                        mb_obs, lstm_state=mb_lstm_state, action=b_actions[mbinds], mask=b_masks[mbinds]
+                    )
+                    
+                    # newlogprob is [minibatch_size, seq_len]
                     logratio = newlogprob - b_logprobs[mbinds]
                     ratio = logratio.exp()
                     
@@ -64,15 +95,21 @@ class PPO:
                         approx_kl = ((ratio - 1) - logratio).mean()
                         clipfracs += [((ratio - 1.0).abs() > self.clip_coef).float().mean().item()]
                     
-                    mb_advantages = b_advantages[mbinds]
-                    mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
-                    
-                    pg_loss1 = -mb_advantages * ratio
-                    pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - self.clip_coef, 1 + self.clip_coef)
+                    mb_adv = b_advantages[mbinds]
+                    pg_loss1 = -mb_adv * ratio
+                    pg_loss2 = -mb_adv * torch.clamp(ratio, 1 - self.clip_coef, 1 + self.clip_coef)
                     pg_loss = torch.max(pg_loss1, pg_loss2).mean()
                     
-                    newvalue = newvalue.view(-1)
-                    v_loss = 0.5 * ((newvalue - b_returns[mbinds]) ** 2).mean()
+                    newvalue = newvalue.squeeze(-1) # [minibatch_size, seq_len]
+                    if values is not None:
+                        v_clipped = b_values[mbinds] + torch.clamp(
+                            newvalue - b_values[mbinds], -self.clip_coef, self.clip_coef
+                        )
+                        v_loss1 = (newvalue - b_returns[mbinds]) ** 2
+                        v_loss2 = (v_clipped - b_returns[mbinds]) ** 2
+                        v_loss = 0.5 * torch.max(v_loss1, v_loss2).mean()
+                    else:
+                        v_loss = 0.5 * ((newvalue - b_returns[mbinds]) ** 2).mean()
                     
                     entropy_loss = entropy.mean()
                     

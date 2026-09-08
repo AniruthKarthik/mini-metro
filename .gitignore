@@ -49,9 +49,18 @@ pnpm-debug.log*
 *.zip
 
 # ML Checkpoints
-ml/runs/**/*.pt
+runs/
+ml/runs/
+!runs/**/model_final.pt
 !ml/runs/**/model_final.pt
-ml/runs/**/events.out.tfevents.*
+events.out.tfevents.*
+
+# Profiling
+ml/profile.txt
 
 # Python
-__pycache__/
+**/__pycache__/
+*.pyc
+ml/venv/
+
+resrc/

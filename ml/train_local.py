@@ -210,6 +210,11 @@ def run_training():
     # Number of environment transitions per update.
     rollout_size = num_envs * num_steps
 
+    # Phase 3 Config
+    num_minibatches = 8
+    minibatch_size = rollout_size // num_minibatches
+    update_epochs = 8
+
     # Ceiling instead of silently stopping below total_timesteps.
     num_updates = int(
         np.ceil(total_timesteps / rollout_size)
@@ -258,77 +263,74 @@ def run_training():
     # ENVIRONMENTS
     # --------------------------------------------------------
 
-    print(
-        "Creating vectorized environments...",
-        flush=True
-    )
-
-    envs = gym.vector.SyncVectorEnv(
+    print("Creating vectorized environments...")
+    envs = gym.vector.AsyncVectorEnv(
         [
             make_env(i)
             for i in range(num_envs)
-        ]
+        ],
+        context='spawn'
+    )
+    
+    print("✅ Environments created.")
+
+    # --------------------------------------------------------
+    # DEVICE & MODEL
+    # --------------------------------------------------------
+
+    device = torch.device("cpu")
+    
+    model = MiniMetroActorCritic(hidden_dim=32).to(device)
+    agent = PPO(
+        model,
+        lr=3e-4,
+        gamma=0.995,
+        gae_lambda=0.95,
+        clip_coef=0.2,
+        ent_coef=0.05,
+        vf_coef=0.5,
+        max_grad_norm=0.5
     )
 
-    print(
-        "✅ Environments created.",
-        flush=True
-    )
-
     # --------------------------------------------------------
-    # MODEL
+    # CHECKPOINT LOADING
     # --------------------------------------------------------
-
-    model = MiniMetroActorCritic(
-        hidden_dim=32
-    ).to(device)
-
-    agent = PPO(model)
-
-    # --------------------------------------------------------
-    # RESUME TRAINING
-    # --------------------------------------------------------
-
-    latest_checkpoint = find_latest_checkpoint()
 
     start_update = 1
     global_step = 0
 
-    if latest_checkpoint is not None:
+    checkpoint_files = [
+        f for f in os.listdir("runs/minimetro_ppo_local")
+        if f.startswith("checkpoint_") and f.endswith(".pt")
+    ]
 
-        try:
-
-            previous_update, global_step = load_checkpoint(
-                latest_checkpoint,
-                model,
-                agent,
-                device,
-            )
-
-            start_update = previous_update + 1
-
-        except Exception as e:
-
-            print(
-                f"⚠️ Could not load checkpoint:\n{e}",
-                flush=True
-            )
-
-            print(
-                "Starting a new training run.",
-                flush=True
-            )
-
-    else:
-
-        print(
-            "🆕 No checkpoint found. "
-            "Starting new training run.",
-            flush=True
+    if checkpoint_files:
+        latest_ckpt = sorted(checkpoint_files)[-1]
+        ckpt_path = os.path.join(
+            "runs/minimetro_ppo_local",
+            latest_ckpt
         )
+        print(f"🔄 Loading checkpoint: {ckpt_path}")
+        
+        try:
+            checkpoint = torch.load(
+                ckpt_path,
+                map_location=device
+            )
+            model.load_state_dict(checkpoint["model"])
+            agent.optimizer.load_state_dict(checkpoint["optimizer"])
+            start_update = checkpoint["update"] + 1
+            global_step = checkpoint["global_step"]
+            print(f"✅ Resumed from update {start_update - 1} | global_step={global_step}")
+        except Exception as e:
+            print(f"⚠️ Could not load checkpoint:\n{e}\nStarting a new training run.")
+            start_update = 1
+            global_step = 0
+    else:
+        print("🆕 No checkpoint found. Starting new training run.")
 
     # --------------------------------------------------------
-    # ROLLOUT STORAGE
+    # TENSORS
     # --------------------------------------------------------
 
     obs = {
@@ -338,21 +340,11 @@ def run_training():
             device=device,
         )
         for k, v in envs.single_observation_space.items()
-        if k != "action_mask"
     }
-
-    # Store action mask separately because it may be
-    # integer/bool rather than float.
-    obs["action_mask"] = torch.zeros(
-        (num_steps, num_envs)
-        + envs.single_observation_space["action_mask"].shape,
-        dtype=torch.bool,
-        device=device,
-    )
 
     actions = torch.zeros(
         (num_steps, num_envs),
-        dtype=torch.long,
+        dtype=torch.float32,
         device=device,
     )
 
@@ -376,6 +368,23 @@ def run_training():
 
     values = torch.zeros(
         (num_steps, num_envs),
+        dtype=torch.float32,
+        device=device,
+    )
+
+    # --------------------------------------------------------
+    # LSTM STATE STORAGE
+    # --------------------------------------------------------
+
+    hidden_dim = 32
+    lstm_hx = torch.zeros(
+        (num_steps, num_envs, hidden_dim * 5),
+        dtype=torch.float32,
+        device=device,
+    )
+
+    lstm_cx = torch.zeros(
+        (num_steps, num_envs, hidden_dim * 5),
         dtype=torch.float32,
         device=device,
     )
@@ -405,49 +414,36 @@ def run_training():
         device=device,
     )
 
+    next_lstm_state = (
+        torch.zeros(1, num_envs, hidden_dim * 5, device=device),
+        torch.zeros(1, num_envs, hidden_dim * 5, device=device)
+    )
+
     start_time = time.time()
 
     # --------------------------------------------------------
-    # TRAINING LOOP
+    # TRAINING EPOCHS
     # --------------------------------------------------------
 
     try:
-
-        for update in range(
-            start_update,
-            num_updates + 1
-        ):
-
-            print(
-                f"\n⏳ Performing "
-                f"{update}/{num_updates}...",
-                flush=True
-            )
-
+        for update in range(start_update, num_updates + 1):
             update_start_time = time.time()
-
-            # ------------------------------------------------
-            # COLLECT ROLLOUT
-            # ------------------------------------------------
+            print(f"\n⏳ Performing {update}/{num_updates}...")
 
             for step in range(num_steps):
-
                 global_step += num_envs
 
-                # Store observations.
                 for k in obs.keys():
-                    obs[k][step].copy_(
-                        next_obs_tensor[k]
-                    )
+                    obs[k][step] = next_obs_tensor[k]
 
-                # Store done state BEFORE taking action.
-                dones[step].copy_(
-                    next_done
-                )
+                dones[step] = next_done
 
                 # --------------------------------------------
                 # ACTION
                 # --------------------------------------------
+                
+                lstm_hx[step].copy_(next_lstm_state[0].squeeze(0))
+                lstm_cx[step].copy_(next_lstm_state[1].squeeze(0))
 
                 with torch.no_grad():
 
@@ -457,35 +453,25 @@ def run_training():
                         ].bool()
                     )
 
-                    action, logprob, _, value = (
+                    action, logprob, _, value, next_lstm_state = (
                         model.get_action_and_value(
                             next_obs_tensor,
+                            lstm_state=next_lstm_state,
                             mask=mask,
                         )
                     )
 
-                values[step].copy_(
-                    value.flatten()
-                )
+                    values[step] = value.flatten()
 
-                actions[step].copy_(
-                    action.flatten().long()
-                )
-
-                logprobs[step].copy_(
-                    logprob.flatten()
-                )
+                actions[step] = action
+                logprobs[step] = logprob
 
                 # --------------------------------------------
                 # ENV STEP
                 # --------------------------------------------
 
-                next_obs, reward, terminated, truncated, infos = (
-                    envs.step(
-                        action.detach()
-                        .cpu()
-                        .numpy()
-                    )
+                next_obs, reward, terminated, truncated, infos = envs.step(
+                    action.cpu().numpy()
                 )
 
                 done = np.logical_or(
@@ -494,7 +480,7 @@ def run_training():
                 )
 
                 # --------------------------------------------
-                # STORE REWARD
+                # STORE REWARD & RESET LSTM
                 # --------------------------------------------
 
                 rewards[step].copy_(
@@ -505,6 +491,17 @@ def run_training():
                     ).view(-1)
                 )
 
+                done_mask = torch.tensor(
+                    done,
+                    dtype=torch.float32,
+                    device=device,
+                ).view(1, num_envs, 1)
+
+                next_lstm_state = (
+                    next_lstm_state[0] * (1.0 - done_mask),
+                    next_lstm_state[1] * (1.0 - done_mask)
+                )
+
                 # --------------------------------------------
                 # NEXT OBSERVATION
                 # --------------------------------------------
@@ -512,102 +509,48 @@ def run_training():
                 next_obs_tensor = {
                     k: torch.as_tensor(
                         v,
-                        device=device
+                        device=device,
                     )
                     for k, v in next_obs.items()
                 }
 
-                next_obs_tensor[
-                    "action_mask"
-                ] = (
+                next_obs_tensor["action_mask"] = (
                     next_obs_tensor[
                         "action_mask"
                     ].bool()
                 )
 
-                next_done = torch.as_tensor(
+                next_done = torch.tensor(
                     done,
                     dtype=torch.float32,
                     device=device,
                 )
 
                 # --------------------------------------------
-                # EPISODE STATISTICS
+                # LOGGING EPISODE STATS
                 # --------------------------------------------
 
                 if "final_info" in infos:
+                    for idx, info in enumerate(infos["final_info"]):
+                        if info and "episode" in info:
+                            episode_return = info["episode"]["r"]
+                            episode_length = info["episode"]["l"]
 
-                    final_infos = infos[
-                        "final_info"
-                    ]
-
-                    for idx, info in enumerate(
-                        final_infos
-                    ):
-
-                        if (
-                            info is not None
-                            and "episode" in info
-                        ):
-
-                            episode_return = (
-                                info[
-                                    "episode"
-                                ]["r"]
-                            )
-
-                            episode_length = (
-                                info[
-                                    "episode"
-                                ]["l"]
-                            )
-
-                            # Convert possible numpy
-                            # scalars to Python values.
+                            # Convert possible numpy scalars to Python values.
                             try:
-                                episode_return = (
-                                    float(
-                                        np.asarray(
-                                            episode_return
-                                        ).reshape(-1)[0]
-                                    )
-                                )
+                                episode_return = float(np.asarray(episode_return).reshape(-1)[0])
                             except Exception:
                                 pass
 
                             try:
-                                episode_length = (
-                                    int(
-                                        np.asarray(
-                                            episode_length
-                                        ).reshape(-1)[0]
-                                    )
-                                )
+                                episode_length = int(np.asarray(episode_length).reshape(-1)[0])
                             except Exception:
                                 pass
 
-                            print(
-                                f"global_step="
-                                f"{global_step}, "
-                                f"env={idx}, "
-                                f"episodic_return="
-                                f"{episode_return:.3f}, "
-                                f"length="
-                                f"{episode_length}",
-                                flush=True
-                            )
+                            print(f"global_step={global_step}, env={idx}, episodic_return={episode_return:.3f}, length={episode_length}", flush=True)
 
-                            writer.add_scalar(
-                                "charts/episodic_return",
-                                episode_return,
-                                global_step,
-                            )
-
-                            writer.add_scalar(
-                                "charts/episodic_length",
-                                episode_length,
-                                global_step,
-                            )
+                            writer.add_scalar("charts/episodic_return", episode_return, global_step)
+                            writer.add_scalar("charts/episodic_length", episode_length, global_step)
 
             # ------------------------------------------------
             # GAE
@@ -617,7 +560,8 @@ def run_training():
 
                 next_value = (
                     model.get_value(
-                        next_obs_tensor
+                        next_obs_tensor,
+                        lstm_state=next_lstm_state
                     )
                     .reshape(1, -1)
                 )
@@ -633,32 +577,31 @@ def run_training():
                 )
 
             # ------------------------------------------------
-            # FLATTEN BATCH
+            # PREPARE BATCH
             # ------------------------------------------------
 
-            b_obs = {
-                k: v.reshape(
-                    (-1,)
-                    + envs.single_observation_space[
-                        k
-                    ].shape
-                )
-                for k, v in obs.items()
-            }
+            b_obs = obs
+            b_actions = actions
+            b_logprobs = logprobs
+            b_advantages = advantages
+            b_returns = returns
+            b_masks = b_obs["action_mask"].bool()
+            b_values = values
 
-            b_actions = actions.reshape(-1)
+            # ------------------------------------------------
+            # NORMALIZATION & LR DECAY
+            # ------------------------------------------------
 
-            b_logprobs = logprobs.reshape(-1)
+            b_advantages = (
+                b_advantages - b_advantages.mean()
+            ) / (b_advantages.std() + 1e-8)
 
-            b_advantages = advantages.reshape(-1)
-
-            b_returns = returns.reshape(-1)
-
-            b_masks = (
-                b_obs[
-                    "action_mask"
-                ].bool()
-            )
+            frac = 1.0 - (update - 1.0) / num_updates
+            for param_group in agent.optimizer.param_groups:
+                param_group["lr"] = 3e-4 * frac
+                
+            # PHASE-3: Entropy Annealing
+            agent.ent_coef = 0.05 * frac
 
             # ------------------------------------------------
             # PPO UPDATE
@@ -672,6 +615,11 @@ def run_training():
                     b_advantages,
                     b_returns,
                     b_masks,
+                    values=b_values,
+                    init_lstm_hx=lstm_hx,
+                    init_lstm_cx=lstm_cx,
+                    update_epochs=update_epochs,
+                    num_minibatches=num_minibatches,
                 )
             )
 

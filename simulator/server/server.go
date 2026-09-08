@@ -383,7 +383,7 @@ func (s *Server) handleServerCommand(cmd string) {
 
 func (s *Server) handleGetObs(w http.ResponseWriter, r *http.Request) {
 	sim := s.simPtr.Load()
-	
+
 	const maxNodes = 30
 	const maxEdges = 200
 
@@ -392,12 +392,13 @@ func (s *Server) handleGetObs(w http.ResponseWriter, r *http.Request) {
 	edgeAttrsBuf := make([]float32, maxEdges*engine.EdgeFeatureDim)
 	globalsBuf := make([]float32, engine.GlobalFeatureDim)
 
-	sim.WriteVectorizedObservation(nodesBuf, edgesBuf, edgeAttrsBuf, globalsBuf)
-	
+	// PHASE-2/3: capture exact counts, eliminating fragile heuristic in agent.py
+	numNodes, numEdges := sim.WriteVectorizedObservation(nodesBuf, edgesBuf, edgeAttrsBuf, globalsBuf)
+
 	maskSize := engine.MaxActionSpaceSize()
 	boolMask := make([]bool, maskSize)
 	sim.GetActionMask(boolMask)
-	
+
 	// Convert bool mask to int mask to match python expectations
 	intMask := make([]int, maskSize)
 	for i, b := range boolMask {
@@ -407,13 +408,15 @@ func (s *Server) handleGetObs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	obs := map[string]interface{}{
-		"nodes":       nodesBuf,
-		"edges":       edgesBuf,
-		"edge_attrs":  edgeAttrsBuf,
-		"globals":     globalsBuf,
+		"nodes":      nodesBuf,
+		"edges":      edgesBuf,
+		"edge_attrs": edgeAttrsBuf,
+		"globals":    globalsBuf,
 		"action_mask": intMask,
+		"num_nodes":  numNodes, // PHASE-2/3: exact station count
+		"num_edges":  numEdges, // PHASE-2/3: exact edge count
 	}
-	
+
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(obs)

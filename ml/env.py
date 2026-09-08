@@ -23,13 +23,17 @@ if lib:
     # extern void Step(uintptr_t handle, int actionID, float duration, float* outReward, uint8_t* outDone);
     lib.Step.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_float, ctypes.POINTER(ctypes.c_float), ctypes.POINTER(ctypes.c_uint8)]
 
-    # extern void GetObservation(uintptr_t handle, float* outNodes, int32_t* outEdges, float* outEdgeAttrs, float* outGlobals);
+    # extern void GetObservation(uintptr_t handle, float* outNodes, int32_t* outEdges,
+    #                             float* outEdgeAttrs, float* outGlobals,
+    #                             int32_t* outNumNodes, int32_t* outNumEdges);
     lib.GetObservation.argtypes = [
-        ctypes.c_void_p, 
+        ctypes.c_void_p,
         ctypes.POINTER(ctypes.c_float),
         ctypes.POINTER(ctypes.c_int32),
         ctypes.POINTER(ctypes.c_float),
-        ctypes.POINTER(ctypes.c_float)
+        ctypes.POINTER(ctypes.c_float),
+        ctypes.POINTER(ctypes.c_int32),  # PHASE-2: outNumNodes
+        ctypes.POINTER(ctypes.c_int32),  # PHASE-2: outNumEdges
     ]
 
     # extern void GetActionMask(uintptr_t handle, uint8_t* outMask);
@@ -39,7 +43,7 @@ class MiniMetroEnv(gym.Env):
     """
     Gymnasium environment wrapper for the Mini Metro Go simulator.
     """
-    def __init__(self, map_id=0, seed=None):
+    def __init__(self, map_id=-1, seed=None):
         super().__init__()
         
         self.map_id = map_id
@@ -53,10 +57,10 @@ class MiniMetroEnv(gym.Env):
         # Dimensions from observation.go and action_space.go
         self.max_nodes = 30
         self.max_edges = 200  # From c_api/main.go maxEdges
-        self.node_dim = 25
+        self.node_dim = 32    # PHASE-5: was 29; +incoming_train_count, incoming_train_load, nearest_train_proximity
         self.edge_dim = 10
-        self.global_dim = 8
-        self.action_space_size = 4108 # Calculated from action_space.go
+        self.global_dim = 13  # PHASE-2: was 8; +station_count, max_fill, overcrowd_ct, pending_reward, game_time
+        self.action_space_size = 4087  # PHASE-4: was 4108; AddCarriage reduced 28→7 (now lineID-indexed)
 
         # Observation space definition
         self.observation_space = spaces.Dict({
@@ -79,8 +83,10 @@ class MiniMetroEnv(gym.Env):
         
         self._out_reward = ctypes.c_float(0.0)
         self._out_done = ctypes.c_uint8(0)
-        
         self._out_mask = (ctypes.c_uint8 * self.action_space_size)()
+        # PHASE-2: exact node/edge counts from C API (replaces fragile heuristic)
+        self._out_num_nodes = ctypes.c_int32(0)
+        self._out_num_edges = ctypes.c_int32(0)
         
     def reset(self, seed=None, options=None):
         if seed is not None:
@@ -91,95 +97,107 @@ class MiniMetroEnv(gym.Env):
         if self.handle is not None:
             lib.FreeSimulator(self.handle)
             
-        self.handle = lib.CreateSimulator(self.map_id, self._seed_val)
+        # Curriculum Learning: Random Map Selection
+        current_map = self.map_id
+        if current_map == -1:
+            current_map = int(np.random.choice([0, 1, 2])) # London, NYC, Tokyo
+            
+        self.handle = lib.CreateSimulator(current_map, self._seed_val)
         
         obs = self._get_obs()
         info = {}
         return obs, info
         
     def _get_obs(self):
-        # We need to know how many nodes and edges are returned by the C API.
-        # But wait, GetObservation in C doesn't return the counts. Let me check the go code.
-        # ah, the c_api/main.go might return or we can figure it out by padding.
-        # Actually I should check c_api/main.go. Let's assume it populates up to the max buffers, 
-        # but the remaining values will be zero? 
-        # I need to look closely at c_api/main.go to see what GetObservation actually does.
-        # For now, we will extract the numpy arrays from ctypes.
-        
-        # Zero out buffers
+        # Zero out node/edge buffers (globals are always fully written).
         ctypes.memset(self._out_nodes, 0, ctypes.sizeof(self._out_nodes))
         ctypes.memset(self._out_edges, 0, ctypes.sizeof(self._out_edges))
         ctypes.memset(self._out_edge_attrs, 0, ctypes.sizeof(self._out_edge_attrs))
-        
+
+        # PHASE-2: GetObservation now returns exact numNodes/numEdges via output params,
+        # eliminating the fragile heuristic that broke on zero-padded middle rows.
         lib.GetObservation(
-            self.handle, 
-            self._out_nodes, 
-            self._out_edges, 
-            self._out_edge_attrs, 
-            self._out_globals
+            self.handle,
+            self._out_nodes,
+            self._out_edges,
+            self._out_edge_attrs,
+            self._out_globals,
+            ctypes.byref(self._out_num_nodes),
+            ctypes.byref(self._out_num_edges),
         )
-        
+
         lib.GetActionMask(self.handle, self._out_mask)
-        
-        nodes = np.ctypeslib.as_array(self._out_nodes).reshape(self.max_nodes, self.node_dim).copy()
-        edges = np.ctypeslib.as_array(self._out_edges).reshape(self.max_edges, 2).transpose().copy() # Shape (2, max_edges)
-        edge_attrs = np.ctypeslib.as_array(self._out_edge_attrs).reshape(self.max_edges, self.edge_dim).copy()
-        globals_feat = np.ctypeslib.as_array(self._out_globals).copy()
-        
+
+        nodes       = np.ctypeslib.as_array(self._out_nodes).reshape(self.max_nodes, self.node_dim).copy()
+        edges       = np.ctypeslib.as_array(self._out_edges).reshape(self.max_edges, 2).transpose().copy()
+        edge_attrs  = np.ctypeslib.as_array(self._out_edge_attrs).reshape(self.max_edges, self.edge_dim).copy()
+        globals_feat= np.ctypeslib.as_array(self._out_globals).copy()
         action_mask = np.ctypeslib.as_array(self._out_mask).astype(bool).copy()
-        
-        # Simple heuristic to determine num nodes and edges:
-        # A node is valid if it's not all zeros (e.g. outNodes[base+0] is X coord, usually > 0 if station exists)
-        # Actually in observation.go: nodes = s.WriteVectorizedObservation(nodes, ...)
-        # The number of valid nodes/edges isn't returned directly in the C API, but we can compute it.
-        num_nodes = 0
-        for i in range(self.max_nodes):
-            if np.sum(np.abs(nodes[i])) > 0:
-                num_nodes += 1
-            else:
-                break
-                
-        num_edges = 0
-        for i in range(self.max_edges):
-            if np.sum(np.abs(edge_attrs[i])) > 0 or edges[0, i] > 0 or edges[1, i] > 0:
-                num_edges += 1
-            else:
-                break
-                
-        obs = {
-            "nodes": nodes,
-            "edges": edges,
-            "edge_attrs": edge_attrs,
-            "globals": globals_feat,
+
+        num_nodes = int(self._out_num_nodes.value)
+        num_edges = int(self._out_num_edges.value)
+
+        return {
+            "nodes":       nodes,
+            "edges":       edges,
+            "edge_attrs":  edge_attrs,
+            "globals":     globals_feat,
             "action_mask": action_mask,
-            "num_nodes": np.array([num_nodes], dtype=np.int32),
-            "num_edges": np.array([num_edges], dtype=np.int32),
+            "num_nodes":   np.array([num_nodes], dtype=np.int32),
+            "num_edges":   np.array([num_edges], dtype=np.int32),
         }
-        return obs
 
     def step(self, action):
         if self.handle is None:
             raise RuntimeError("Environment has not been reset.")
             
         action_id = int(action)
-        # The step function takes a duration. We'll simulate 1 second per step.
-        # Actually in mini metro, 1 second is fine. The step function: Step(handle, actionID, duration, &outReward, &outDone)
         duration = 1.0 
         
-        lib.Step(self.handle, action_id, duration, ctypes.byref(self._out_reward), ctypes.byref(self._out_done))
-        
-        reward = float(self._out_reward.value)
-        
-        # Action penalty to discourage the AI from spamming useless actions
-        if action_id != 0:
-            reward -= 0.05
-            
-        done = bool(self._out_done.value)
-        
-        obs = self._get_obs()
+        total_reward = 0.0
+        done = False
         info = {}
         
-        return obs, reward, done, False, info
+        # Dynamic Frame Skipping: tick up to 4 times (4 seconds total)
+        for step_idx in range(4):
+            # Apply action only on the first step, subsequent steps pass NoOp (0)
+            curr_action = action_id if step_idx == 0 else 0
+            
+            lib.Step(self.handle, curr_action, duration, ctypes.byref(self._out_reward), ctypes.byref(self._out_done))
+            
+            step_done = bool(self._out_done.value)
+            step_reward = float(self._out_reward.value)
+            
+            if not step_done:
+                step_reward += 0.01  # Survival bonus
+                
+            obs = self._get_obs()
+            num_stations = int(obs["num_nodes"][0])
+            emergency = False
+            
+            for i in range(num_stations):
+                node = obs["nodes"][i]
+                # node[22] = overcrowding_progress [0,1]
+                overcrowd_progress = float(node[22])
+                if overcrowd_progress > 0:
+                    step_reward -= 0.3 * overcrowd_progress
+                    emergency = True
+                    
+                raw_queue_total = float(node[12:22].sum())
+                fill_approx = raw_queue_total / 6.0
+                if fill_approx > 0.8:
+                    step_reward -= 0.1 * (fill_approx - 0.8)
+                    
+            total_reward += step_reward
+            if step_done:
+                done = True
+                break
+                
+            if emergency:
+                # Interrupt frame skip so agent can react immediately
+                break
+
+        return obs, total_reward, done, False, info
         
     def close(self):
         if self.handle is not None:

@@ -14,7 +14,7 @@ from env import MiniMetroEnv
 from model import MiniMetroActorCritic
 from ppo import PPO
 
-def make_env(seed, map_id=0):
+def make_env(seed, map_id=-1):
     def thunk():
         env = MiniMetroEnv(map_id=map_id, seed=seed)
         env = gym.wrappers.RecordEpisodeStatistics(env)
@@ -22,21 +22,29 @@ def make_env(seed, map_id=0):
     return thunk
 
 def run_training():
-    num_envs = 32
-    num_steps = 128
+    cpu_cores = os.cpu_count() or 2
+    # In Colab/cloud environments (typically 2 vCPUs, ~12GB RAM), spawning 32 processes
+    # triggers OS OOM-killer (SIGKILL) and BrokenPipeError. 8 envs is safe, efficient, and robust.
+    num_envs = int(os.environ.get("NUM_ENVS", min(8, max(4, cpu_cores * 4))))
     total_timesteps = 10000000
+    target_rollout_size = 16384
+    num_steps = target_rollout_size // num_envs
     batch_size = num_envs * num_steps
-    num_minibatches = 4
+    num_minibatches = 8      # PHASE-3: Increased capacity from 4
     minibatch_size = batch_size // num_minibatches
-    update_epochs = 2
+    update_epochs = 8        # PHASE-3: Increased capacity from 4
     num_updates = total_timesteps // batch_size
     
     os.makedirs("runs/minimetro_ppo", exist_ok=True)
     writer = SummaryWriter("runs/minimetro_ppo")
     
-    # Use AsyncVectorEnv with 'spawn' to prevent Go runtime crashes on fork
-    envs = gym.vector.AsyncVectorEnv([make_env(i) for i in range(num_envs)], context='spawn')
-    torch.set_num_threads(8)
+    # Use AsyncVectorEnv with 'spawn' and shared_memory=False to prevent Python 3.13 BufferError and POSIX semaphore leaks
+    envs = gym.vector.AsyncVectorEnv(
+        [make_env(i) for i in range(num_envs)],
+        context='spawn',
+        shared_memory=False
+    )
+    torch.set_num_threads(min(4, max(1, cpu_cores)))
     
     device = torch.device("cpu")
     if torch.cuda.is_available():
@@ -59,7 +67,10 @@ def run_training():
     print("MiniMetro PPO Training")
     print("=" * 70)
     print(f"Device          : {device}")
-    print(f"Num environments : {num_envs}")
+    if device.type == "cuda":
+        print(f"GPU Model       : {torch.cuda.get_device_name(0)}")
+        print(f"GPU VRAM        : {torch.cuda.get_device_properties(0).total_memory / (1024**3):.1f} GB")
+    print(f"Num environments: {num_envs}")
     print(f"Steps/update    : {num_steps}")
     print(f"Rollout size    : {batch_size}")
     print(f"Minibatch size  : {minibatch_size} ({num_minibatches} minibatches)")
@@ -85,18 +96,24 @@ def run_training():
     dones = torch.zeros((num_steps, num_envs)).to(device)
     values = torch.zeros((num_steps, num_envs)).to(device)
     
+    hidden_dim = 256
+    lstm_hx = torch.zeros((num_steps, num_envs, hidden_dim * 5)).to(device)
+    lstm_cx = torch.zeros((num_steps, num_envs, hidden_dim * 5)).to(device)
+    
     global_step = 0
     start_time = time.time()
     
     next_obs, _ = envs.reset()
     next_obs_tensor = {k: torch.as_tensor(v, device=device) for k, v in next_obs.items()}
     next_done = torch.zeros(num_envs).to(device)
+    next_lstm_state = (torch.zeros(1, num_envs, hidden_dim * 5).to(device),
+                       torch.zeros(1, num_envs, hidden_dim * 5).to(device))
     
     for update in range(1, num_updates + 1):
         update_start_time = time.time()
         print(f"\n⏳ Performing {update}/{num_updates}...", flush=True)
         
-        if update % 50 == 0:
+        if update % 10 == 0:
             torch.save(raw_model.state_dict(), f"runs/minimetro_ppo/model_{update}.pt")
 
         for step in range(num_steps):
@@ -106,9 +123,12 @@ def run_training():
                 obs[k][step] = next_obs_tensor[k]
             dones[step] = next_done
             
+            lstm_hx[step] = next_lstm_state[0].squeeze(0)
+            lstm_cx[step] = next_lstm_state[1].squeeze(0)
+            
             with torch.no_grad():
                 mask = next_obs_tensor["action_mask"].bool()
-                action, logprob, _, value = raw_model.get_action_and_value(next_obs_tensor, mask=mask)
+                action, logprob, _, value, next_lstm_state = raw_model.get_action_and_value(next_obs_tensor, lstm_state=next_lstm_state, mask=mask)
                 values[step] = value.flatten()
             
             actions[step] = action
@@ -116,6 +136,13 @@ def run_training():
             
             next_obs, reward, terminated, truncated, infos = envs.step(action.cpu().numpy())
             done = np.logical_or(terminated, truncated)
+            
+            # Reset LSTM state for done envs
+            done_mask = torch.tensor(done, dtype=torch.float32, device=device).view(1, num_envs, 1)
+            next_lstm_state = (
+                next_lstm_state[0] * (1.0 - done_mask),
+                next_lstm_state[1] * (1.0 - done_mask)
+            )
             
             rewards[step] = torch.tensor(reward).to(device).view(-1)
             next_obs_tensor = {k: torch.as_tensor(v, device=device) for k, v in next_obs.items()}
@@ -129,19 +156,31 @@ def run_training():
                         writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
 
         with torch.no_grad():
-            next_value = raw_model.get_value(next_obs_tensor).reshape(1, -1)
+            next_value = raw_model.get_value(next_obs_tensor, lstm_state=next_lstm_state).reshape(1, -1)
             advantages, returns = agent.compute_gae(rewards, values, next_value, dones, next_done)
             
-        b_obs = {k: v.reshape((-1,) + envs.single_observation_space[k].shape) for k, v in obs.items()}
-        b_actions = actions.reshape(-1)
-        b_logprobs = logprobs.reshape(-1)
-        b_advantages = advantages.reshape(-1)
-        b_returns = returns.reshape(-1)
+        b_obs = obs
+        b_actions = actions
+        b_logprobs = logprobs
+        b_advantages = advantages
+        b_returns = returns
+        b_values = values
         b_masks = b_obs["action_mask"].bool()
+
+        # PHASE-1 fix PPO-1: normalize over FULL batch, not per-minibatch.
+        b_advantages = (b_advantages - b_advantages.mean()) / (b_advantages.std() + 1e-8)
+
+        # PHASE-1 fix PPO-4: linear LR decay toward 0 over training.
+        frac = 1.0 - (update - 1.0) / num_updates
+        for param_group in agent.optimizer.param_groups:
+            param_group["lr"] = 3e-4 * frac
+            
+        # PHASE-3: Entropy Annealing
+        agent.ent_coef = 0.05 * frac
         
         pg_loss, v_loss, ent_loss, clipfrac, approx_kl = agent.update(
             b_obs, b_actions, b_logprobs, b_advantages, b_returns, b_masks,
-            update_epochs=update_epochs, num_minibatches=num_minibatches
+            values=b_values, init_lstm_hx=lstm_hx, init_lstm_cx=lstm_cx, update_epochs=update_epochs, num_minibatches=num_minibatches
         )
         
         writer.add_scalar("losses/value_loss", v_loss, global_step)
@@ -150,12 +189,22 @@ def run_training():
         writer.add_scalar("losses/approx_kl", approx_kl, global_step)
         writer.add_scalar("losses/clipfrac", clipfrac, global_step)
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
+        writer.add_scalar("charts/learning_rate", agent.optimizer.param_groups[0]["lr"], global_step)
+
+        # PHASE-1 diagnostic: monitor NoOp rate (high = agent learned passivity).
+        noop_rate = (b_actions == 0).float().mean().item()
+        writer.add_scalar("charts/noop_rate", noop_rate, global_step)
         
         update_time = time.time() - update_start_time
         print(f"✅ Completed {update}/{num_updates} | steps={global_step} | SPS={int(global_step / max(time.time() - start_time, 1e-6))} | v_loss={v_loss:.4f} | pg_loss={pg_loss:.4f} | entropy={ent_loss:.4f} | KL={approx_kl:.6f} | time={update_time:.2f}s", flush=True)
+
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
         
     envs.close()
     writer.close()
+    torch.save(raw_model.state_dict(), "runs/minimetro_ppo/model_final.pt")
+    print("\n🎉 Training finished! Saved final model to runs/minimetro_ppo/model_final.pt", flush=True)
 
 if __name__ == "__main__":
     run_training()

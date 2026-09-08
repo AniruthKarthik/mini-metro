@@ -16,7 +16,7 @@ def evaluate(model_path=None, map_id=0):
     obs, _ = env.reset()
     
     # Initialize model
-    model = MiniMetroActorCritic().to(device)
+    model = MiniMetroActorCritic(hidden_dim=256).to(device)  # PHASE-1 fix BUG-B: was 128, train.py uses 256
     
     # Load model weights if a path is provided, otherwise find the latest
     if model_path is None:
@@ -46,7 +46,7 @@ def evaluate(model_path=None, map_id=0):
         mask = obs_tensor["action_mask"].bool()
         
         with torch.no_grad():
-            action, _, _, value = model.get_action_and_value(obs_tensor, mask=mask)
+            action, _, _, value = model.get_action_and_value(obs_tensor, mask=mask, deterministic=True)
             
         action_np = action.item()
         

@@ -71,7 +71,7 @@ func TestAddAndRemoveCarriage(t *testing.T) {
 	}
 
 	// Add carriage to train 0
-	err := sim.ApplyAction(engine.AddCarriage{TrainID: 0})
+	err := sim.ApplyAction(engine.AddCarriage{LineID: 0})
 	if err != nil {
 		t.Fatalf("unexpected error adding carriage: %v", err)
 	}

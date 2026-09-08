@@ -91,7 +91,7 @@ extern "C" {
 extern uintptr_t CreateSimulator(int mapID, uint64_t seed);
 extern void FreeSimulator(uintptr_t handle);
 extern void Step(uintptr_t handle, int actionID, float duration, float* outReward, uint8_t* outDone);
-extern void GetObservation(uintptr_t handle, float* outNodes, int32_t* outEdges, float* outEdgeAttrs, float* outGlobals);
+extern void GetObservation(uintptr_t handle, float* outNodes, int32_t* outEdges, float* outEdgeAttrs, float* outGlobals, int32_t* outNumNodes, int32_t* outNumEdges);
 extern void GetActionMask(uintptr_t handle, uint8_t* outMask);
 
 #ifdef __cplusplus
