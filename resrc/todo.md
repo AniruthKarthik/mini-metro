@@ -1,785 +1,102 @@
-# Mini Metro RL/GNN — Complete Diagnostic Report
+# Mini Metro RL/GNN — Active Roadmap & Action Plan
 
-> Generated after full codebase trace:
-> Go engine → C API → Python env → obs/graph → GNN → PPO → actions → game
-
----
-
-## 1. Executive Diagnosis
-
-The model exhibits degenerate behaviour (connecting every station with every line) because **at least four independent system-level failures** reinforce each other. No single fix will be sufficient:
-
-1. **The rollout window is too short for credit assignment**: `num_steps = 128` steps × 1s/step = 128s per rollout. An infrastructure decision (add a line) has consequences hundreds of steps later (game-over avoidance). At γ=0.99, `0.99^128 = 0.277` — 72% of future reward is discounted away. The agent cannot learn that its network design choices matter.
-
-2. **The observation is missing the most important information**: No train positions, no total congestion ratio, no reachability, no distinction between lines at the node level. The agent is flying blind.
-
-3. **The reward function directly incentivises excessive connections**: The only positive reward is `deliveredDelta`. Adding more connections guarantees more delivery events. The flat `-0.05` action penalty punishes good and bad actions identically, training passivity (NoOp).
-
-4. **The GNN architecture cannot distinguish network configurations**: After mean-pooling all node embeddings into one vector, the policy cannot tell which specific station is congested. Two completely different game states produce nearly identical inputs.
+> Focused action document for active fixes and verification.
+> All completed tasks (Phases 1–5, Tasks 1–22) and resolved historical bugs have been archived and removed.
 
 ---
 
-## 2. Full Architecture / Data-Flow Understanding
+## 1. Executive Summary & Active Objective
 
-```
-Go Engine (simulator/engine/)
-  simulator.go  → StepMacro(action, duration=1.0)
-                   → ApplyAction()        [network topology change]
-                   → sub-tick loop (30 Hz, 30 iterations = 1 sim-second)
-                     → spawnPassengers()
-                     → moveTrains()
-                     → boardAndAlight()
-                     → updateScore()      [score++ per delivery]
-                     → checkGameOver()    [overcrowding timer]
-                   → ComputeStepReward(scoreDelta)
+The current policy exhibits degenerate behaviour (**connecting all stations with all lines** and **loop toggle thrashing**) because:
+1. **The action mask allows duplicate direct lines**: `AddLine(u, v)` allows spending lines to create parallel duplicate tracks between the same stations.
+2. **Every line spawns a free locomotive**: Spawning a duplicate line grants an extra train that provides immediate passenger deliveries, while squandering line tokens.
+3. **Redundant connections carry zero marginal penalty**: Creating redundant lines or loops has no resource-waste penalty.
+4. **Opportunity cost arrives with delay**: When an isolated station spawns later without available lines, game-over overcrowding happens 150+ steps after line tokens were wasted.
+5. **Loop actions thrash freely**: `CloseLoop` and `OpenLoop` cost 0 tokens and have no cooldown, causing entropy-driven ping-ponging.
 
-C API (simulator/c_api/main.go)
-  Step()           → calls StepMacro, returns reward+done
-  GetObservation() → calls WriteVectorizedObservation()
-  GetActionMask()  → calls GetActionMask()
-
-Python Environment (ml/env.py)
-  step()           → lib.Step(handle, action_id, 1.0, ...)
-                   → reward -= 0.05 if action != 0   [PROBLEM: flat action penalty]
-  _get_obs()       → fragile heuristic for num_nodes / num_edges
-
-  Observation:
-    nodes      [30, 25]   → station features
-    edges      [2, 200]   → edge index (src, dst)
-    edge_attrs [200, 10]  → edge features
-    globals    [8]        → global features (score is unbounded!)
-    action_mask[4108]     → valid action bitmask
-    num_nodes  [1]        → heuristic count (BUG: may be wrong)
-    num_edges  [1]        → heuristic count (BUG: may be wrong)
-
-Model (ml/model.py)
-  DenseGCNLayer x2       → node embeddings [B, N, H]
-  Mean pool over nodes   → [B, H]  ← DESTROYS spatial information
-  Global MLP             → [B, H]
-  Concat + Actor MLP     → logits [B, 4108]
-  Concat + Critic MLP    → value  [B, 1]
-
-PPO (ml/ppo.py + train.py / train_local.py)
-  32 parallel envs, 128 steps/update    ← TOO SHORT
-  2 epochs, 4 minibatches               ← TOO FEW EPOCHS
-  GAE lambda=0.95, gamma=0.99
-  Adam lr=3e-4, clip=0.2, ent_coef=0.01  ← ENT TOO LOW
-```
+**Active Target**: Eliminate parallel direct duplicate lines in the action mask, apply redundancy and isolated station penalties in scoring, enforce loop toggle cooldown, and train a clean model.
 
 ---
 
-## 3. Critical Bugs (Category A)
-
-### BUG-A — CRITICAL: `num_nodes` / `num_edges` heuristic silently undercounts
-**File**: `ml/env.py` L135-147, mirrored in `ml/agent.py` L83-95
-
-The heuristic `if np.sum(np.abs(nodes[i])) > 0: num_nodes += 1; else: break` stops at the first all-zero padded row. This is fragile:
-- If any padding slot comes before a valid station slot, the count is wrong.
-- The GNN's node_mask is derived from num_nodes. Under-counted → real nodes excluded from pooling. Over-counted → zero-rows dilute mean pool.
-
-**Fix**: Expose `numNodes, numEdges` through the C API. In `c_api/main.go`, add output parameters `int32_t* outNumNodes, int32_t* outNumEdges` to `GetObservation`. The values are already computed in `WriteVectorizedObservation` — just surface them. Rebuild `libminimetro.so`. Eliminate all heuristic code.
-
-**Verify**: Assert `num_nodes == len(s.State.Stations)` after every reset.
-
----
-
-### BUG-B — CRITICAL: `eval.py` loads model with wrong `hidden_dim`
-**File**: `ml/eval.py` L19
-
-```python
-model = MiniMetroActorCritic().to(device)  # default hidden_dim=128
-```
-
-`train.py` trains with `hidden_dim=256`. Loading a 256-trained checkpoint into a 128-dim model will raise a `size mismatch` error — or if shapes accidentally align, will load garbage weights silently.
-
-**Fix**:
-```python
-model = MiniMetroActorCritic(hidden_dim=256).to(device)
-```
-
-**Verify**: Run `eval.py` and confirm it loads without error and produces non-random scores.
-
----
-
-### BUG-C — HIGH: Global feature `globals[6]` is unbounded raw score
-**File**: `simulator/engine/observation.go` L204
-
-```go
-outGlobals[6] = float32(s.State.Score)
-```
-
-The score is a cumulative integer that grows without bound (0 → 10,000+). All other globals are in range [0, 28] or [0, 1]. The score feature dominates the `global_proj` MLP gradients by 100–10,000×.
-
-**Fix**: Normalize: `float32(s.State.Score) / 500.0` (clip at 1.0 for extremely long games), or better: expose `deliveredDelta` per step rather than cumulative score.
-
-**Verify**: Log mean/std of each global dim during training. No dim should be >10× another.
-
----
-
-### BUG-D — HIGH: `shortenLine()` is a no-op (silent success)
-**File**: `simulator/engine/simulator.go` L462-465
-
-```go
-func (s *Simulator) shortenLine(a ShortenLine) error {
-    return nil  // does nothing!
-}
-```
-
-If `ShortenLine` actions are ever re-enabled in the mask, the agent receives success (no error, no state change, no reward) for a null action. The `-0.05` penalty in Python then punishes it for a no-op that looked valid.
-
-**Fix**: Either implement `shortenLine` properly or return `errors.New("not implemented")`.
-
----
-
-### BUG-E — MEDIUM: `boolMaskBuf` shared global is a single-threaded bottleneck
-**File**: `simulator/c_api/main.go` L122-151
-
-A single shared `boolMaskBuf` + mutex serializes all `GetActionMask` calls across parallel environments. With 32 async workers this is a contention point. Use a per-call stack array instead:
-```go
-var boolMask [engine.TotalActionSpaceSize]bool
-sim.GetActionMask(boolMask[:])
-```
-
----
-
-## 4. Major Design Problems (Category B)
-
-### MAJOR-A — CRITICAL: Rollout window too short for temporal credit assignment
-**File**: `ml/train.py` L26, `ml/ppo.py` L21-37
-
-`num_steps = 128` covers 128 game-seconds. An infrastructure decision made at step 1 prevents game-over at step 300+ — entirely outside the GAE window. At γ=0.99 and step 128: discount = 0.277. The agent never sees the consequence of building or not building a line.
-
-**Fix**: Increase `num_steps` to at least 512, ideally 1024. This is the single highest-ROI change.
-
-**Verify**: Plot `returns.mean()` per episode. If it increases significantly after rollout expansion, credit assignment was the bottleneck.
-
----
-
-### MAJOR-B — CRITICAL: Mean pooling destroys spatial/relational identity
-**File**: `ml/model.py` L110-115
-
-```python
-pooled = (x * node_mask.unsqueeze(-1)).sum(dim=1) / num_nodes.clamp(min=1).float()
-```
-
-After pooling, the actor receives the same 256-dim vector regardless of *which station* is congested or *which line* is underserved. The policy cannot express "extend line 2 to station 7" because it has no representation of the distinction between stations 7 and station 12.
-
-**Fix (immediate)**: Replace with concatenated mean + max pool:
-```python
-# mean pool
-mean_pool = (x * node_mask.unsqueeze(-1)).sum(1) / num_nodes.clamp(min=1).float()
-# max pool (mask out invalid nodes with -1e9)
-x_masked = x.masked_fill(~node_mask.unsqueeze(-1), -1e9)
-max_pool = x_masked.max(dim=1).values
-pooled = torch.cat([mean_pool, max_pool], dim=-1)  # [B, 2H]
-```
-Update `fc_actor` and `fc_critic` input dim from `H*2` to `H*3`.
-
-**Fix (long-term)**: Use bilinear action scoring that directly uses per-node embeddings instead of a pooled global.
-
-**Verify**: After fix, check if the policy selects the most-congested station more often than random.
-
----
-
-### MAJOR-C — HIGH: Flat `-0.05` action penalty trains passivity
-**File**: `ml/env.py` L173-175
-
-```python
-if action_id != 0:
-    reward -= 0.05
-```
-
-This punishes every non-NoOp identically — a critical infrastructure action and a useless one pay the same penalty. In sparse-reward early training (0 deliveries for first 10–20 steps), the optimal short-term policy is: **always NoOp**. The agent learns passivity.
-
-**Fix**: Remove this penalty entirely. Exploration is already incentivised by `ent_coef`. If a penalty is desired, make it resource-aware: penalize spending a line/train token on a configuration that doesn't improve reachability.
-
-**Verify**: Monitor NoOp rate during training. Healthy range: 15–35%. If >60%, passivity has set in.
-
----
-
-### MAJOR-D — HIGH: Node features missing fill ratio and routing information
-**File**: `simulator/engine/observation.go` L89-129
-
-Currently missing from node features:
-| Feature | Importance |
-|---|---|
-| `queue / capacity` (fill ratio) | Agent cannot see total congestion, only breakdown by destination type |
-| `overcrowdingTimer / 47.0` (absolute timer) | Progress [0,1] exists but not absolute time; 5s vs 45s remaining require different responses |
-| `numLinesServing(station)` | Agent cannot see if a station is already well-connected |
-| `reachabilityScore` (fraction of waiting passengers with a valid route) | Disconnected station ≠ low-demand station |
-
-**Fix**: Grow `NodeFeatureDim` from 25 to at least 29:
-```go
-outNodes[base+25] = float32(len(st.Queue)) / float32(st.Capacity)
-outNodes[base+26] = float32(len(linesThroughStation)) / 7.0
-outNodes[base+27] = float32(max(0, st.OvercrowdingTimer)) / overcrowdingFailureSeconds
-outNodes[base+28] = reachabilityScore(station)  // fraction of passengers routable
-```
-Update `node_dim` in `env.py` and `model.py`.
-
----
-
-### MAJOR-E — HIGH: Global features missing critical structural state
-**File**: `simulator/engine/observation.go` L196-212
-
-Missing from globals:
-- Total station count (agent doesn't know how large the network is)
-- Max queue across all stations (best single predictor of imminent game-over)
-- Count of stations currently overcrowding (stations with `OvercrowdingTimer >= 0`)
-- `PendingRewardChoices > 0` flag (agent must infer from mask alone that it's in reward mode)
-- Normalized game time progression `GameTimeSeconds / expectedMax`
-
-**Fix**: Grow `GlobalFeatureDim` from 8 to 13, adding these features. Replace raw score with normalized score or delta.
-
----
-
-### MAJOR-F — HIGH: GCNLayer2 reuses raw edge_attrs (no edge update)
-**File**: `ml/model.py` L107-108
-
-```python
-x = self.gcn1(nodes, edges, edge_attrs, num_nodes, num_edges)
-x = self.gcn2(x, edges, edge_attrs, num_nodes, num_edges)  # same edge_attrs!
-```
-
-Layer 2 receives updated node embeddings but the **same unupdated edge features** from layer 1. Stacking two GCN layers this way provides limited additional expressiveness because edge representations never evolve.
-
-**Fix**: Add an edge embedding update within each layer:
-```python
-# In DenseGCNLayer.forward, after computing new_x:
-src_emb = gather(x, src); dst_emb = gather(new_x, dst)
-new_e = F.relu(self.edge_update(torch.cat([e, src_emb, dst_emb], dim=-1)))
-return new_x, new_e  # pass updated edges to next layer
-```
-
----
-
-### MAJOR-G — HIGH: GCN messages ignore destination node features
-**File**: `ml/model.py` L28-30
-
-```python
-src_feat = torch.gather(x, 1, src.unsqueeze(-1).expand(-1, -1, H))
-msg = F.relu(self.msg_proj(torch.cat([src_feat, e], dim=-1)))
-```
-
-Messages are computed from `src_feat` and edge features only. The destination node's state is not included. For Metro planning, "station A is congested" should influence the message sent from upstream stations, but station A's congestion information is not in the message because `dst_feat` is excluded.
-
-**Fix**:
-```python
-dst_feat = torch.gather(x, 1, dst.unsqueeze(-1).expand(-1, -1, H))
-msg = F.relu(self.msg_proj(torch.cat([src_feat, dst_feat, e], dim=-1)))
-# Update msg_proj input dim from hidden_dim*2 to hidden_dim*3
-```
-
----
-
-### MAJOR-H — HIGH: 2 GCN layers insufficient for graph diameter
-**File**: `ml/model.py` L56-57
-
-With 2 message-passing layers, information propagates at most 2 hops. A 15-station map has diameter 5+ hops. A congested terminal station 5 hops from an available train cannot signal the policy in 2 passes.
-
-**Fix**: Add a 3rd GCN layer with a residual connection:
-```python
-self.gcn3 = DenseGCNLayer(hidden_dim, edge_dim, hidden_dim)
-# In forward:
-x_res = x  # after gcn2
-x = self.gcn3(x, edges, edge_attrs, num_nodes, num_edges)
-x = x + x_res  # residual connection prevents oversmoothing
-```
-
----
-
-### MAJOR-I — MEDIUM: `InsertStation` dominates action space (77% of actions)
-**File**: `simulator/engine/action_space.go` L25-27
-
-`InsertStationCount = 7 × 30 × 15 = 3150` out of 4108 total actions (76.7%). PPO's softmax distributes probability mass proportionally, biasing the policy toward InsertStation simply due to sheer count.
-
-**Fix (long-term)**: Hierarchical action space — first choose action type (12 options), then choose parameters. This eliminates the count-imbalance bias.
-
-**Fix (short-term)**: No code change, but monitor `action_type_distribution` in TensorBoard. If InsertStation is always chosen, the bias is active.
-
----
-
-### MAJOR-J — MEDIUM: `AddCarriage` indexed by TrainID is unlearnable
-**File**: `simulator/engine/action_space.go` L33-35, `GetActionMask` L333-340
-
-The agent must pick train ID 0–27 to add a carriage. But train IDs are opaque — the observation doesn't expose which train is on which line or how loaded it is. The agent is effectively guessing a train ID randomly.
-
-**Fix**: Change `AddCarriage` to index by `lineID` (7 options) and have the engine automatically select the most loaded active train on that line. This is a cleaner interface that matches the decision the agent actually needs to make.
-
----
-
-### MAJOR-K — LOW: Disabled actions waste logit capacity
-**File**: `simulator/engine/action_space.go` L376-381
-
-`RemoveLine` (7 actions) and `ShortenLine` (14 actions) are permanently masked but still occupy logit positions. The softmax distributes some probability mass over them that must be learned to zero. 
-
-**Fix**: If permanently disabled, remove them from `TotalActionSpaceSize`. Total drops from 4108 → 4087.
-
----
-
-## 5. Reward Analysis (Category C analysis, design problem)
-
-### Current reward formula:
-```
-Go:     R_t = deliveredDelta - 0.05 * totalCrowdPenalty - 50 * isGameOver
-Python: R_t -= 0.05 if action != NoOp
-```
-
-### Problems:
-
-**R1: Sparse delivery reward → zero-gradient early training**
-Most steps produce `deliveredDelta = 0` (no passengers delivered). No reward, no gradient signal. The policy drifts randomly for the first hundreds of updates.
-
-**R2: Crowd penalty scale is 22× too small**
-`AlphaCrowdPenalty = 0.05`. At dangerous overcrowding (overflow=2, cap=6): penalty ≈ 0.14/step. Meanwhile, `deliveredDelta` can be 3/step. The agent ignores crowding because deliveries pay 22× more.
-
-**R3: `BetaGameOverPenalty = 50` is 10% of typical episode return**
-A 1000-step episode delivering 0.5 passengers/step accumulates ~500 reward. Terminal -50 is 10% of that. The agent rationally accepts game-over if early deliveries were high.
-
-**R4: No reward for connecting isolated stations**
-When a new station spawns, connecting it to the network prevents future game-over. The reward only arrives 30–100 steps later when a train makes the first delivery. The action that prevented game-over gets no credit.
-
-**R5: Flat action penalty overrides selective incentives**
--0.05 per non-NoOp makes NoOp the rational early-game choice when `deliveredDelta = 0`.
-
-### Proposed improved reward:
-```python
-def compute_reward(prev_obs, curr_obs, delivered_delta, game_over):
-    r = 0.0
-    
-    # Delivery (clip to reduce variance)
-    r += min(delivered_delta, 5) * 0.5
-    
-    # Survival bonus (dense signal)
-    r += 0.01
-    
-    # Overcrowding gradient (acts well before game-over)
-    for each station:
-        fill = queue_len / capacity
-        if fill > 0.8:
-            r -= 0.1 * (fill - 0.8)
-        if overcrowding_active:
-            r -= 0.3 * overcrowding_progress  # strong near-death penalty
-    
-    # Connectivity bonus (reward connecting isolated stations)
-    newly_reachable = count_newly_reachable_station_pairs(prev, curr)
-    r += 0.2 * newly_reachable
-    
-    # Game-over (much larger)
-    if game_over:
-        r -= 200.0
-    
-    # NO flat action penalty
-    return r
-```
-
----
-
-## 6. PPO Training Analysis (Category C)
-
-### PPO-1 — CRITICAL: Advantage normalization per-minibatch is unstable
-**File**: `ml/ppo.py` L67-68
-
-```python
-mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
-```
-
-Per-minibatch normalization: if all advantages in a minibatch are near-identical (common early when reward=0), `std → 0`, causing `/ 1e-8` to produce massive normalized values → exploding gradient.
-
-**Fix**: Normalize advantages over the **full batch** before minibatch split:
-```python
-# In training loop, before PPO update:
-b_advantages = (b_advantages - b_advantages.mean()) / (b_advantages.std() + 1e-8)
-# Remove normalization from ppo.py update()
-```
-
-### PPO-2 — HIGH: `update_epochs = 2` is insufficient
-Each trajectory is used only 2× before discard. For 4108-way discrete actions, 2 passes over 4096 samples (~2 samples per action logit) cannot produce well-calibrated logits.
-
-**Fix**: Increase to `update_epochs = 4`. Monitor `approx_kl` — if it exceeds 0.02, reduce epochs.
-
-### PPO-3 — HIGH: `ent_coef = 0.01` is too small for 4108-way action space
-Maximum entropy for Categorical(4108) = log(4108) ≈ 8.32. A focused policy (10 valid actions) has entropy ≈ log(10) ≈ 2.3. The entropy bonus is `0.01 × 2.3 = 0.023/step` vs delivery rewards of 1–10/step. The entropy term fails to maintain exploration.
-
-**Fix**: Increase `ent_coef = 0.05`. Or use annealing: start at 0.1, decay to 0.01.
-
-### PPO-4 — MEDIUM: No learning rate schedule
-Constant `lr = 3e-4` makes large updates throughout training. Near convergence, this prevents fine-tuning.
-
-**Fix**: Linear decay:
-```python
-frac = 1.0 - (update - 1.0) / num_updates
-for param_group in agent.optimizer.param_groups:
-    param_group['lr'] = 3e-4 * frac
-```
-
-### PPO-5 — MEDIUM: No value function clipping
-Current `v_loss = 0.5 * ((newvalue - b_returns)**2).mean()` is unclipped. Standard PPO clips value updates to stabilize the critic:
-```python
-v_clipped = b_values[mbinds] + torch.clamp(newvalue - b_values[mbinds], -clip_coef, clip_coef)
-v_loss = 0.5 * torch.max((newvalue - b_returns[mbinds])**2, (v_clipped - b_returns[mbinds])**2).mean()
-```
-
-### PPO-6 — MEDIUM: `gamma=0.99` too low for long episodes
-At `num_steps=128`, `0.99^128 = 0.277`. Even after fixing rollout length, long-horizon consequences (game-over prevention at step 500) are heavily discounted.
-
-**Fix**: After increasing `num_steps`, also increase `gamma = 0.995` to extend effective horizon.
-
-### PPO-7 — LOW: `train_local.py` uses `SyncVectorEnv` instead of `AsyncVectorEnv`
-**File**: `ml/train_local.py` L266
-
-`SyncVectorEnv` runs all envs in the same process. With a Go CGO shared library, this risks goroutine scheduler interference. `train.py` correctly uses `AsyncVectorEnv(context='spawn')`.
-
-**Fix**: Change `train_local.py` L266:
-```python
-envs = gym.vector.AsyncVectorEnv(
-    [make_env(i) for i in range(num_envs)],
-    context='spawn'
-)
-```
-
----
-
-## 7. Inference / Evaluation (Category D)
-
-### INF-1 — HIGH: `eval.py` uses stochastic sampling during evaluation
-**File**: `ml/eval.py` L49
-
-```python
-action, _, _, value = model.get_action_and_value(obs_tensor, mask=mask)
-```
-
-`action=None` → `probs.sample()` → stochastic. Evaluation performance has high variance across runs because the same policy makes different decisions.
-
-**Fix**: Add a deterministic flag:
-```python
-# In model.py get_action_and_value:
-if deterministic:
-    action = torch.argmax(logits.masked_fill(~mask, -1e9), dim=-1)
-else:
-    action = probs.sample()
-```
-
-### INF-2 — HIGH: `eval.py` reports shaped reward, not game score
-`total_reward` includes the -0.05 action penalty (a training artifact). Use `obs["globals"][6]` (normalized after fix) as the primary metric, not accumulated shaped reward.
-
-### INF-3 — MEDIUM: `agent.py` same fragile heuristic for num_nodes/num_edges
-**File**: `ml/agent.py` L83-95
-
-Same fragile loop as `env.py`. Fix both together when C API is updated.
-
----
-
-## 8. Implementation Roadmap & Status
-
-### Completed Tasks Archive (Phases 1–5: Tasks 1–22) ✅
-
-All initial diagnostic fixes, observation improvements, GNN enhancements, action space refactoring, and Phase 5 advanced architecture have been completed and verified on branch `fixes`.
-
-| Phase | Description | Key Changes | Commit |
-|---|---|---|---|
-| **Phase 1: Showstoppers** | Fix PPO & training basics | `num_steps=512`, `ent_coef=0.05`, full-batch advantage norm, score normalization (`/500`), removed flat `-0.05` action penalty, `AsyncVectorEnv` in `train_local.py` | [`e83b59d`](file:///home/leomarshall/mm) |
-| **Phase 2: Observation** | Station congestion & topology | `NodeFeatureDim` 25→29 (+fill_ratio, lines_serving, timer_norm, queue_norm); `GlobalFeatureDim` 8→13 (+station_count, max_fill, overcrowd_count, pending_reward, game_time); exact `num_nodes`/`num_edges` from C API | [`86f21f7`](file:///home/leomarshall/mm) |
-| **Phase 3: GNN Architecture** | Message expressiveness & depth | `GNNLayer` with `dst_feat` in messages; edge update MLP (evolving edge representations); 3rd GNN layer with residual connection; mean+max node pooling | [`ab4e5b3`](file:///home/leomarshall/mm) |
-| **Phase 4: Action & Reward** | Action grounding & incentives | `AddCarriage` indexed by `lineID` (action space 4108→4087); `ConnectivityBonus = 2.0` in `scoring.go`; `AlphaCrowdPenalty` 0.05→0.30; `BetaGameOverPenalty` 50→200 | [`7fecb77`](file:///home/leomarshall/mm) |
-| **Phase 5: Advanced Arch** | Hierarchical head & bilinear | Hierarchical 12-way action type head (eliminates 76.7% `InsertStation` bias); bilinear action scoring from per-node embeddings; train position/load/proximity features (`NodeFeatureDim` 29→32); PPO value clipping (`PPO-5`); $\gamma = 0.995$ (`PPO-6`); deterministic eval (`INF-1`) | [`1fabc63`](file:///home/leomarshall/mm) |
-
----
-
-### Phase 6 — Anti-Redundancy & Scoring Engine Overhaul 🚀 (ACTIVE)
-
-> **Objective**: Directly eliminate the degenerate *"connect every station with every line"* behavior by removing parallel duplicate actions from the action mask and penalizing wasteful/redundant connections.
-
-| # | Task | File(s) | Impact |
-|---|---|---|---|
-| 23 | **Mask Duplicate Direct Lines in Action Mask**<br>In `GetActionMask`, set `outMask[AddLine(u, v)] = false` if a direct connection between station $u$ and station $v$ already exists on ANY active line. | `simulator/engine/action_space.go` | **CRITICAL**: Completely prevents agent from spending line tokens to create duplicate parallel lines between the same two starter stations. |
-| 24 | **Direct Redundancy Penalty in Reward**<br>Add an explicit penalty (e.g. $-0.75$) when `AddLine` or `ExtendLine` connects two stations that are already directly connected or reachable in $\le 2$ hops. Grant a $+0.50$ bonus when connecting a previously isolated station. | `simulator/engine/scoring.go`<br>`ml/env.py` | **CRITICAL**: Replaces neutral feedback with an active negative gradient against redundant infrastructure. |
-| 25 | **Loop Action Thrashing Cooldown / Friction**<br>Mask `OpenLoop` or enforce a cooldown (e.g. 15s) after `CloseLoop` is executed to prevent rapid alternating back and forth without gameplay effect. | `simulator/engine/action_space.go`<br>`simulator/engine/simulator.go` | **HIGH**: Stops random/entropy-driven toggle thrashing of loop actions. |
-| 26 | **Line Opportunity Cost & Under-Utilization Penalty**<br>Penalize active lines carrying 0 passengers over a sustained duration (e.g. 30s) while stations are overcrowded, training the agent to only keep productive lines. | `simulator/engine/scoring.go`<br>`ml/env.py` | **MEDIUM**: Forces the agent to prune or extend ineffective lines. |
+## 2. Active Implementation Tasks
+
+### Phase 6 — Anti-Redundancy & Scoring Engine Overhaul ✅ (COMPLETED)
+
+| # | Task | Target File(s) | Status | Details |
+|---|---|---|---|---|
+| **23** | **Mask Duplicate Direct Lines in Action Mask** | `simulator/engine/action_space.go` | **COMPLETED** | • In `GetActionMask()`, mask `AddLine(u, v) = false` if any active line already has a direct segment between $u$ and $v$.<br>• If any alive station is isolated (degree 0), require new lines to connect to at least one unserved/isolated station or disconnected component.<br>• Verified by `TestAntiRedundancyDuplicateLineMasking`. |
+| **24** | **Direct Redundancy & Isolated Station Penalties** | `simulator/engine/simulator.go`<br>`simulator/engine/scoring.go`<br>`ml/env.py` | **COMPLETED** | • **Isolated Station Bleed Penalty**: $-0.10$ per step in engine & $-0.05$ in Python for each alive station with degree 0.<br>• **Action-level Redundancy Penalty**: $-0.75$ if `AddLine` connects stations already reachable (`CanReach(u, v) == true`).<br>• **Network Expansion Bonus**: $+0.75$ when connecting a previously isolated station.<br>• Verified by `TestIsolatedStationPenaltyAndConnectionBonus`. |
+| **25** | **Loop Action Thrashing Cooldown** | `simulator/engine/action_space.go`<br>`simulator/engine/simulator.go` | **COMPLETED** | • Track `loopToggled[MaxLines]` and `lastLoopToggleTime[MaxLines]` in `Simulator`.<br>• Enforced 10-second cooldown in `GetActionMask` after toggling `CloseLoop` or `OpenLoop` on a line, stopping rapid ping-ponging.<br>• Verified by `TestLoopActionCooldown`. |
+| **26** | **Deterministic Evaluation in Live Game (`agent.py`)** | `ml/agent.py` | **COMPLETED** | • Passed `deterministic=True` to `model.get_action_and_value()` in `agent.py` so the live agent executes greedy/optimal actions instead of stochastic sampling. |
 
 ---
 
 ### Phase 7 — Retraining & Live Verification 🚀 (ACTIVE)
 
-> **Objective**: Train a fresh model from scratch using the new Phase 5/6 architecture and verify in real-time gameplay.
-
-| # | Task | Command / File | Verification Criteria |
+| # | Task | Command / Script | Verification Target |
 |---|---|---|---|
-| 27 | **Train Model from Scratch**<br>Run local PPO training for 2M–5M steps with the new 32-dim observation, hierarchical bilinear policy, and anti-redundancy reward. | `python ml/train_local.py` | • Checkpoint saved to `runs/minimetro_ppo_local/`<br>• NoOp rate 15–35%<br>• Monitored redundant connection rate $< 15\%$ |
-| 28 | **Verify Live Gameplay (`make game`)**<br>Launch the full system (Vite UI, Go backend, Python AI agent) and observe network construction. | `make game` | • Agent loads new checkpoint with zero shape mismatch warnings<br>• Agent builds distinct, branching metro lines<br>• Survives past 500+ game seconds with high score |
-| 29 | **Benchmark Evaluation**<br>Run deterministic evaluation across seeds. | `python ml/eval.py` | • Average score $> 300$<br>• Zero crash or dimension mismatch |
+| **27** | **Rebuild C API & Simulator** | `go build -buildmode=c-shared -o ../ml/libminimetro.so ./c_api/` | **COMPLETED** • Clean compilation with zero warnings.<br>• Python env smoke test passes with updated 32-dim obs & 4087 actions. |
+| **28** | **Train Fresh Model from Scratch** | `python ml/train_local.py` | • Checkpoint saved to `runs/minimetro_ppo_local/model_final.pt`.<br>• Redundant duplicate connection rate drops to 0%.<br>• Isolated station connection rate $> 85\%$. |
+| **29** | **Verify Live Gameplay (`make game`)** | `make game` | • AI agent loads new checkpoint without shape mismatches.<br>• Builds distinct, branching transit lines without parallel duplicates.<br>• Survives past 500+ game seconds. |
 
 ---
 
-## 9. Expected Impact per Change
+## 3. Root Cause Analysis & Technical Design
 
-| Change | Impact | Confidence |
+### Why the AI Learned Parallel Connections
+
+1. **The Free Train Mechanism** ([`simulator/engine/simulator.go`](file:///home/leomarshall/mm/simulator/engine/simulator.go)):
+   `addLine` automatically calls `s.spawnOrCreateTrain(id)`. Adding a duplicate line between existing stations adds a train to those stations, immediately accelerating passenger pickups.
+2. **Action Mask Permissiveness** ([`simulator/engine/action_space.go`](file:///home/leomarshall/mm/simulator/engine/action_space.go)):
+   `AddLine(u, v)` previously only checked station alive status and token availability. It never verified whether an active direct segment already existed.
+3. **No Isolated Station Cost**:
+   When a new station spawned with degree 0, it incurred 0 penalty until queue overflowed past capacity (6 passengers). By adding an explicit per-step isolated station penalty, the opportunity cost of ignoring new stations is immediately felt.
+
+### Technical Fix Architecture
+
+```
+Action Selection
+  │
+  ├─► Action Mask (action_space.go)
+  │     ├── Reject AddLine(u, v) if (u, v) direct segment exists on any line
+  │     ├── Reject AddLine(u, v) if isolated station exists and neither u nor v is isolated
+  │     └── Reject CloseLoop/OpenLoop if toggled < 10s ago (cooldown)
+  │
+  ├─► Action Execution (simulator.go)
+  │     ├── Check reachability before action
+  │     ├── Apply -0.75 penalty if stations were already reachable
+  │     └── Apply +0.75 bonus if connecting previously isolated/disconnected stations
+  │
+  └─► Per-Step Reward (scoring.go & env.py)
+        ├── Passenger deliveries: +1.0 each
+        ├── Station crowd penalty: -0.30 * overflow
+        ├── Isolated station penalty: -0.10 * count(degree == 0 stations)
+        └── Survival bonus: +0.01 / step
+```
+
+---
+
+## 4. Current System Specifications
+
+- **Observation Shapes**:
+  - `nodes`: `[30, 32]` (32 features per station, including fill ratio, lines serving, incoming train load & proximity)
+  - `edges`: `[2, 200]`
+  - `edge_attrs`: `[200, 10]`
+  - `globals`: `[13]` (normalized score, resource tokens, active stations, max fill, time)
+  - `action_mask`: `[4087]`
+- **Action Space**:
+  - Total size: `4087` (NoOp: 1, AddLine: 435, ExtendLine: 420, InsertStation: 3150, AddTrain: 7, AddCarriage: 7, UpgradeInterchange: 30, CloseLoop: 7, OpenLoop: 7, ChooseReward: 30).
+  - Policy: Hierarchical 12-way action head with bilinear node scoring.
+
+---
+
+## 5. Active File Reference Map
+
+| Component | Target File | Active Edits Required |
 |---|---|---|
-| Fix eval.py hidden_dim | Fixes broken evaluation | CERTAIN |
-| Remove action penalty | Reduces passivity; more exploration | HIGH |
-| Normalize score global | Stabilizes critic gradient | HIGH |
-| num_steps 128 → 512 | Much better credit assignment | VERY HIGH |
-| ent_coef 0.01 → 0.05 | More diverse actions early | MEDIUM-HIGH |
-| Per-batch advantage norm | Prevents early exploding gradient | HIGH |
-| Add fill_ratio to nodes | Agent identifies congested stations | HIGH |
-| mean+max pooling | Policy distinguishes worst station | MEDIUM-HIGH |
-| dst_feat in messages | More expressive GNN | MEDIUM |
-| 3rd GCN layer | Longer-range propagation | MEDIUM |
-| AddCarriage by lineID | Agent can correctly target underserved lines | MEDIUM |
-| Survival reward | Longer episodes; network building | MEDIUM |
-| Connectivity bonus | Reward for connecting isolated stations | MEDIUM |
-| BetaGameOverPenalty × 4 | Stronger avoidance of game-over | MEDIUM |
-
----
-
-## 10. Metrics for Determining Real Improvement
-
-### Primary (track per TensorBoard update):
-1. **Game score** (obs["globals"][6] normalized at episode end) — target: >100 after Phase 1, >300 after Phase 2
-2. **Episode length** — target: >500 steps after Phase 1
-3. **NoOp rate** (fraction of steps with action_id==0) — healthy: 15–35%
-
-### Diagnostic:
-4. **Entropy** — should stay >1.0. Collapse below 0.5 = add more ent_coef
-5. **approx_kl** — target: 0.005–0.02. Above 0.05 → reduce LR
-6. **value_loss** — should decrease over training
-7. **Max station queue at game-over** — should decrease (model learns to prevent crowding)
-
-### Infrastructure quality (add custom logging):
-8. **Average line length** — should increase (agent extends lines)
-9. **Fraction of station pairs that are routable** — should increase
-10. **Action type distribution** — monitor all types; none should be zero
-
-### Experiment isolation rule:
-Run 3 seeds per change for 2M steps. A change is confirmed if 2 of 3 seeds improve and the mean metric improves by >10% at 2M steps.
-
----
-
-## Appendix: File Reference Map
-
-| File | Key Issues |
-|---|---|
-| [`simulator/engine/observation.go`](file:///home/leomarshall/mm/simulator/engine/observation.go) | Unbounded score, missing train info, missing fill ratio |
-| [`simulator/engine/action_space.go`](file:///home/leomarshall/mm/simulator/engine/action_space.go) | InsertStation dominates, disabled actions waste space |
-| [`simulator/engine/scoring.go`](file:///home/leomarshall/mm/simulator/engine/scoring.go) | Alpha too small (0.05), Beta too small (50) |
-| [`simulator/engine/simulator.go`](file:///home/leomarshall/mm/simulator/engine/simulator.go) | shortenLine() is a no-op |
-| [`simulator/c_api/main.go`](file:///home/leomarshall/mm/simulator/c_api/main.go) | No num_nodes/num_edges return, shared boolMaskBuf |
-| [`ml/env.py`](file:///home/leomarshall/mm/ml/env.py) | Fragile heuristic node count, flat -0.05 penalty |
-| [`ml/model.py`](file:///home/leomarshall/mm/ml/model.py) | Mean-only pooling, no edge update, 2 GCN layers, no dst_feat |
-| [`ml/ppo.py`](file:///home/leomarshall/mm/ml/ppo.py) | Per-minibatch advantage norm, no value clipping, low ent_coef |
-| [`ml/train.py`](file:///home/leomarshall/mm/ml/train.py) | num_steps=128 too small, no LR schedule |
-| [`ml/train_local.py`](file:///home/leomarshall/mm/ml/train_local.py) | SyncVectorEnv instead of AsyncVectorEnv |
-| [`ml/agent.py`](file:///home/leomarshall/mm/ml/agent.py) | Stochastic eval, fragile node count heuristic |
-| [`ml/eval.py`](file:///home/leomarshall/mm/ml/eval.py) | Wrong hidden_dim (128 vs 256 trained), reports shaped reward not score |
-
----
-
-## 11. Root Cause Analysis — "Connects Every Station With Every Line"
-
-> This symptom is **not a failure of the GNN to understand Metro networks**.
-> It is the **gradient-optimal response** to the current reward function given the action space.
-> The model has learned a perfectly rational policy — for the wrong objective.
-> Fixing the incentive structure is the primary fix; architectural improvements only help it learn faster once the incentives are correct.
-
-### The causal chain
-
-Every step of the following chain is traceable to specific lines in the codebase.
-
----
-
-#### Step 1 — The only positive reward is passenger delivery
-
-**File**: [`simulator/engine/scoring.go` L33-34](file:///home/leomarshall/mm/simulator/engine/scoring.go#L33-L34)
-
-```go
-func (s *Simulator) ComputeStepReward(deliveredDelta int) float64 {
-    reward := float64(deliveredDelta)   // ← sole source of positive reward
-```
-
-Adding any new line segment between stations A and B makes it possible for passengers at A to reach B (and vice versa). More reachable pairs = more potential deliveries per step = higher expected reward. The agent has correctly learned: **more connections → more reward**. This is true. The problem is that it is *also* true for redundant, wasteful connections.
-
----
-
-#### Step 2 — There is no penalty proportional to resource waste
-
-**File**: [`ml/env.py` L173-175](file:///home/leomarshall/mm/ml/env.py#L173-L175)
-
-```python
-if action_id != 0:
-    reward -= 0.05     # same cost for a critical connection and a redundant one
-```
-
-Adding line 4 between stations 3 and 7 (which are already connected by lines 0, 1, and 2) costs exactly `-0.05` — identical to the cost of connecting a completely isolated station for the first time. There is zero marginal penalty for redundancy. The agent has no gradient signal telling it "this connection added nothing."
-
----
-
-#### Step 3 — Spending a resource token has no observable opportunity cost
-
-**File**: [`simulator/engine/observation.go` L197](file:///home/leomarshall/mm/simulator/engine/observation.go#L197), [`action_space.go` GetActionMask L188-204](file:///home/leomarshall/mm/simulator/engine/action_space.go#L188-L204)
-
-`globals[0] = float32(s.State.Resources.Lines)` shows the raw count of remaining line tokens. When the agent spends the last line token on a redundant connection, a new station spawns 40 steps later and cannot be connected — causing overcrowding and eventual game-over.
-
-This consequence is **invisible** because:
-1. The rollout window (`num_steps=128`) is shorter than the time between spending the token and the new station spawning + overcrowding (often 150–300 steps).
-2. Even if it were in the window, `0.99^150 ≈ 0.22` — 78% discounted away.
-
-The agent rationally treats line tokens as cheap because it never observes the cost of misusing them.
-
-**File**: [`ml/train.py` L27](file:///home/leomarshall/mm/ml/train.py#L27)
-
-```python
-num_steps = 128    # 128s rollout; consequences land at 150–300s → invisible
-```
-
----
-
-#### Step 4 — The GNN cannot see that a connection is redundant
-
-**File**: [`ml/model.py` L110-115](file:///home/leomarshall/mm/ml/model.py#L110-L115)
-
-```python
-pooled = (x * node_mask.unsqueeze(-1)).sum(dim=1) / num_nodes.clamp(min=1).float()
-```
-
-After mean-pooling, a state where stations 3 and 7 are connected by 1 line versus 4 lines produces **nearly the same pooled embedding**:
-- `nodes[23]` (degree) changes slightly.
-- Everything else — kind, queue breakdown, position — is identical.
-
-The actor maps this near-identical embedding to near-identical logits. It cannot learn to suppress `AddLine(3,7)` just because stations 3 and 7 are already well-served, because the representation doesn't distinguish those two states strongly enough.
-
----
-
-#### Step 5 — The action mask confirms the action is "valid", not "useful"
-
-**File**: [`simulator/engine/action_space.go` L188-204](file:///home/leomarshall/mm/simulator/engine/action_space.go#L188-L204)
-
-The action mask marks `AddLine(u, v)` as valid whenever:
-- Both stations are alive
-- A line token is available
-- (Optionally) a tunnel token is available if water crossing is needed
-
-It does **not** check whether stations u and v are already reachable from each other. A fully redundant connection is always presented as a valid choice. From the mask alone, the agent cannot distinguish "first connection" from "fifth connection between the same pair."
-
----
-
-### Summary: Why this specific degenerate strategy is learned
-
-| Cause | Mechanism | File |
-|---|---|---|
-| **Reward**: only deliveries count | More connections → more reachable pairs → more deliveries | `scoring.go` L34 |
-| **Penalty**: flat cost, not waste-proportional | Redundant = first connection in terms of cost | `env.py` L173-175 |
-| **Rollout**: too short to see opportunity cost | Spending last line token on redundant route has invisible consequence | `train.py` L27 |
-| **GNN**: mean pool can't distinguish 1 vs 4 lines | No structural gradient to stop adding lines | `model.py` L112 |
-| **Mask**: validity ≠ usefulness | Redundant connections always presented as legal | `action_space.go` L188-204 |
-| **Observation**: no reachability feature | Agent can't see "these stations are already connected" | `observation.go` (missing) |
-
-All five causes are **active simultaneously**. Any one alone might be overcome by the agent through exploration; all five together create an inescapable local optimum.
-
----
-
-### Targeted fixes for this specific symptom
-
-These are ordered: fix earlier ones first, re-evaluate, then proceed.
-
-#### Fix 1 — Add a network connectivity bonus to the reward (HIGHEST IMPACT)
-**Rationale**: Make the *first* connection between two previously disconnected station-type pairs explicitly valuable. Make redundant connections neutral or mildly penalised.
-
-In `scoring.go`, expose a new reward term. Implement in Python (easier to iterate):
-
-```python
-# In env.py step(), after receiving Go reward:
-
-# Count station pairs newly reachable (requires exposing CanReach through C API,
-# or approximating by checking adjacency list change in observation)
-newly_connected_pairs = count_newly_routable_pairs(prev_obs, curr_obs)
-redundant_connection = is_redundant(action_id, curr_obs)  # stations already reachable
-
-reward += 0.5 * newly_connected_pairs          # reward first connections
-reward -= 0.1 * redundant_connection           # penalise redundant ones
-```
-
-The key insight: `newly_connected_pairs` is 0 when you add the 4th line between stations already connected, but >0 when you connect an isolated station for the first time.
-
-To implement `is_redundant`: before the action is applied, check if the two stations in an `AddLine(u,v)` or `ExtendLine` action are already reachable from each other via `FindOptimalRoute`. Expose this through a new C API call `CanReach(handle, fromID, toID)`.
-
-#### Fix 2 — Remove the flat `-0.05` action penalty
-**File**: [`ml/env.py` L173-175](file:///home/leomarshall/mm/ml/env.py#L173-L175)
-
-```python
-# DELETE these three lines:
-if action_id != 0:
-    reward -= 0.05
-```
-
-Replace with the resource-aware penalty from Fix 1 only. A flat penalty does not discriminate useful from wasteful actions, and trains passivity (NoOp) as the safe default.
-
-#### Fix 3 — Increase rollout length so opportunity cost becomes visible
-**File**: [`ml/train.py` L27](file:///home/leomarshall/mm/ml/train.py#L27)
-
-```python
-num_steps = 512   # was 128
-```
-
-With 512 steps, the consequence of spending the last line token on a redundant connection (new station spawns unconnected → overcrowding → game-over at ~step 300) falls **within** the GAE window. At γ=0.99 and step 300: `0.99^300 ≈ 0.05` — still heavily discounted. Consider γ=0.999: `0.999^300 ≈ 0.74`.
-
-#### Fix 4 — Add a `reachability_already` flag to the action mask observation
-**File**: New feature in observation
-
-Rather than modifying the mask (which would hide the action entirely), add a per-action feature that signals "these stations are already connected." The simplest approach: add a global binary feature `is_network_saturated` (all existing stations reachable from each other) and a per-station feature `num_lines_serving_this_station / 7.0`.
-
-When the GNN sees that all stations already have 2+ lines serving them and the agent tries `AddLine`, the policy should learn to down-weight this action. But it can only learn this if the observation carries the signal.
-
-**File**: [`simulator/engine/observation.go` L89-129](file:///home/leomarshall/mm/simulator/engine/observation.go#L89-L129)
-
-```go
-// Add to node features:
-numLinesServingStation := 0
-for _, line := range s.State.Lines {
-    if !line.Removed {
-        for _, stID := range line.Stations {
-            if stID == i {
-                numLinesServingStation++
-                break
-            }
-        }
-    }
-}
-outNodes[base+26] = float32(numLinesServingStation) / 7.0  // normalized 0–1
-```
-
-When `nodes[26]` is already 0.86 (6/7 lines serve this station), the GNN will learn to penalise `AddLine` targeting it.
-
-#### Fix 5 — Mean+max pool so the model can see the "least served" station
-**File**: [`ml/model.py` L110-115](file:///home/leomarshall/mm/ml/model.py#L110-L115)
-
-```python
-# Replace:
-pooled = (x * node_mask.unsqueeze(-1)).sum(dim=1) / num_nodes.clamp(min=1).float()
-
-# With:
-mean_pool = (x * node_mask.unsqueeze(-1)).sum(1) / num_nodes.clamp(min=1).float()
-x_masked = x.masked_fill(~node_mask.unsqueeze(-1), -1e9)
-max_pool  = x_masked.max(dim=1).values  # captures "worst" station
-
-# Also add min pool — captures "best served" station (for detecting redundancy):
-x_masked_min = x.masked_fill(~node_mask.unsqueeze(-1), 1e9)
-min_pool = x_masked_min.min(dim=1).values
-
-pooled = torch.cat([mean_pool, max_pool, min_pool], dim=-1)  # [B, 3H]
-```
-
-Update `fc_actor` and `fc_critic` input dim: `hidden_dim * 2` → `hidden_dim * 4` (global + 3×pooled).
-
-The `min_pool` is specifically useful here: it represents the "best served" or "least needy" station. When `min_pool` shows all stations are well-connected, the actor learns to reduce `AddLine` logits.
-
----
-
-### Verification: how to confirm this symptom is fixed
-
-1. **Log redundant connection rate**: After each episode, count how many `AddLine` / `ExtendLine` actions connected station pairs that were already reachable before the action. This should drop from ~70–90% (current) toward ~10–20%.
-
-2. **Log average lines per station-pair**: Compute `total_edge_count / unique_station_pairs_connected`. This should be close to 1.0 (each pair served by ~1 line) rather than growing above 2+.
-
-3. **Sanity check via game score**: If the symptom is fixed, more line tokens will be available for new stations, leading to longer episodes and higher scores.
-
-4. **Plot action type over training**: `AddLine` should be selected less frequently as training progresses (agent learns it's often redundant), while `ExtendLine` and `AddTrain` should remain stable or increase.
+| **Action Mask** | [`simulator/engine/action_space.go`](file:///home/leomarshall/mm/simulator/engine/action_space.go) | Mask duplicate direct lines & loop cooldown |
+| **Simulator Logic** | [`simulator/engine/simulator.go`](file:///home/leomarshall/mm/simulator/engine/simulator.go) | Record loop toggle timestamp & action delta rewards |
+| **Reward Engine** | [`simulator/engine/scoring.go`](file:///home/leomarshall/mm/simulator/engine/scoring.go) | Add isolated station penalty & redundancy penalties |
+| **Gym Environment** | [`ml/env.py`](file:///home/leomarshall/mm/ml/env.py) | Python reward shaping for isolated stations |
+| **Live Agent** | [`ml/agent.py`](file:///home/leomarshall/mm/ml/agent.py) | Deterministic action selection for live game |
+| **C Shared Library** | `ml/libminimetro.so` | Rebuild after Go engine modifications |

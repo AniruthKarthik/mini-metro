@@ -6,9 +6,11 @@ import (
 )
 
 type Simulator struct {
-	State        GameState
-	graphVersion uint64 // tracks which TopologyVersion the cached Graph was built for
-	rng          *rand.Rand
+	State              GameState
+	graphVersion       uint64 // tracks which TopologyVersion the cached Graph was built for
+	rng                *rand.Rand
+	loopToggled        [MaxLines]bool
+	lastLoopToggleTime [MaxLines]float64
 }
 
 func (s *Simulator) RNG() *rand.Rand {
@@ -420,7 +422,61 @@ func (s *Simulator) removeCarriage(a RemoveCarriage) error {
 }
 
 func (s *Simulator) removeLine(a RemoveLine) error {
-	return errors.New("rule violation: lines cannot be removed or shortened")
+	if a.LineID < 0 || a.LineID >= len(s.State.Lines) {
+		return errors.New("invalid line ID")
+	}
+
+	line := &s.State.Lines[a.LineID]
+	if line.Removed {
+		return errors.New("line is already removed")
+	}
+
+	line.Removed = true
+	s.State.Resources.Grant(RewardLine)
+	s.State.TopologyVersion++
+
+	// refund tunnels used by this line
+	for _, isTunnel := range line.TunnelAt {
+		if isTunnel {
+			s.State.Resources.Grant(RewardTunnel)
+		}
+	}
+	if line.IsLoop && line.LoopTunnel {
+		s.State.Resources.Grant(RewardTunnel)
+	}
+
+	// deactivate trains in this line and refund train and carriage resources
+	for i := range s.State.Trains {
+		tr := &s.State.Trains[i]
+		if tr.LineID == a.LineID && tr.Active {
+			tr.Active = false
+			s.State.Resources.Grant(RewardTrain)
+			if tr.Carriages > 1 {
+				extra := tr.Carriages - 1
+				for k := 0; k < extra; k++ {
+					s.State.Resources.Grant(RewardCarriage)
+				}
+				tr.Carriages = 1
+			}
+			if len(tr.Passengers) > 0 {
+				stIdx := tr.Segment
+				if tr.Progress >= 0.5 && stIdx+1 < len(line.Stations) {
+					stIdx = tr.Segment + 1
+				}
+				if stIdx < 0 || stIdx >= len(line.Stations) {
+					stIdx = 0
+				}
+				stID := line.Stations[stIdx]
+				if stID >= 0 && stID < len(s.State.Stations) {
+					st := &s.State.Stations[stID]
+					st.Queue = append(st.Queue, tr.Passengers...)
+				}
+				tr.Passengers = nil
+			}
+		}
+	}
+
+	return nil
 }
 
 func (s *Simulator) chooseReward(a ChooseReward) error {
@@ -508,6 +564,10 @@ func (s *Simulator) closeLoop(a CloseLoop) error {
 	line.IsLoop = true
 	line.LoopTunnel = a.UseTunnel
 	s.State.TopologyVersion++
+	if a.LineID >= 0 && a.LineID < MaxLines {
+		s.loopToggled[a.LineID] = true
+		s.lastLoopToggleTime[a.LineID] = s.State.GameTimeSeconds
+	}
 	return nil
 }
 
@@ -528,6 +588,10 @@ func (s *Simulator) openLoop(a OpenLoop) error {
 	}
 	line.IsLoop = false
 	line.LoopTunnel = false
+	if a.LineID >= 0 && a.LineID < MaxLines {
+		s.loopToggled[a.LineID] = true
+		s.lastLoopToggleTime[a.LineID] = s.State.GameTimeSeconds
+	}
 	// trains that were heading "through" the wrap-around now need a valid direction
 	for i := range s.State.Trains {
 		tr := &s.State.Trains[i]
@@ -698,7 +762,9 @@ type SimInfo struct {
 // or until an asynchronous event (station spawn, reward choice, game over) triggers.
 func (s *Simulator) StepMacro(action Action, duration float64) (obs Observation, reward float64, done bool, info SimInfo) {
 	info.EventTriggered = "none"
+	actionReward := 0.0
 	if action != nil {
+		actionReward = s.evaluateActionReward(action)
 		_ = s.ApplyAction(action)
 	}
 
@@ -741,7 +807,102 @@ func (s *Simulator) StepMacro(action Action, duration float64) (obs Observation,
 		}
 	}
 
-	stepReward := s.ComputeStepReward(s.State.Score - initialScore)
+	stepReward := s.ComputeStepReward(s.State.Score-initialScore) + actionReward
 
 	return s.Observation(), stepReward, !s.State.Alive, info
+}
+
+// hasDirectSegment returns true if an active line already has a direct segment between stations u and v.
+func (s *Simulator) hasDirectSegment(u, v int) bool {
+	for lID := 0; lID < len(s.State.Lines); lID++ {
+		line := &s.State.Lines[lID]
+		if line.Removed || len(line.Stations) < 2 {
+			continue
+		}
+		for i := 0; i < len(line.Stations)-1; i++ {
+			s1, s2 := line.Stations[i], line.Stations[i+1]
+			if (s1 == u && s2 == v) || (s1 == v && s2 == u) {
+				return true
+			}
+		}
+		if line.IsLoop && len(line.Stations) >= 3 {
+			s1, s2 := line.Stations[len(line.Stations)-1], line.Stations[0]
+			if (s1 == u && s2 == v) || (s1 == v && s2 == u) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// stationDegree returns the number of active lines that pass through station stID.
+func (s *Simulator) stationDegree(stID int) int {
+	deg := 0
+	for lID := 0; lID < len(s.State.Lines); lID++ {
+		line := &s.State.Lines[lID]
+		if line.Removed || len(line.Stations) < 2 {
+			continue
+		}
+		for _, sid := range line.Stations {
+			if sid == stID {
+				deg++
+				break
+			}
+		}
+	}
+	return deg
+}
+
+// evaluateActionReward scores actions before execution: rewarding isolated station connection,
+// and penalizing redundant connections that duplicate existing reachability.
+func (s *Simulator) evaluateActionReward(action Action) float64 {
+	if action == nil {
+		return 0.0
+	}
+	s.rebuildGraphIfNeeded()
+
+	switch a := action.(type) {
+	case AddLine:
+		if len(a.Stations) >= 2 {
+			u, v := a.Stations[0], a.Stations[1]
+			degU := s.stationDegree(u)
+			degV := s.stationDegree(v)
+			if degU == 0 || degV == 0 {
+				return ConnectIsolatedBonus
+			}
+			if !s.CanReach(u, v) {
+				return 0.50
+			}
+			return -RedundantActionPenalty
+		}
+	case ExtendLine:
+		if a.LineID >= 0 && a.LineID < len(s.State.Lines) && a.StationID >= 0 && a.StationID < len(s.State.Stations) {
+			line := &s.State.Lines[a.LineID]
+			if !line.Removed && len(line.Stations) > 0 {
+				targetDeg := s.stationDegree(a.StationID)
+				if targetDeg == 0 {
+					return ConnectIsolatedBonus
+				}
+				var endSt int
+				if a.FromFront {
+					endSt = line.Stations[0]
+				} else {
+					endSt = line.Stations[len(line.Stations)-1]
+				}
+				if !s.CanReach(endSt, a.StationID) {
+					return 0.50
+				}
+				return -0.25
+			}
+		}
+	case InsertStation:
+		if a.StationID >= 0 && a.StationID < len(s.State.Stations) {
+			if s.stationDegree(a.StationID) == 0 {
+				return ConnectIsolatedBonus
+			}
+		}
+	case AddTrain, AddCarriage:
+		return 0.10
+	}
+	return 0.0
 }

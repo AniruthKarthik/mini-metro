@@ -11,6 +11,13 @@ const (
 	// Gives positive gradient for building a connected network, not just spamming connections.
 	// Scaled so a 3-station, 2-type network (~1 pair) gives +2.0/step vs ~1.0/step from delivery.
 	ConnectivityBonus = 2.0
+	// PHASE-6: IsolatedStationPenalty — penalize each alive station with degree 0 (unserved).
+	// Gives immediate feedback as soon as a new station spawns, preventing the agent from ignoring it.
+	IsolatedStationPenalty = 0.10
+	// PHASE-6: RedundantActionPenalty — penalize actions connecting stations already reachable.
+	RedundantActionPenalty = 0.75
+	// PHASE-6: ConnectIsolatedBonus — reward connecting an isolated station to the network.
+	ConnectIsolatedBonus = 0.75
 )
 
 // StationCrowdPenalty calculates a non-linear overcrowding penalty for a station.
@@ -80,6 +87,19 @@ func (s *Simulator) ComputeStepReward(deliveredDelta int) float64 {
 	if !s.State.Alive {
 		reward -= BetaGameOverPenalty
 	}
+
+	// PHASE-6: Isolated station penalty
+	// Penalize alive stations with degree 0 (unserved by any line).
+	// Immediately creates a negative reward gradient as soon as a new station spawns,
+	// teaching the policy not to leave stations unconnected.
+	isolatedCount := 0
+	for i := range s.State.Stations {
+		st := &s.State.Stations[i]
+		if st.Alive && s.stationDegree(i) == 0 {
+			isolatedCount++
+		}
+	}
+	reward -= IsolatedStationPenalty * float64(isolatedCount)
 
 	// PHASE-4: connectivity bonus — reward reachable distinct-type station pairs.
 	// Prevents the agent from adding redundant connections (extra lines between already-

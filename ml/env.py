@@ -183,6 +183,10 @@ class MiniMetroEnv(gym.Env):
             if fill_approx > 0.8:
                 reward -= 0.1 * (fill_approx - 0.8)  # early-warning gradient
 
+            # PHASE-6: Python-side isolated station penalty (node[26] = lines serving station / 7.0)
+            if float(node[26]) == 0.0:
+                reward -= 0.05
+
         info = {}
         return obs, reward, done, False, info
         

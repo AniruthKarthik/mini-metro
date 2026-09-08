@@ -202,10 +202,10 @@ def run_training():
     # TRAINING CONFIGURATION
     # --------------------------------------------------------
 
-    num_envs = 16
-    num_steps = 128
+    num_envs = 8
+    num_steps = 512          # PHASE-1/6: longer rollout for credit assignment
 
-    total_timesteps = 40_000
+    total_timesteps = 40_960
 
     # Number of environment transitions per update.
     rollout_size = num_envs * num_steps

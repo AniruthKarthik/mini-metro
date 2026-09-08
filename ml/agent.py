@@ -131,7 +131,7 @@ def main():
 
                         with torch.no_grad():
                             action, _, _, _ = model.get_action_and_value(
-                                obs_tensor, mask=obs_tensor["action_mask"]
+                                obs_tensor, mask=obs_tensor["action_mask"], deterministic=True
                             )
 
                         action_id = action.item()
