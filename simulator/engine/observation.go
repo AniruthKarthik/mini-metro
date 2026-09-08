@@ -63,7 +63,7 @@ func (s *Simulator) Observation() Observation {
 }
 
 const (
-	NodeFeatureDim   = 29 // PHASE-2: was 25; added fill_ratio, lines_serving, timer_norm, queue_norm
+	NodeFeatureDim   = 32 // PHASE-5: was 29; added incoming_train_count, incoming_train_load, nearest_train_proximity
 	EdgeFeatureDim   = 10
 	GlobalFeatureDim = 13 // PHASE-2: was 8; added station_count, max_fill, overcrowd_count, pending_reward, game_time
 )
@@ -97,6 +97,82 @@ func (s *Simulator) WriteVectorizedObservation(outNodes []float32, outEdges []in
 			if stID >= 0 && stID < N && !seen[stID] {
 				linesServingStation[stID]++
 				seen[stID] = true
+			}
+		}
+	}
+
+	// ---- PHASE-5 Task 21: Build per-station train tracking lookup ----
+	type stationTrainInfo struct {
+		count        int
+		paxCount     int
+		totalCap     int
+		maxProximity float64
+	}
+	stTrains := make([]stationTrainInfo, N)
+
+	for trIdx := range s.State.Trains {
+		tr := &s.State.Trains[trIdx]
+		if !tr.Active || tr.LineID < 0 || tr.LineID >= len(s.State.Lines) {
+			continue
+		}
+		line := &s.State.Lines[tr.LineID]
+		if line.Removed || len(line.Stations) < 2 {
+			continue
+		}
+
+		curStID := -1
+		if tr.Segment >= 0 && tr.Segment < len(line.Stations) {
+			curStID = line.Stations[tr.Segment]
+		}
+
+		var nextSegIdx int
+		if line.IsLoop {
+			n := len(line.Stations)
+			nextSegIdx = (tr.Segment + tr.Direction + n) % n
+		} else {
+			nextSegIdx = tr.Segment + tr.Direction
+			if nextSegIdx < 0 {
+				nextSegIdx = 0
+			}
+			if nextSegIdx >= len(line.Stations) {
+				nextSegIdx = len(line.Stations) - 1
+			}
+		}
+		nextStID := -1
+		if nextSegIdx >= 0 && nextSegIdx < len(line.Stations) {
+			nextStID = line.Stations[nextSegIdx]
+		}
+
+		cap := tr.Capacity
+		if cap <= 0 {
+			cap = 6
+		}
+		pax := len(tr.Passengers)
+		prog := tr.Progress
+		if prog < 0 {
+			prog = 0
+		}
+		if prog > 1 {
+			prog = 1
+		}
+
+		if curStID >= 0 && curStID < N && (tr.DwellRemaining > 0 || prog < 0.15) {
+			info := &stTrains[curStID]
+			info.count++
+			info.paxCount += pax
+			info.totalCap += cap
+			if 1.0 > info.maxProximity {
+				info.maxProximity = 1.0
+			}
+		}
+
+		if nextStID >= 0 && nextStID < N && nextStID != curStID {
+			info := &stTrains[nextStID]
+			info.count++
+			info.paxCount += pax
+			info.totalCap += cap
+			if prog > info.maxProximity {
+				info.maxProximity = prog
 			}
 		}
 	}
@@ -165,6 +241,28 @@ func (s *Simulator) WriteVectorizedObservation(outNodes []float32, outEdges []in
 		// [28] total queue normalized by capacity (same signal as [25] but kept separate
 		//      so the GNN can distinguish "4/6" from "4/8" even if fill ratio is similar)
 		outNodes[base+28] = float32(len(st.Queue)) / float32(defaultStationCapacity)
+
+		// ---- PHASE-5 new node features (Task 21) ----
+
+		// [29] incoming/present trains count normalized (1 train = 0.25, 4+ trains = 1.0)
+		tInfo := stTrains[i]
+		outNodes[base+29] = float32(tInfo.count) / 4.0
+		if outNodes[base+29] > 1.0 {
+			outNodes[base+29] = 1.0
+		}
+
+		// [30] incoming/present train passenger load (0.0 = empty or no trains, 1.0 = fully packed)
+		if tInfo.totalCap > 0 {
+			outNodes[base+30] = float32(tInfo.paxCount) / float32(tInfo.totalCap)
+			if outNodes[base+30] > 1.0 {
+				outNodes[base+30] = 1.0
+			}
+		} else {
+			outNodes[base+30] = 0.0
+		}
+
+		// [31] nearest train arrival proximity in [0, 1] (1.0 = at platform / arriving now, 0.0 = no train)
+		outNodes[base+31] = float32(tInfo.maxProximity)
 	}
 
 	edgeCount := 0

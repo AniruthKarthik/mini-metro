@@ -12,7 +12,7 @@ from websockets.sync.client import connect
 from model import MiniMetroActorCritic
 
 # Observation dims — must match simulator/engine/observation.go constants
-NODE_DIM   = 29   # PHASE-2: was 25
+NODE_DIM   = 32   # PHASE-5: was 29
 EDGE_DIM   = 10
 GLOBAL_DIM = 13   # PHASE-2: was 8
 MAX_NODES  = 30

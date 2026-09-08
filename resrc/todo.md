@@ -616,14 +616,36 @@ Go build: ALL OK (libminimetro.so rebuilt)
 
 **Next**: Phase 5 — Advanced Architecture (hierarchical action head, bilinear scoring, train position features, value clipping).
 
-### Phase 5 — Advanced Architecture (experimental)
+### Phase 5 — Advanced Architecture ✅ COMPLETED (branch: fixes)
 
-| # | Change |
-|---|---|
-| 19 | Hierarchical action head (action type first, then params) |
-| 20 | Bilinear action scoring using per-node embeddings directly |
-| 21 | Add train position/load to node features |
-| 22 | Value function clipping in PPO |
+| # | Change | File(s) |
+|---|---|---|
+| 19 | Hierarchical action head (action type first, then params) | `ml/model.py` |
+| 20 | Bilinear action scoring using per-node embeddings directly | `ml/model.py` |
+| 21 | Add train position/load/proximity to node features (NodeDim: 29→32) | `observation.go` + `env.py` + `agent.py` + `model.py` |
+| 22 | Value function clipping in PPO (`PPO-5`) + gamma=0.995 (`PPO-6`) + deterministic eval (`INF-1`) | `ml/ppo.py` + `ml/train.py` + `ml/train_local.py` + `ml/eval.py` |
+
+**Status**: All 4 tasks applied and smoke-tested.
+
+**Changes**:
+| Task | File(s) | Change |
+|---|---|---|
+| 19: Hierarchical action head | `ml/model.py` | 12-way action type selector head (`type_net`); factorizes $P(a) = P(\text{type } t) \cdot P(a \mid t)$; eliminates 76.7% `InsertStation` dominance bias while keeping exact 4087-way action ID compatibility |
+| 20: Bilinear action scoring | `ml/model.py` | `AddLine` (435) scored via symmetric bilinear form $S = \frac{1}{2}(q_u^T k_v + q_v^T k_u)$; `UpgradeInterchange` (30) scored via station projection; `ExtendLine` (420) and `InsertStation` (3150) scored via factored line/end and line/segment embeddings against station embeddings $x_u$ |
+| 21: Train position/load/prox | `engine/observation.go`, `ml/env.py`, `ml/agent.py`, `ml/model.py` | `NodeFeatureDim` 29→32: +incoming_train_count ([29]), +incoming_train_load ([30]), +nearest_train_proximity ([31]); `libminimetro.so` rebuilt |
+| 22: Value clipping & gamma | `ml/ppo.py`, `ml/train.py`, `ml/train_local.py`, `ml/eval.py` | Added $v_{\text{clipped}}$ loss in PPO critic; default $\gamma = 0.995$; `eval.py` uses `deterministic=True` argmax |
+
+**Test results**:
+```
+PASS: node shape = (30, 32)
+PASS: train_count, train_load, train_prox in [0.0, 1.0]
+PASS: Hierarchical action probabilities sum to 1.0 per batch element (exact sum=1.000000)
+PASS: get_action_and_value sampling valid (entropy=5.4946)
+PASS: deterministic eval returns valid argmax
+PASS: PPO update with value clipping: pg=1.1512, v=0.0500, ent=5.5086, kl=0.001748
+PASS: Gradients successfully backpropagated to GNN, bilinear heads, and type selector!
+Go build: ALL OK (libminimetro.so rebuilt)
+```
 
 ---
 

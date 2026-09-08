@@ -4,7 +4,7 @@ import torch.optim as optim
 import numpy as np
 
 class PPO:
-    def __init__(self, model, lr=3e-4, gamma=0.99, gae_lambda=0.95, clip_coef=0.2, ent_coef=0.05, vf_coef=0.5, max_grad_norm=0.5):  # ent_coef raised 0.01→0.05 (PPO-3 fix)
+    def __init__(self, model, lr=3e-4, gamma=0.995, gae_lambda=0.95, clip_coef=0.2, ent_coef=0.05, vf_coef=0.5, max_grad_norm=0.5):  # ent_coef=0.05 (PPO-3), gamma=0.995 (PPO-6)
         self.model = model
         self.optimizer = optim.Adam(self.model.parameters(), lr=lr, eps=1e-5)
         self.gamma = gamma
@@ -36,7 +36,7 @@ class PPO:
         returns = advantages + values
         return advantages, returns
 
-    def update(self, b_obs, b_actions, b_logprobs, b_advantages, b_returns, b_masks, update_epochs=4, num_minibatches=4):  # update_epochs raised 2→4 (PPO-2 fix)
+    def update(self, b_obs, b_actions, b_logprobs, b_advantages, b_returns, b_masks, b_values=None, update_epochs=4, num_minibatches=4):  # update_epochs=4 (PPO-2), b_values for value clipping (PPO-5)
         b_size = b_actions.shape[0]
         minibatch_size = b_size // num_minibatches
         
@@ -74,7 +74,16 @@ class PPO:
                     pg_loss = torch.max(pg_loss1, pg_loss2).mean()
                     
                     newvalue = newvalue.view(-1)
-                    v_loss = 0.5 * ((newvalue - b_returns[mbinds]) ** 2).mean()
+                    if b_values is not None:
+                        # PHASE-5 fix PPO-5: value function clipping to stabilize critic updates
+                        v_clipped = b_values[mbinds] + torch.clamp(
+                            newvalue - b_values[mbinds], -self.clip_coef, self.clip_coef
+                        )
+                        v_loss1 = (newvalue - b_returns[mbinds]) ** 2
+                        v_loss2 = (v_clipped - b_returns[mbinds]) ** 2
+                        v_loss = 0.5 * torch.max(v_loss1, v_loss2).mean()
+                    else:
+                        v_loss = 0.5 * ((newvalue - b_returns[mbinds]) ** 2).mean()
                     
                     entropy_loss = entropy.mean()
                     

@@ -46,7 +46,7 @@ def evaluate(model_path=None, map_id=0):
         mask = obs_tensor["action_mask"].bool()
         
         with torch.no_grad():
-            action, _, _, value = model.get_action_and_value(obs_tensor, mask=mask)
+            action, _, _, value = model.get_action_and_value(obs_tensor, mask=mask, deterministic=True)
             
         action_np = action.item()
         

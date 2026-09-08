@@ -57,7 +57,7 @@ class MiniMetroEnv(gym.Env):
         # Dimensions from observation.go and action_space.go
         self.max_nodes = 30
         self.max_edges = 200  # From c_api/main.go maxEdges
-        self.node_dim = 29    # PHASE-2: was 25; +fill_ratio, lines_serving, timer_norm, queue_norm
+        self.node_dim = 32    # PHASE-5: was 29; +incoming_train_count, incoming_train_load, nearest_train_proximity
         self.edge_dim = 10
         self.global_dim = 13  # PHASE-2: was 8; +station_count, max_fill, overcrowd_ct, pending_reward, game_time
         self.action_space_size = 4087  # PHASE-4: was 4108; AddCarriage reduced 28→7 (now lineID-indexed)

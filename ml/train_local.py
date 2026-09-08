@@ -663,6 +663,8 @@ def run_training():
                 ].bool()
             )
 
+            b_values = values.reshape(-1)
+
             # ------------------------------------------------
             # PPO UPDATE
             # ------------------------------------------------
@@ -675,6 +677,7 @@ def run_training():
                     b_advantages,
                     b_returns,
                     b_masks,
+                    b_values=b_values,
                 )
             )
 

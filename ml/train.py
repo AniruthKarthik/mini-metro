@@ -137,6 +137,7 @@ def run_training():
         b_logprobs = logprobs.reshape(-1)
         b_advantages = advantages.reshape(-1)
         b_returns = returns.reshape(-1)
+        b_values = values.reshape(-1)
         b_masks = b_obs["action_mask"].bool()
 
         # PHASE-1 fix PPO-1: normalize over FULL batch, not per-minibatch.
@@ -150,7 +151,7 @@ def run_training():
         
         pg_loss, v_loss, ent_loss, clipfrac, approx_kl = agent.update(
             b_obs, b_actions, b_logprobs, b_advantages, b_returns, b_masks,
-            update_epochs=update_epochs, num_minibatches=num_minibatches
+            b_values=b_values, update_epochs=update_epochs, num_minibatches=num_minibatches
         )
         
         writer.add_scalar("losses/value_loss", v_loss, global_step)
