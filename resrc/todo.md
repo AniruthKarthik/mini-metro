@@ -549,7 +549,7 @@ PASS all losses finite across 3 PPO updates
 
 Retrain for 10M steps. Verify: congested stations get served more reliably.
 
-### Phase 3 — Fix GNN Architecture (~2–3 days)
+### Phase 3 — Fix GNN Architecture ✅ COMPLETED (branch: fixes)
 
 | # | Change | File(s) |
 |---|---|---|
@@ -557,6 +557,29 @@ Retrain for 10M steps. Verify: congested stations get served more reliably.
 | 12 | Include dst_feat in GCN message function | `ml/model.py` |
 | 13 | Add 3rd GCN layer with residual connection | `ml/model.py` |
 | 14 | Add edge update MLP; pass updated edges between layers | `ml/model.py` |
+
+**Status**: All 3 tasks applied and smoke-tested on branch `fixes`.
+
+**Changes** (all in `ml/model.py`):
+| Task | What changed |
+|---|---|
+| GNN-1: edge update MLP | `DenseGCNLayer` replaced with `GNNLayer` which returns `(new_nodes, new_edges)`; each layer now evolves edge embeddings via `edge_update(src, dst, e)` and passes them to the next layer |
+| GNN-2: dst_feat in messages | `msg_proj` input changed from `[src, edge]` (2H) to `[src, dst, edge]` (3H) — destination node state now influences messages, enabling "station A is congested" to propagate upstream |
+| GNN-3: 3rd layer + residual | Added `gcn3 = GNNLayer(...)` with `x3 = gcn3(x2) + x2` residual — information now propagates 3 hops (was 2); residual prevents oversmoothing |
+
+**Test results**:
+```
+PASS: GNNLayer present, DenseGCNLayer removed
+PASS: 3 GNNLayers present
+PASS: msg_proj input = 96 = 3H (dst_feat included)
+PASS: edge_update MLP present
+PASS: forward pass — action=0 lp=-1.3581 ent=1.3811 val=-0.0798
+PASS: 5 env steps — all model outputs finite with residual connection
+INFO: model params = 175,821
+PASS: 3 PPO updates — all losses finite, KL < 0.001
+```
+
+**Next**: Phase 4 — Fix Action Space & Reward (AddCarriage by lineID, improved reward, BetaGameOverPenalty×4).
 
 Retrain. Verify: policy selects different actions for different congested stations.
 
