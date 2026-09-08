@@ -1,67 +1,42 @@
-# Mini Metro AI - Google Colab Training Guide
+# Option 1: Run cell-by-cell in Google Colab
 
-The `train.py` script is fully optimized and ready for Google Colab. It features:
-- **Automatic GPU Detection**: Will automatically leverage the free Tesla T4 (or L4/A100 if you use Colab Pro).
-- **DataParallel**: If multiple GPUs are allocated, it will automatically distribute the PPO forward/backward passes.
-- **TensorFloat-32 (TF32)**: Automatically enables TF32 precision for massive speedups on Ampere/Ada GPUs.
-- **Optimized Batching**: Batches 32 environments * 512 steps = 16,384 transitions per update to saturate the GPU.
+# Cell 1: Clone repository and switch to fixes branch
+!git clone -b fixes https://github.com/AniruthKarthik/mini-metro.git
+%cd mini-metro
+!git checkout fixes
 
-### How to Train in Google Colab
-
-Create a new Google Colab Notebook, select **Runtime > Change runtime type > GPU (T4)**, and paste the following commands into the cells.
-
-#### Cell 1: Setup Workspace & Install Dependencies
-```bash
-# If you haven't uploaded the code, you can clone it here. 
-# Otherwise, upload your 'mini-metro' folder to the Colab workspace.
-# !git clone <your_repo_url> mini-metro
-
-# Navigate into the project directory
-%cd /content/mini-metro
-
-# Install Python dependencies (PyTorch is pre-installed in Colab)
-!pip install gymnasium tensorboard numpy
-```
-
-#### Cell 2: Install Go (Golang)
-The environment relies on a C-Shared library compiled from Go. Colab does not have Go installed by default.
-```bash
-# Download and extract Go 1.21+
-!wget https://go.dev/dl/go1.21.0.linux-amd64.tar.gz
+# Cell 2: Install Go (required to compile the simulator)
+!wget -q https://go.dev/dl/go1.21.0.linux-amd64.tar.gz
 !rm -rf /usr/local/go && tar -C /usr/local -xzf go1.21.0.linux-amd64.tar.gz
 
-# Verify installation
-!export PATH=$PATH:/usr/local/go/bin && go version
-```
-
-#### Cell 3: Build the Simulator C-API
-Compile the Go backend into the `libminimetro.so` shared library so Python can interface with it.
-```bash
+# Cell 3: Build simulator shared library
 !export PATH=$PATH:/usr/local/go/bin && cd ml && bash build_lib.sh
-```
 
-#### Cell 4: Launch TensorBoard (Optional but Recommended)
-Run this cell to open an interactive TensorBoard interface directly inside your Colab notebook to monitor the Entropy Annealing and Episodic Returns.
-```bash
-%load_ext tensorboard
-%tensorboard --logdir runs/minimetro_ppo
-```
+# Cell 4: Install required Python dependencies
+!pip install -r ml/requirements.txt
 
-#### Cell 5: Start Training!
-Launch the heavy production training script. 
-*Note: We prepend the PATH so the Python subprocesses can access the Go runtime if needed.*
-```bash
+# Cell 5: Run training
 !export PATH=$PATH:/usr/local/go/bin && python ml/train.py
-```
 
-### Colab Pro Tips
-- **Persistence**: Colab environments reset when you close them. To save your models, mount your Google Drive:
-  ```python
-  from google.colab import drive
-  drive.mount('/content/drive')
-  ```
-  Then, periodically copy the `runs/` folder to your Drive, or symlink the runs directory before training:
-  ```bash
-  !ln -s /content/drive/MyDrive/minimetro_runs /content/mini-metro/runs
-  ```
-- **Disconnection**: To prevent the browser from disconnecting during long 10M+ timestep training sessions, pin the Colab tab or use a lightweight auto-clicker extension.
+
+# -----------------------------------------------------------
+# Option 2: All-in-one cell (copy-paste into a single Colab cell)
+
+%%bash
+git clone -b fixes https://github.com/AniruthKarthik/mini-metro.git
+cd mini-metro
+git checkout fixes
+
+# Install Go
+wget -q https://go.dev/dl/go1.21.0.linux-amd64.tar.gz
+rm -rf /usr/local/go && tar -C /usr/local -xzf go1.21.0.linux-amd64.tar.gz
+export PATH=$PATH:/usr/local/go/bin
+
+# Build simulator library
+cd ml && bash build_lib.sh && cd ..
+
+# Install Python requirements
+pip install -r ml/requirements.txt
+
+# Start training
+python ml/train.py
