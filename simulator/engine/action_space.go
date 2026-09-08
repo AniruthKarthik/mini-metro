@@ -238,8 +238,8 @@ func (s *Simulator) GetActionMask(outMask []bool) []bool {
 		return outMask
 	}
 
-	// Action 0: NoOp is always valid
-	outMask[ActionNoOp] = true
+	// Action 0: NoOp is valid only if no reward choice is pending
+	outMask[ActionNoOp] = len(s.State.PendingRewardChoices) == 0
 
 	// If pending reward choices exist, only ChooseReward actions are valid
 	if len(s.State.PendingRewardChoices) > 0 {
@@ -308,7 +308,7 @@ func (s *Simulator) GetActionMask(outMask []bool) []bool {
 	// 2. ExtendLine
 	for lID := 0; lID < len(s.State.Lines); lID++ {
 		line := &s.State.Lines[lID]
-		if line.Removed || len(line.Stations) == 0 {
+		if line.Removed || line.IsLoop || len(line.Stations) == 0 {
 			continue
 		}
 

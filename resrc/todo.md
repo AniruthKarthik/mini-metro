@@ -41,6 +41,17 @@ The current policy exhibits degenerate behaviour (**connecting all stations with
 
 ---
 
+### Phase 8 — Weekly Reward Selection, Station Connectivity & Training Parity ✅ (COMPLETED)
+
+| # | Task | Target File(s) | Status | Details |
+|---|---|---|---|---|
+| **30** | **Enforce Reward Choice in Action Mask & Loop Extension Guard** | `simulator/engine/action_space.go`<br>`simulator/cmd/antiredundancy_test.go` | **COMPLETED** | • In `GetActionMask()`, set `outMask[ActionNoOp] = false` when `len(PendingRewardChoices) > 0`, forcing agent to choose an upgrade card.<br>• In `ExtendLine`, disallowed extending closed loops (`line.IsLoop`).<br>• Added and passed `TestWeeklyRewardMaskingAndExtendLoopPrevention`. |
+| **31** | **Active Weekly Reward Selection in Live Agent** | `ml/agent.py` | **COMPLETED** | • Detected `pending_reward_choices` in websocket stream.<br>• Bypassed simulation tick rate limit (which freezes during modals) and immediately selects highest-priority upgrade (`Line > Train > Tunnel > Carriage > Interchange`). |
+| **32** | **Proactive Network Connectivity for Isolated Stations** | `ml/agent.py` | **COMPLETED** | • Identified unserved stations (`degree == 0`).<br>• When model outputs No-Op, automatically evaluates and executes legal connecting actions (`ExtendLine`, `AddLine`, or `InsertStation`) from `action_mask`. |
+| **33** | **Full Training Parity (`train_local.py` mirrors `train.py`)** | `ml/train_local.py`<br>`ml/agent.py` | **COMPLETED** | • Upgraded `hidden_dim` from 32 to 256.<br>• Implemented full-batch advantage normalization and linear LR decay.<br>• Synchronized PPO update parameters (`update_epochs=4`, `num_minibatches=4`, `b_values` clipping).<br>• Added dynamic checkpoint `hidden_dim` inspection in `agent.py`. |
+
+---
+
 ## 3. Root Cause Analysis & Technical Design
 
 ### Why the AI Learned Parallel Connections

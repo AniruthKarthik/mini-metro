@@ -133,3 +133,50 @@ func TestIsolatedStationPenaltyAndConnectionBonus(t *testing.T) {
 		t.Errorf("expected step reward with ConnectIsolatedBonus to exceed baseline, got rStep=%f, r0=%f", rStep, r0)
 	}
 }
+
+func TestWeeklyRewardMaskingAndExtendLoopPrevention(t *testing.T) {
+	sim := engine.NewSimulator([]engine.Station{
+		{ID: 0, Kind: engine.Circle, Pos: engine.Pos{X: 10, Y: 10}, Alive: true, Capacity: 6},
+		{ID: 1, Kind: engine.Triangle, Pos: engine.Pos{X: 20, Y: 10}, Alive: true, Capacity: 6},
+		{ID: 2, Kind: engine.Square, Pos: engine.Pos{X: 20, Y: 20}, Alive: true, Capacity: 6},
+		{ID: 3, Kind: engine.Circle, Pos: engine.Pos{X: 30, Y: 30}, Alive: true, Capacity: 6},
+	})
+
+	maskSize := engine.MaxActionSpaceSize()
+	mask := make([]bool, maskSize)
+
+	// Build a 3-station loop on line 0
+	_ = sim.ApplyAction(engine.AddLine{Stations: []int{0, 1}})
+	_ = sim.ApplyAction(engine.ExtendLine{LineID: 0, StationID: 2, FromFront: false})
+	_ = sim.ApplyAction(engine.CloseLoop{LineID: 0})
+
+	// 1. Verify ExtendLine is MASKED on closed loop
+	sim.GetActionMask(mask)
+	extF, _ := engine.ActionToIndex(engine.ExtendLine{LineID: 0, StationID: 3, FromFront: true})
+	extB, _ := engine.ActionToIndex(engine.ExtendLine{LineID: 0, StationID: 3, FromFront: false})
+	if mask[extF] || mask[extB] {
+		t.Errorf("ExtendLine must be MASKED FALSE when line is a loop")
+	}
+
+	// 2. Set PendingRewardChoices and verify ActionNoOp is FALSE and only ChooseReward are TRUE
+	sim.State.PendingRewardChoices = []engine.RewardType{engine.RewardLine, engine.RewardTrain}
+	sim.GetActionMask(mask)
+
+	if mask[engine.ActionNoOp] {
+		t.Errorf("ActionNoOp MUST be masked false when PendingRewardChoices are present")
+	}
+
+	cr0, _ := engine.ActionToIndex(engine.ChooseReward{Choice: 0})
+	cr1, _ := engine.ActionToIndex(engine.ChooseReward{Choice: 1})
+	if !mask[cr0] || !mask[cr1] {
+		t.Errorf("ChooseReward choices 0 and 1 must be true")
+	}
+
+	// Verify no other action is true
+	for i := 0; i < maskSize; i++ {
+		if i != cr0 && i != cr1 && mask[i] {
+			t.Errorf("Action %d unexpectedly true during pending reward choice", i)
+		}
+	}
+}
+
