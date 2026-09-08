@@ -282,6 +282,7 @@ class MiniMetroActorCritic(nn.Module):
         type_logits = self.type_net(combined)  # [B, 12]
 
         if mask is not None:
+            mask = mask.bool()
             # Mask action types that have zero valid actions
             type_valid = torch.stack([
                 mask[:, s].any(dim=-1) for s in ACTION_TYPE_SLICES

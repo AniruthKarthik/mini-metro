@@ -158,7 +158,7 @@ class MiniMetroEnv(gym.Env):
         done = False
         info = {}
         
-        # Dynamic Frame Skipping: tick up to 4 times (4 seconds total)
+        # Frame Skipping: tick up to 4 times (4 seconds total)
         for step_idx in range(4):
             # Apply action only on the first step, subsequent steps pass NoOp (0)
             curr_action = action_id if step_idx == 0 else 0
@@ -171,31 +171,25 @@ class MiniMetroEnv(gym.Env):
             if not step_done:
                 step_reward += 0.01  # Survival bonus
                 
-            obs = self._get_obs()
-            num_stations = int(obs["num_nodes"][0])
-            emergency = False
-            
-            for i in range(num_stations):
-                node = obs["nodes"][i]
-                # node[22] = overcrowding_progress [0,1]
-                overcrowd_progress = float(node[22])
-                if overcrowd_progress > 0:
-                    step_reward -= 0.3 * overcrowd_progress
-                    emergency = True
-                    
-                raw_queue_total = float(node[12:22].sum())
-                fill_approx = raw_queue_total / 6.0
-                if fill_approx > 0.8:
-                    step_reward -= 0.1 * (fill_approx - 0.8)
-                    
             total_reward += step_reward
             if step_done:
                 done = True
                 break
+
+        obs = self._get_obs()
+        num_stations = int(obs["num_nodes"][0])
+        
+        for i in range(num_stations):
+            node = obs["nodes"][i]
+            # node[22] = overcrowding_progress [0,1]
+            overcrowd_progress = float(node[22])
+            if overcrowd_progress > 0:
+                total_reward -= 0.3 * overcrowd_progress
                 
-            if emergency:
-                # Interrupt frame skip so agent can react immediately
-                break
+            raw_queue_total = float(node[12:22].sum())
+            fill_approx = raw_queue_total / 6.0
+            if fill_approx > 0.8:
+                total_reward -= 0.1 * (fill_approx - 0.8)
 
         return obs, total_reward, done, False, info
         

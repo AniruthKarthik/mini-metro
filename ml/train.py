@@ -27,12 +27,13 @@ def run_training():
     # triggers OS OOM-killer (SIGKILL) and BrokenPipeError. 8 envs is safe, efficient, and robust.
     num_envs = int(os.environ.get("NUM_ENVS", min(8, max(4, cpu_cores * 4))))
     total_timesteps = 10000000
-    target_rollout_size = 16384
-    num_steps = target_rollout_size // num_envs
+    # 256 steps * 8 envs = 2048 transitions per update.
+    # Drastically reduces rollout latency from 6 minutes down to ~15-20 seconds per update!
+    num_steps = int(os.environ.get("NUM_STEPS", 256))
     batch_size = num_envs * num_steps
-    num_minibatches = 8      # PHASE-3: Increased capacity from 4
+    num_minibatches = 4
     minibatch_size = batch_size // num_minibatches
-    update_epochs = 8        # PHASE-3: Increased capacity from 4
+    update_epochs = 4
     num_updates = total_timesteps // batch_size
     
     os.makedirs("runs/minimetro_ppo", exist_ok=True)
