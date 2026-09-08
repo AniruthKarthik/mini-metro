@@ -110,16 +110,29 @@ def main():
     while True:
         try:
             with connect("ws://localhost:6969/ws") as websocket:
-                print("[AI] Connected to WebSocket!")
+                print("[AI] Connected to WebSocket! Ready for gameplay.")
+                last_ai_enabled = None
+                last_action_tick = -100
+
                 for message in websocket:
                     data = json.loads(message)
-                    if not data.get("ai_enabled"):
+                    ai_enabled = bool(data.get("ai_enabled"))
+
+                    if ai_enabled != last_ai_enabled:
+                        last_ai_enabled = ai_enabled
+                        if ai_enabled:
+                            print("[AI] 🟢 Autopilot ACTIVATED! AI is now taking control of the transit network.")
+                        else:
+                            print("[AI] 🔴 Autopilot DEACTIVATED. Player is in manual control.")
+
+                    if not ai_enabled:
                         continue
                     if data.get("paused") or not data.get("alive"):
                         continue
 
-                    # Match training frequency: 1 action per in-game second (30 ticks)
-                    if data.get("tick", 0) % 30 != 0:
+                    # Rate limit: at most 1 action every 30 simulation ticks (1 sim-second)
+                    current_tick = int(data.get("tick", 0))
+                    if current_tick - last_action_tick < 30 and current_tick >= last_action_tick:
                         continue
 
                     try:
@@ -135,9 +148,25 @@ def main():
                             )
 
                         action_id = action.item()
-                        if action_id == 0:
-                            continue  # No-Op — don't spam the server
+                        last_action_tick = current_tick
 
+                        # If 0 lines exist on the map and model outputs No-Op, initialize network with best valid AddLine
+                        active_lines = [l for l in (data.get("lines") or []) if not l.get("removed")]
+                        if len(active_lines) == 0 and action_id == 0:
+                            valid_add_lines = [
+                                idx for idx in range(1, 436)
+                                if obs_tensor["action_mask"][0, idx]
+                            ]
+                            if valid_add_lines:
+                                action_id = valid_add_lines[0]
+                                print(f"[AI] 🚀 Initializing network: auto-selected initial line action {action_id}")
+
+                        if action_id == 0:
+                            if current_tick % 150 < 30:
+                                print(f"[AI] ⏱️ Tick {current_tick}: Network monitored -> No-Op (transit flowing smoothly)")
+                            continue
+
+                        print(f"[AI] 🚇 Tick {current_tick}: Executing action {action_id}")
                         payload = {"type": "action_by_id", "payload": {"action_id": action_id}}
                         websocket.send(json.dumps(payload))
 

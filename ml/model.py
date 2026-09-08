@@ -284,12 +284,37 @@ class MiniMetroActorCritic(nn.Module):
 
                 joint = type_log_probs[:, k:k+1] + p_log_probs
                 action_log_probs[:, s] = torch.where(p_mask, joint, -1e9)
+
+            # Compute true hierarchical argmax for greedy deterministic evaluation
+            safe_type_logits = type_logits.masked_fill(~type_valid, -1e9)
+            best_types = torch.argmax(safe_type_logits, dim=-1)  # [B]
+            hier_actions = torch.zeros(B, dtype=torch.long, device=combined.device)
+            for b in range(B):
+                t_idx = best_types[b].item()
+                s = ACTION_TYPE_SLICES[t_idx]
+                p_scores = param_scores_list[t_idx][b:b+1]
+                p_mask = mask[b:b+1, s]
+                p_valid = p_mask.any(dim=-1, keepdim=True)
+                safe_p_mask = torch.where(p_valid, p_mask, torch.ones_like(p_mask))
+                safe_scores = p_scores.masked_fill(~safe_p_mask, -1e9)
+                best_param = torch.argmax(safe_scores, dim=-1).item()
+                hier_actions[b] = s.start + best_param
+            self._last_hierarchical_actions = hier_actions
         else:
             type_log_probs = F.log_softmax(type_logits, dim=-1)
             action_log_probs = torch.zeros(B, 4087, device=combined.device, dtype=combined.dtype)
             for k, (s, p_scores) in enumerate(zip(ACTION_TYPE_SLICES, param_scores_list)):
                 p_log_probs = F.log_softmax(p_scores, dim=-1)
                 action_log_probs[:, s] = type_log_probs[:, k:k+1] + p_log_probs
+
+            best_types = torch.argmax(type_logits, dim=-1)
+            hier_actions = torch.zeros(B, dtype=torch.long, device=combined.device)
+            for b in range(B):
+                t_idx = best_types[b].item()
+                s = ACTION_TYPE_SLICES[t_idx]
+                best_param = torch.argmax(param_scores_list[t_idx][b:b+1], dim=-1).item()
+                hier_actions[b] = s.start + best_param
+            self._last_hierarchical_actions = hier_actions
 
         return action_log_probs
 
@@ -310,8 +335,10 @@ class MiniMetroActorCritic(nn.Module):
 
         if action is None:
             if deterministic:
-                # INF-1 fix: deterministic argmax selection for evaluation
-                if mask is not None:
+                # Hierarchical argmax: select highest-scoring valid type, then highest-scoring valid parameter
+                if self.use_hierarchical and hasattr(self, "_last_hierarchical_actions"):
+                    action = self._last_hierarchical_actions
+                elif mask is not None:
                     action = torch.argmax(logits.masked_fill(~mask, -1e9), dim=-1)
                 else:
                     action = torch.argmax(logits, dim=-1)
