@@ -384,6 +384,23 @@ def run_training():
     )
 
     # --------------------------------------------------------
+    # LSTM STATE STORAGE
+    # --------------------------------------------------------
+
+    hidden_dim = 32
+    lstm_hx = torch.zeros(
+        (num_steps, num_envs, hidden_dim * 3),
+        dtype=torch.float32,
+        device=device,
+    )
+
+    lstm_cx = torch.zeros(
+        (num_steps, num_envs, hidden_dim * 3),
+        dtype=torch.float32,
+        device=device,
+    )
+
+    # --------------------------------------------------------
     # INITIAL ENV RESET
     # --------------------------------------------------------
 
@@ -406,6 +423,11 @@ def run_training():
         num_envs,
         dtype=torch.float32,
         device=device,
+    )
+
+    next_lstm_state = (
+        torch.zeros(1, num_envs, hidden_dim * 3, device=device),
+        torch.zeros(1, num_envs, hidden_dim * 3, device=device)
     )
 
     start_time = time.time()
@@ -451,6 +473,9 @@ def run_training():
                 # --------------------------------------------
                 # ACTION
                 # --------------------------------------------
+                
+                lstm_hx[step].copy_(next_lstm_state[0].squeeze(0))
+                lstm_cx[step].copy_(next_lstm_state[1].squeeze(0))
 
                 with torch.no_grad():
 
@@ -460,9 +485,10 @@ def run_training():
                         ].bool()
                     )
 
-                    action, logprob, _, value = (
+                    action, logprob, _, value, next_lstm_state = (
                         model.get_action_and_value(
                             next_obs_tensor,
+                            lstm_state=next_lstm_state,
                             mask=mask,
                         )
                     )
@@ -497,7 +523,7 @@ def run_training():
                 )
 
                 # --------------------------------------------
-                # STORE REWARD
+                # STORE REWARD & RESET LSTM
                 # --------------------------------------------
 
                 rewards[step].copy_(
@@ -506,6 +532,17 @@ def run_training():
                         dtype=torch.float32,
                         device=device,
                     ).view(-1)
+                )
+
+                done_mask = torch.tensor(
+                    done,
+                    dtype=torch.float32,
+                    device=device,
+                ).view(1, num_envs, 1)
+
+                next_lstm_state = (
+                    next_lstm_state[0] * (1.0 - done_mask),
+                    next_lstm_state[1] * (1.0 - done_mask)
                 )
 
                 # --------------------------------------------
@@ -620,7 +657,8 @@ def run_training():
 
                 next_value = (
                     model.get_value(
-                        next_obs_tensor
+                        next_obs_tensor,
+                        lstm_state=next_lstm_state
                     )
                     .reshape(1, -1)
                 )
@@ -636,34 +674,16 @@ def run_training():
                 )
 
             # ------------------------------------------------
-            # FLATTEN BATCH
+            # PREPARE BATCH
             # ------------------------------------------------
 
-            b_obs = {
-                k: v.reshape(
-                    (-1,)
-                    + envs.single_observation_space[
-                        k
-                    ].shape
-                )
-                for k, v in obs.items()
-            }
-
-            b_actions = actions.reshape(-1)
-
-            b_logprobs = logprobs.reshape(-1)
-
-            b_advantages = advantages.reshape(-1)
-
-            b_returns = returns.reshape(-1)
-
-            b_masks = (
-                b_obs[
-                    "action_mask"
-                ].bool()
-            )
-
-            b_values = values.reshape(-1)
+            b_obs = obs
+            b_actions = actions
+            b_logprobs = logprobs
+            b_advantages = advantages
+            b_returns = returns
+            b_masks = b_obs["action_mask"].bool()
+            b_values = values
 
             # ------------------------------------------------
             # PPO UPDATE
@@ -677,7 +697,9 @@ def run_training():
                     b_advantages,
                     b_returns,
                     b_masks,
-                    b_values=b_values,
+                    values=b_values,
+                    init_lstm_hx=lstm_hx,
+                    init_lstm_cx=lstm_cx,
                 )
             )
 

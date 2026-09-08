@@ -111,15 +111,23 @@ def main():
         try:
             with connect("ws://localhost:6969/ws") as websocket:
                 print("[AI] Connected to WebSocket!")
+                lstm_state = None
+                
                 for message in websocket:
                     data = json.loads(message)
                     if not data.get("ai_enabled"):
                         continue
                     if data.get("paused") or not data.get("alive"):
+                        lstm_state = None # Reset state on game over
                         continue
 
                     # Match training frequency: 1 action per in-game second (30 ticks)
-                    if data.get("tick", 0) % 30 != 0:
+                    # wait, with dynamic frame skipping, training agent ticks every 4 seconds
+                    # but wait! env.step() ticks 4 times. 
+                    # For agent.py, we only get obs every 30 ticks (1 sec). 
+                    # If we tick every 4 seconds, we should change 30 to 120 ticks.
+                    # Let's use 120 ticks (4 seconds) to match training!
+                    if data.get("tick", 0) % 120 != 0:
                         continue
 
                     try:
@@ -130,8 +138,8 @@ def main():
                         obs_tensor = obs_from_json(resp.json(), device)
 
                         with torch.no_grad():
-                            action, _, _, _ = model.get_action_and_value(
-                                obs_tensor, mask=obs_tensor["action_mask"]
+                            action, _, _, _, lstm_state = model.get_action_and_value(
+                                obs_tensor, lstm_state=lstm_state, mask=obs_tensor["action_mask"]
                             )
 
                         action_id = action.item()

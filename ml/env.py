@@ -147,44 +147,52 @@ class MiniMetroEnv(gym.Env):
             raise RuntimeError("Environment has not been reset.")
             
         action_id = int(action)
-        # The step function takes a duration. We'll simulate 1 second per step.
-        # Actually in mini metro, 1 second is fine. The step function: Step(handle, actionID, duration, &outReward, &outDone)
         duration = 1.0 
         
-        lib.Step(self.handle, action_id, duration, ctypes.byref(self._out_reward), ctypes.byref(self._out_done))
-
-        # Read done FIRST before using it in survival bonus check.
-        done = bool(self._out_done.value)
-        reward = float(self._out_reward.value)
-
-        # PHASE-1 reward fixes:
-        # - REMOVED flat -0.05 action penalty (trained passivity / NoOp as safe default)
-        # - Added survival bonus: small dense signal so the agent learns to stay alive
-        # - Added early overcrowding gradient: pressure at 80% fill, before game-over
-
-        # Survival bonus: +0.01 per step survived (dense signal during sparse delivery phases).
-        if not done:
-            reward += 0.01
-
-        # Early overcrowding gradient from the Python side.
-        # Go-side AlphaCrowdPenalty (0.05) is 22x too weak vs deliveries.
-        # This adds pressure at 80% fill — well before the game-over overcrowding timer starts.
-        obs = self._get_obs()
-        num_stations = int(obs["num_nodes"][0])
-        for i in range(num_stations):
-            node = obs["nodes"][i]
-            # node[22] = overcrowding_progress [0,1] (non-zero only when timer is active)
-            overcrowd_progress = float(node[22])
-            if overcrowd_progress > 0:
-                reward -= 0.3 * overcrowd_progress  # strong gradient as timer counts down
-            # node[12:22] = passenger destination counts (raw); capacity default = 6
-            raw_queue_total = float(node[12:22].sum())
-            fill_approx = raw_queue_total / 6.0
-            if fill_approx > 0.8:
-                reward -= 0.1 * (fill_approx - 0.8)  # early-warning gradient
-
+        total_reward = 0.0
+        done = False
         info = {}
-        return obs, reward, done, False, info
+        
+        # Dynamic Frame Skipping: tick up to 4 times (4 seconds total)
+        for step_idx in range(4):
+            # Apply action only on the first step, subsequent steps pass NoOp (0)
+            curr_action = action_id if step_idx == 0 else 0
+            
+            lib.Step(self.handle, curr_action, duration, ctypes.byref(self._out_reward), ctypes.byref(self._out_done))
+            
+            step_done = bool(self._out_done.value)
+            step_reward = float(self._out_reward.value)
+            
+            if not step_done:
+                step_reward += 0.01  # Survival bonus
+                
+            obs = self._get_obs()
+            num_stations = int(obs["num_nodes"][0])
+            emergency = False
+            
+            for i in range(num_stations):
+                node = obs["nodes"][i]
+                # node[22] = overcrowding_progress [0,1]
+                overcrowd_progress = float(node[22])
+                if overcrowd_progress > 0:
+                    step_reward -= 0.3 * overcrowd_progress
+                    emergency = True
+                    
+                raw_queue_total = float(node[12:22].sum())
+                fill_approx = raw_queue_total / 6.0
+                if fill_approx > 0.8:
+                    step_reward -= 0.1 * (fill_approx - 0.8)
+                    
+            total_reward += step_reward
+            if step_done:
+                done = True
+                break
+                
+            if emergency:
+                # Interrupt frame skip so agent can react immediately
+                break
+
+        return obs, total_reward, done, False, info
         
     def close(self):
         if self.handle is not None:

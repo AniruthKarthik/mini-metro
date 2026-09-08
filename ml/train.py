@@ -85,12 +85,18 @@ def run_training():
     dones = torch.zeros((num_steps, num_envs)).to(device)
     values = torch.zeros((num_steps, num_envs)).to(device)
     
+    hidden_dim = 256
+    lstm_hx = torch.zeros((num_steps, num_envs, hidden_dim * 3)).to(device)
+    lstm_cx = torch.zeros((num_steps, num_envs, hidden_dim * 3)).to(device)
+    
     global_step = 0
     start_time = time.time()
     
     next_obs, _ = envs.reset()
     next_obs_tensor = {k: torch.as_tensor(v, device=device) for k, v in next_obs.items()}
     next_done = torch.zeros(num_envs).to(device)
+    next_lstm_state = (torch.zeros(1, num_envs, hidden_dim * 3).to(device),
+                       torch.zeros(1, num_envs, hidden_dim * 3).to(device))
     
     for update in range(1, num_updates + 1):
         update_start_time = time.time()
@@ -106,9 +112,12 @@ def run_training():
                 obs[k][step] = next_obs_tensor[k]
             dones[step] = next_done
             
+            lstm_hx[step] = next_lstm_state[0].squeeze(0)
+            lstm_cx[step] = next_lstm_state[1].squeeze(0)
+            
             with torch.no_grad():
                 mask = next_obs_tensor["action_mask"].bool()
-                action, logprob, _, value = raw_model.get_action_and_value(next_obs_tensor, mask=mask)
+                action, logprob, _, value, next_lstm_state = raw_model.get_action_and_value(next_obs_tensor, lstm_state=next_lstm_state, mask=mask)
                 values[step] = value.flatten()
             
             actions[step] = action
@@ -116,6 +125,13 @@ def run_training():
             
             next_obs, reward, terminated, truncated, infos = envs.step(action.cpu().numpy())
             done = np.logical_or(terminated, truncated)
+            
+            # Reset LSTM state for done envs
+            done_mask = torch.tensor(done, dtype=torch.float32, device=device).view(1, num_envs, 1)
+            next_lstm_state = (
+                next_lstm_state[0] * (1.0 - done_mask),
+                next_lstm_state[1] * (1.0 - done_mask)
+            )
             
             rewards[step] = torch.tensor(reward).to(device).view(-1)
             next_obs_tensor = {k: torch.as_tensor(v, device=device) for k, v in next_obs.items()}
@@ -129,19 +145,18 @@ def run_training():
                         writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
 
         with torch.no_grad():
-            next_value = raw_model.get_value(next_obs_tensor).reshape(1, -1)
+            next_value = raw_model.get_value(next_obs_tensor, lstm_state=next_lstm_state).reshape(1, -1)
             advantages, returns = agent.compute_gae(rewards, values, next_value, dones, next_done)
             
-        b_obs = {k: v.reshape((-1,) + envs.single_observation_space[k].shape) for k, v in obs.items()}
-        b_actions = actions.reshape(-1)
-        b_logprobs = logprobs.reshape(-1)
-        b_advantages = advantages.reshape(-1)
-        b_returns = returns.reshape(-1)
-        b_values = values.reshape(-1)
+        b_obs = obs
+        b_actions = actions
+        b_logprobs = logprobs
+        b_advantages = advantages
+        b_returns = returns
+        b_values = values
         b_masks = b_obs["action_mask"].bool()
 
         # PHASE-1 fix PPO-1: normalize over FULL batch, not per-minibatch.
-        # Per-minibatch normalization caused exploding gradients when std≈0 (sparse reward).
         b_advantages = (b_advantages - b_advantages.mean()) / (b_advantages.std() + 1e-8)
 
         # PHASE-1 fix PPO-4: linear LR decay toward 0 over training.
@@ -151,7 +166,7 @@ def run_training():
         
         pg_loss, v_loss, ent_loss, clipfrac, approx_kl = agent.update(
             b_obs, b_actions, b_logprobs, b_advantages, b_returns, b_masks,
-            b_values=b_values, update_epochs=update_epochs, num_minibatches=num_minibatches
+            values=b_values, init_lstm_hx=lstm_hx, init_lstm_cx=lstm_cx, update_epochs=update_epochs, num_minibatches=num_minibatches
         )
         
         writer.add_scalar("losses/value_loss", v_loss, global_step)

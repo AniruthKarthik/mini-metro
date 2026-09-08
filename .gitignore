@@ -55,3 +55,6 @@ ml/runs/**/events.out.tfevents.*
 
 # Python
 __pycache__/
+
+
+resrc/

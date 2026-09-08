@@ -126,6 +126,9 @@ class MiniMetroActorCritic(nn.Module):
             nn.Linear(hidden_dim, hidden_dim)
         )
 
+        # PHASE-1: LSTM for recurrent policy
+        self.lstm = nn.LSTM(hidden_dim * 3, hidden_dim * 3, batch_first=True)
+
         # -------------------------------------------------------------------
         # PHASE-5 Task 19: Hierarchical 12-way Action Type Selector
         # Eliminates the 76.7% InsertStation dominance bias.
@@ -293,15 +296,15 @@ class MiniMetroActorCritic(nn.Module):
 
         return action_log_probs
 
-    def get_value(self, obs):
-        logits, value = self.forward(obs)
+    def get_value(self, obs, lstm_state=None):
+        logits, value, _ = self.forward(obs, lstm_state=lstm_state)
         return value
 
-    def get_action_and_value(self, obs, action=None, mask=None, deterministic=False):
+    def get_action_and_value(self, obs, lstm_state=None, action=None, mask=None, deterministic=False):
         if mask is None and isinstance(obs, dict) and "action_mask" in obs:
             mask = obs["action_mask"].bool()
 
-        logits, value = self.forward(obs, mask=mask)
+        logits, value, next_lstm_state = self.forward(obs, lstm_state=lstm_state, mask=mask)
 
         if mask is not None and not self.use_hierarchical:
             logits = logits.masked_fill(~mask, -1e9)
@@ -318,9 +321,9 @@ class MiniMetroActorCritic(nn.Module):
             else:
                 action = probs.sample()
 
-        return action, probs.log_prob(action), probs.entropy(), value
+        return action, probs.log_prob(action), probs.entropy(), value, next_lstm_state
 
-    def forward(self, obs, mask=None):
+    def forward(self, obs, lstm_state=None, mask=None):
         nodes        = obs["nodes"]
         edges        = obs["edges"]
         edge_attrs   = obs["edge_attrs"]
@@ -331,6 +334,21 @@ class MiniMetroActorCritic(nn.Module):
         if mask is None and "action_mask" in obs:
             mask = obs["action_mask"].bool()
 
+        is_sequence = nodes.dim() == 4
+        if is_sequence:
+            B, T, N, F = nodes.shape
+            nodes = nodes.view(B * T, N, F)
+            edges = edges.view(B * T, 2, -1)
+            edge_attrs = edge_attrs.view(B * T, -1, edge_attrs.shape[-1])
+            globals_feat = globals_feat.view(B * T, -1)
+            num_nodes = num_nodes.view(B * T, -1)
+            num_edges = num_edges.view(B * T, -1)
+            if mask is not None:
+                mask = mask.view(B * T, -1)
+        else:
+            B = nodes.shape[0]
+            T = 1
+
         # PHASE-3: thread updated edge embeddings between layers
         x, e   = self.gcn1(nodes, edges, edge_attrs, num_nodes, num_edges)
         x2, e2 = self.gcn2(x, edges, e, num_nodes, num_edges)
@@ -339,24 +357,41 @@ class MiniMetroActorCritic(nn.Module):
         x3, _  = self.gcn3(x2, edges, e2, num_nodes, num_edges)
         x3 = x3 + x2
 
-        B, N, H = x3.shape
-        node_mask = torch.arange(N, device=x3.device).unsqueeze(0) < num_nodes  # [B, N]
+        B_flat, N, H = x3.shape
+        node_mask = torch.arange(N, device=x3.device).unsqueeze(0) < num_nodes  # [B_flat, N]
 
         # PHASE-2: mean+max pooling
         mean_pool = (x3 * node_mask.unsqueeze(-1)).sum(dim=1) / num_nodes.clamp(min=1).float()
         x_for_max = x3.masked_fill(~node_mask.unsqueeze(-1), -1e9)
         max_pool  = x_for_max.max(dim=1).values
-        pooled    = torch.cat([mean_pool, max_pool], dim=-1)  # [B, 2H]
+        pooled    = torch.cat([mean_pool, max_pool], dim=-1)  # [B_flat, 2H]
 
         g        = self.global_proj(globals_feat)
-        combined = torch.cat([pooled, g], dim=-1)  # [B, 3H]
+        combined = torch.cat([pooled, g], dim=-1)  # [B_flat, 3H]
+
+        # LSTM pass
+        combined_seq = combined.view(B, T, -1)
+        if lstm_state is None:
+            hx = torch.zeros(1, B, combined_seq.shape[-1], device=combined.device, dtype=combined.dtype)
+            cx = torch.zeros(1, B, combined_seq.shape[-1], device=combined.device, dtype=combined.dtype)
+            lstm_state = (hx, cx)
+
+        lstm_out, next_lstm_state = self.lstm(combined_seq, lstm_state)
+        lstm_out_flat = lstm_out.reshape(B_flat, -1)
 
         if self.use_hierarchical:
             # PHASE-5: Hierarchical action head + Bilinear parameter scoring
-            logits = self._compute_hierarchical_logits(x3, combined, mask=mask)
+            logits = self._compute_hierarchical_logits(x3, lstm_out_flat, mask=mask)
         else:
-            logits = self.fc_actor(combined)
+            logits = self.fc_actor(lstm_out_flat)
 
-        value = self.fc_critic(combined)
+        value = self.fc_critic(lstm_out_flat)
+        
+        # If input was a sequence, return sequence-shaped outputs?
+        # Typically PPO expects flat logits for categorical dist, so we keep it flat.
+        # We will reshape in ppo.py if needed, or leave flat.
+        if is_sequence:
+            logits = logits.view(B, T, -1)
+            value = value.view(B, T, -1)
 
-        return logits, value
+        return logits, value, next_lstm_state
