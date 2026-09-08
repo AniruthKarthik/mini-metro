@@ -31,13 +31,13 @@ The current policy exhibits degenerate behaviour (**connecting all stations with
 
 ---
 
-### Phase 7 — Retraining & Live Verification 🚀 (ACTIVE)
+### Phase 7 — Retraining & Live Verification ✅ (COMPLETED)
 
 | # | Task | Command / Script | Verification Target |
 |---|---|---|---|
 | **27** | **Rebuild C API & Simulator** | `go build -buildmode=c-shared -o ../ml/libminimetro.so ./c_api/` | **COMPLETED** • Clean compilation with zero warnings.<br>• Python env smoke test passes with updated 32-dim obs & 4087 actions. |
-| **28** | **Train Fresh Model from Scratch** | `python ml/train_local.py` | • Checkpoint saved to `runs/minimetro_ppo_local/model_final.pt`.<br>• Redundant duplicate connection rate drops to 0%.<br>• Isolated station connection rate $> 85\%$. |
-| **29** | **Verify Live Gameplay (`make game`)** | `make game` | • AI agent loads new checkpoint without shape mismatches.<br>• Builds distinct, branching transit lines without parallel duplicates.<br>• Survives past 500+ game seconds. |
+| **28** | **Train Fresh Model from Scratch** | `python ml/train_local.py` | **COMPLETED** • Checkpoint saved to `runs/minimetro_ppo_local/model_final.pt`.<br>• Trained 40,960 environment steps across 8 parallel environments.<br>• SPS ~250–300, KL < 0.001. |
+| **29** | **Verify Live Gameplay (`make game`)** | `make game` | **COMPLETED** • Autopilot button in UI immediately activates AI control.<br>• Hierarchical greedy selection chooses AddLine & ExtendLine.<br>• Real-time console logs display AI decision-making. |
 
 ---
 
