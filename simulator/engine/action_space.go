@@ -158,71 +158,6 @@ func ActionFromIndex(id int) (Action, error) {
 	return nil, errors.New("invalid action index")
 }
 
-// ActionToIndex translates a typed Action struct into a flat integer action ID.
-func ActionToIndex(action Action) (int, bool) {
-	if action == nil {
-		return ActionNoOp, true
-	}
-	switch a := action.(type) {
-	case AddLine:
-		if len(a.Stations) >= 2 {
-			u, v := a.Stations[0], a.Stations[1]
-			if u > v {
-				u, v = v, u
-			}
-			curr := 0
-			for i := 0; i < MaxStations; i++ {
-				for j := i + 1; j < MaxStations; j++ {
-					if i == u && j == v {
-						return AddLineOffset + curr, true
-					}
-					curr++
-				}
-			}
-		}
-	case ExtendLine:
-		fromFront := 0
-		if !a.FromFront {
-			fromFront = 1
-		}
-		idx := (a.LineID*MaxStations+a.StationID)*2 + fromFront
-		if idx >= 0 && idx < ExtendLineCount {
-			return ExtendLineOffset + idx, true
-		}
-	case InsertStation:
-		idx := (a.LineID*MaxStations+a.StationID)*15 + a.Index
-		if idx >= 0 && idx < InsertStationCount {
-			return InsertStationOffset + idx, true
-		}
-	case AddTrain:
-		if a.LineID >= 0 && a.LineID < AddTrainCount {
-			return AddTrainOffset + a.LineID, true
-		}
-	case AddCarriage:
-		if a.LineID >= 0 && a.LineID < AddCarriageCount {
-			return AddCarriageOffset + a.LineID, true
-		}
-	case UpgradeInterchange:
-		if a.StationID >= 0 && a.StationID < UpgradeInterchangeCount {
-			return UpgradeInterchangeOffset + a.StationID, true
-		}
-	case CloseLoop:
-		if a.LineID >= 0 && a.LineID < CloseLoopCount {
-			return CloseLoopOffset + a.LineID, true
-		}
-	case OpenLoop:
-		if a.LineID >= 0 && a.LineID < OpenLoopCount {
-			return OpenLoopOffset + a.LineID, true
-		}
-	case ChooseReward:
-		idx := int(a.Choice)
-		if idx >= 0 && idx < ChooseRewardCount {
-			return ChooseRewardOffset + idx, true
-		}
-	}
-	return -1, false
-}
-
 // GetActionMask evaluates current state constraints and returns a boolean slice of length TotalActionSpaceSize
 // indicating which actions are legally executable at the current tick.
 func (s *Simulator) GetActionMask(outMask []bool) []bool {
@@ -238,8 +173,8 @@ func (s *Simulator) GetActionMask(outMask []bool) []bool {
 		return outMask
 	}
 
-	// Action 0: NoOp is valid only if no reward choice is pending
-	outMask[ActionNoOp] = len(s.State.PendingRewardChoices) == 0
+	// Action 0: NoOp is always valid
+	outMask[ActionNoOp] = true
 
 	// If pending reward choices exist, only ChooseReward actions are valid
 	if len(s.State.PendingRewardChoices) > 0 {
@@ -255,49 +190,15 @@ func (s *Simulator) GetActionMask(outMask []bool) []bool {
 
 	// 1. AddLine
 	if s.State.Resources.CanSpend(RewardLine) && s.State.Resources.CanSpend(RewardTrain) {
-		s.rebuildGraphIfNeeded()
-
-		// Count alive stations with degree 0 (isolated stations)
-		isolatedCount := 0
-		for stID := 0; stID < N; stID++ {
-			if s.State.Stations[stID].Alive && s.stationDegree(stID) == 0 {
-				isolatedCount++
-			}
-		}
-
 		currIdx := 0
 		for u := 0; u < MaxStations; u++ {
 			for v := u + 1; v < MaxStations; v++ {
 				if u < N && v < N && s.State.Stations[u].Alive && s.State.Stations[v].Alive {
-					// 1) Never create duplicate direct parallel track between the same station pair
-					if !s.hasDirectSegment(u, v) {
-						degU := s.stationDegree(u)
-						degV := s.stationDegree(v)
-
-						// 2) Anti-redundancy constraint:
-						// If any stations are isolated, require the new line to connect at least one isolated station
-						// OR bridge two disconnected components.
-						// If all stations are already served, only allow lines that bridge disconnected components.
-						canReach := s.CanReach(u, v)
-						allow := false
-						if isolatedCount > 0 {
-							if degU == 0 || degV == 0 || !canReach {
-								allow = true
-							}
-						} else {
-							if !canReach {
-								allow = true
-							}
-						}
-
-						if allow {
-							uPos := s.State.Stations[u].Pos
-							vPos := s.State.Stations[v].Pos
-							needsTunnel := CrossesWater(uPos, vPos, s.State.Rivers, s.State.WaterPolygons)
-							if !needsTunnel || s.State.Resources.CanSpend(RewardTunnel) {
-								outMask[AddLineOffset+currIdx] = true
-							}
-						}
+					uPos := s.State.Stations[u].Pos
+					vPos := s.State.Stations[v].Pos
+					needsTunnel := CrossesWater(uPos, vPos, s.State.Rivers, s.State.WaterPolygons)
+					if !needsTunnel || s.State.Resources.CanSpend(RewardTunnel) {
+						outMask[AddLineOffset+currIdx] = true
 					}
 				}
 				currIdx++
@@ -308,7 +209,7 @@ func (s *Simulator) GetActionMask(outMask []bool) []bool {
 	// 2. ExtendLine
 	for lID := 0; lID < len(s.State.Lines); lID++ {
 		line := &s.State.Lines[lID]
-		if line.Removed || line.IsLoop || len(line.Stations) == 0 {
+		if line.Removed || len(line.Stations) == 0 {
 			continue
 		}
 
@@ -331,25 +232,21 @@ func (s *Simulator) GetActionMask(outMask []bool) []bool {
 
 			// Front extension
 			endFront := line.Stations[0]
-			if !s.hasDirectSegment(endFront, stID) {
-				needsTunnelF := CrossesWater(s.State.Stations[endFront].Pos, s.State.Stations[stID].Pos, s.State.Rivers, s.State.WaterPolygons)
-				if !needsTunnelF || s.State.Resources.CanSpend(RewardTunnel) {
-					idx := (lID*MaxStations+stID)*2 + 0
-					if idx < ExtendLineCount {
-						outMask[ExtendLineOffset+idx] = true
-					}
+			needsTunnelF := CrossesWater(s.State.Stations[endFront].Pos, s.State.Stations[stID].Pos, s.State.Rivers, s.State.WaterPolygons)
+			if !needsTunnelF || s.State.Resources.CanSpend(RewardTunnel) {
+				idx := (lID*MaxStations+stID)*2 + 0
+				if idx < ExtendLineCount {
+					outMask[ExtendLineOffset+idx] = true
 				}
 			}
 
 			// Back extension
 			endBack := line.Stations[len(line.Stations)-1]
-			if !s.hasDirectSegment(endBack, stID) {
-				needsTunnelB := CrossesWater(s.State.Stations[endBack].Pos, s.State.Stations[stID].Pos, s.State.Rivers, s.State.WaterPolygons)
-				if !needsTunnelB || s.State.Resources.CanSpend(RewardTunnel) {
-					idx := (lID*MaxStations+stID)*2 + 1
-					if idx < ExtendLineCount {
-						outMask[ExtendLineOffset+idx] = true
-					}
+			needsTunnelB := CrossesWater(s.State.Stations[endBack].Pos, s.State.Stations[stID].Pos, s.State.Rivers, s.State.WaterPolygons)
+			if !needsTunnelB || s.State.Resources.CanSpend(RewardTunnel) {
+				idx := (lID*MaxStations+stID)*2 + 1
+				if idx < ExtendLineCount {
+					outMask[ExtendLineOffset+idx] = true
 				}
 			}
 		}
@@ -381,13 +278,8 @@ func (s *Simulator) GetActionMask(outMask []bool) []bool {
 
 			stNewPos := s.State.Stations[stID].Pos
 			for segIdx := 1; segIdx < n && segIdx <= 15; segIdx++ {
-				prevSt := line.Stations[segIdx-1]
-				nextSt := line.Stations[segIdx]
-				if s.hasDirectSegment(prevSt, stID) || s.hasDirectSegment(stID, nextSt) {
-					continue
-				}
-				stPrevPos := s.State.Stations[prevSt].Pos
-				stNextPos := s.State.Stations[nextSt].Pos
+				stPrevPos := s.State.Stations[line.Stations[segIdx-1]].Pos
+				stNextPos := s.State.Stations[line.Stations[segIdx]].Pos
 
 				cross1 := CrossesWater(stPrevPos, stNewPos, s.State.Rivers, s.State.WaterPolygons)
 				cross2 := CrossesWater(stNewPos, stNextPos, s.State.Rivers, s.State.WaterPolygons)
@@ -469,14 +361,9 @@ func (s *Simulator) GetActionMask(outMask []bool) []bool {
 	}
 
 	// 6. CloseLoop / OpenLoop / RemoveLine / ShortenLine
-	for lID := 0; lID < len(s.State.Lines) && lID < MaxLines; lID++ {
+	for lID := 0; lID < len(s.State.Lines); lID++ {
 		line := &s.State.Lines[lID]
 		if line.Removed {
-			continue
-		}
-
-		// Cooldown: prevent toggling loop state within 10 seconds of last toggle
-		if s.loopToggled[lID] && s.State.GameTimeSeconds-s.lastLoopToggleTime[lID] < 10.0 {
 			continue
 		}
 
