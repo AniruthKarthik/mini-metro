@@ -23,13 +23,14 @@ def make_env(seed, map_id=-1):
 
 def run_training():
     cpu_cores = os.cpu_count() or 2
-    # In Colab/cloud environments (typically 2 vCPUs, ~12GB RAM), spawning 32 processes
-    # triggers OS OOM-killer (SIGKILL) and BrokenPipeError. 8 envs is safe, efficient, and robust.
-    num_envs = int(os.environ.get("NUM_ENVS", min(8, max(4, cpu_cores * 4))))
-    total_timesteps = 10000000
-    # 256 steps * 8 envs = 2048 transitions per update.
-    # Drastically reduces rollout latency from 6 minutes down to ~15-20 seconds per update!
-    num_steps = int(os.environ.get("NUM_STEPS", 256))
+    # SyncVectorEnv runs in-process with zero IPC overhead and takes only ~60MB RAM.
+    # 32 envs on GPU saturates CUDA/Tensor cores while avoiding process thrashing.
+    cuda_avail = torch.cuda.is_available()
+    default_envs = 32 if cuda_avail else min(16, max(4, cpu_cores * 2))
+    num_envs = int(os.environ.get("NUM_ENVS", default_envs))
+    total_timesteps = int(os.environ.get("TOTAL_TIMESTEPS", 10000000))
+    # 128 steps * 32 envs = 4096 transitions per update (matches proven optimal PPO baseline).
+    num_steps = int(os.environ.get("NUM_STEPS", 128))
     batch_size = num_envs * num_steps
     num_minibatches = 4
     minibatch_size = batch_size // num_minibatches
@@ -39,22 +40,21 @@ def run_training():
     os.makedirs("runs/minimetro_ppo", exist_ok=True)
     writer = SummaryWriter("runs/minimetro_ppo")
     
-    # Use AsyncVectorEnv with 'spawn' and shared_memory=False to prevent Python 3.13 BufferError and POSIX semaphore leaks
-    envs = gym.vector.AsyncVectorEnv(
-        [make_env(i) for i in range(num_envs)],
-        context='spawn',
-        shared_memory=False
-    )
+    # Use SyncVectorEnv: The Go simulator runs in C via ctypes in ~26us. Running in-process
+    # eliminates all multiprocessing IPC pipe bottlenecks and avoids Colab 12.7GB OOM.
+    envs = gym.vector.SyncVectorEnv([make_env(i) for i in range(num_envs)])
     torch.set_num_threads(min(4, max(1, cpu_cores)))
     
     device = torch.device("cpu")
-    if torch.cuda.is_available():
+    if cuda_avail:
         try:
             major, minor = torch.cuda.get_device_capability()
             if major >= 7:
                 device = torch.device("cuda")
-                # Enable TensorFloat-32 (TF32) for massive speedups on RTX 3000/4000 series GPUs (like in the Lenovo Yoga)
-                torch.set_float32_matmul_precision('high')
+                torch.backends.cudnn.benchmark = True
+                if major >= 8:
+                    # Enable TensorFloat-32 (TF32) for Ampere/Ada/Hopper (RTX 3000+, A100)
+                    torch.set_float32_matmul_precision('high')
             else:
                 print(f"⚠️ Warning: GPU {torch.cuda.get_device_name(0)} has CUDA capability sm_{major}{minor}, which is not supported by PyTorch 2.x wheels. Falling back to CPU.", flush=True)
         except Exception as e:
@@ -82,7 +82,7 @@ def run_training():
     
     base_model = MiniMetroActorCritic(hidden_dim=256).to(device)
     if device.type == "cuda" and torch.cuda.device_count() > 1:
-        print(f"🔥 Enabling DataParallel across {torch.cuda.device_count()} T4 GPUs!", flush=True)
+        print(f"🔥 Enabling DataParallel across {torch.cuda.device_count()} GPUs!", flush=True)
         model = torch.nn.DataParallel(base_model)
     else:
         model = base_model
@@ -128,9 +128,10 @@ def run_training():
             lstm_cx[step] = next_lstm_state[1].squeeze(0)
             
             with torch.no_grad():
-                mask = next_obs_tensor["action_mask"].bool()
-                action, logprob, _, value, next_lstm_state = raw_model.get_action_and_value(next_obs_tensor, lstm_state=next_lstm_state, mask=mask)
-                values[step] = value.flatten()
+                with torch.amp.autocast(device_type=device.type, dtype=torch.float16, enabled=(device.type == "cuda")):
+                    mask = next_obs_tensor["action_mask"].bool()
+                    action, logprob, _, value, next_lstm_state = raw_model.get_action_and_value(next_obs_tensor, lstm_state=next_lstm_state, mask=mask)
+                    values[step] = value.flatten()
             
             actions[step] = action
             logprobs[step] = logprob
@@ -157,7 +158,8 @@ def run_training():
                         writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
 
         with torch.no_grad():
-            next_value = raw_model.get_value(next_obs_tensor, lstm_state=next_lstm_state).reshape(1, -1)
+            with torch.amp.autocast(device_type=device.type, dtype=torch.float16, enabled=(device.type == "cuda")):
+                next_value = raw_model.get_value(next_obs_tensor, lstm_state=next_lstm_state).reshape(1, -1)
             advantages, returns = agent.compute_gae(rewards, values, next_value, dones, next_done)
             
         b_obs = obs
@@ -196,11 +198,16 @@ def run_training():
         noop_rate = (b_actions == 0).float().mean().item()
         writer.add_scalar("charts/noop_rate", noop_rate, global_step)
         
-        update_time = time.time() - update_start_time
-        print(f"✅ Completed {update}/{num_updates} | steps={global_step} | SPS={int(global_step / max(time.time() - start_time, 1e-6))} | v_loss={v_loss:.4f} | pg_loss={pg_loss:.4f} | entropy={ent_loss:.4f} | KL={approx_kl:.6f} | time={update_time:.2f}s", flush=True)
-
+        vram_metric = ""
         if device.type == "cuda":
-            torch.cuda.empty_cache()
+            alloc = torch.cuda.memory_allocated(0) / (1024**3)
+            cached = torch.cuda.memory_reserved(0) / (1024**3)
+            vram_metric = f" | VRAM: {alloc:.2f}/{cached:.2f}GB"
+            writer.add_scalar("resources/gpu_allocated_gb", alloc, global_step)
+            writer.add_scalar("resources/gpu_reserved_gb", cached, global_step)
+
+        update_time = time.time() - update_start_time
+        print(f"✅ Completed {update}/{num_updates} | steps={global_step} | SPS={int(global_step / max(time.time() - start_time, 1e-6))} | v_loss={v_loss:.4f} | pg_loss={pg_loss:.4f} | entropy={ent_loss:.4f} | KL={approx_kl:.6f}{vram_metric} | time={update_time:.2f}s", flush=True)
         
     envs.close()
     writer.close()
