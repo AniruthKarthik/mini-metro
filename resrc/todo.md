@@ -470,182 +470,44 @@ Same fragile loop as `env.py`. Fix both together when C API is updated.
 
 ---
 
-## 8. Prioritized Implementation Roadmap
+## 8. Implementation Roadmap & Status
 
-### Phase 1 — Fix Showstoppers ✅ COMPLETED (branch: fixes)
+### Completed Tasks Archive (Phases 1–5: Tasks 1–22) ✅
 
-| # | Change | File(s) | Time |
+All initial diagnostic fixes, observation improvements, GNN enhancements, action space refactoring, and Phase 5 advanced architecture have been completed and verified on branch `fixes`.
+
+| Phase | Description | Key Changes | Commit |
 |---|---|---|---|
-| 1 | Fix `eval.py` hidden_dim 128 → 256 | `ml/eval.py` L19 | 1 min |
-| 2 | Remove `-0.05` flat action penalty | `ml/env.py` L173-175 | 1 min |
-| 3 | Normalize `globals[6]` score | `observation.go` L204 | 2 min |
-| 4 | Increase `num_steps = 512` | `ml/train.py` L27 | 1 min |
-| 5 | Increase `ent_coef = 0.05` | `ml/ppo.py` L7 | 1 min |
-| 6 | Move advantage normalization to full-batch | `ml/train.py` + `ml/ppo.py` | 5 min |
-| 7 | Fix `SyncVectorEnv` in `train_local.py` | `ml/train_local.py` L266 | 2 min |
+| **Phase 1: Showstoppers** | Fix PPO & training basics | `num_steps=512`, `ent_coef=0.05`, full-batch advantage norm, score normalization (`/500`), removed flat `-0.05` action penalty, `AsyncVectorEnv` in `train_local.py` | [`e83b59d`](file:///home/leomarshall/mm) |
+| **Phase 2: Observation** | Station congestion & topology | `NodeFeatureDim` 25→29 (+fill_ratio, lines_serving, timer_norm, queue_norm); `GlobalFeatureDim` 8→13 (+station_count, max_fill, overcrowd_count, pending_reward, game_time); exact `num_nodes`/`num_edges` from C API | [`86f21f7`](file:///home/leomarshall/mm) |
+| **Phase 3: GNN Architecture** | Message expressiveness & depth | `GNNLayer` with `dst_feat` in messages; edge update MLP (evolving edge representations); 3rd GNN layer with residual connection; mean+max node pooling | [`ab4e5b3`](file:///home/leomarshall/mm) |
+| **Phase 4: Action & Reward** | Action grounding & incentives | `AddCarriage` indexed by `lineID` (action space 4108→4087); `ConnectivityBonus = 2.0` in `scoring.go`; `AlphaCrowdPenalty` 0.05→0.30; `BetaGameOverPenalty` 50→200 | [`7fecb77`](file:///home/leomarshall/mm) |
+| **Phase 5: Advanced Arch** | Hierarchical head & bilinear | Hierarchical 12-way action type head (eliminates 76.7% `InsertStation` bias); bilinear action scoring from per-node embeddings; train position/load/proximity features (`NodeFeatureDim` 29→32); PPO value clipping (`PPO-5`); $\gamma = 0.995$ (`PPO-6`); deterministic eval (`INF-1`) | [`1fabc63`](file:///home/leomarshall/mm) |
 
-**Status**: All 7 fixes applied and smoke-tested on branch `fixes`.
+---
 
-**Test results** (3 PPO updates, 4 envs, 32 steps/update):
-```
-PASS ent_coef=0.05
-PASS update_epochs default=4
-Update 1/3 | pg=-0.0271 v=0.4966 ent=0.8745 kl=0.000033 noop=42.2% lr=3.00e-04
-Update 2/3 | pg=-0.0678 v=4.5364 ent=0.9362 kl=0.000014 noop=43.0% lr=2.00e-04
-Update 3/3 | pg=0.1269  v=3.4182 ent=0.9363 kl=0.000023 noop=41.4% lr=1.00e-04
-PASS all losses finite
-PASS rewards have positive values (survival bonus active)
-PASS no -0.05 flat action penalty
-reward range [-0.095, 2.010]
-```
-**Observations**: entropy ~0.9 (healthy for early training), KL <0.001 (well within clip range),
-NoOp rate 41-43% (acceptable — was likely >70% before removing action penalty),
-LR decaying correctly, all losses finite.
+### Phase 6 — Anti-Redundancy & Scoring Engine Overhaul 🚀 (ACTIVE)
 
-**Files changed**:
-| File | Changes |
-|---|---|
-| `ml/ppo.py` | ent_coef 0.01→0.05; update_epochs 2→4; removed per-minibatch advantage norm |
-| `ml/train.py` | num_steps 128→512; full-batch adv norm; LR decay; NoOp rate logging; checkpoint every 10 updates |
-| `ml/env.py` | Removed -0.05 flat penalty; added survival +0.01/step; added early overcrowd gradient |
-| `ml/eval.py` | hidden_dim 128→256 |
-| `ml/train_local.py` | SyncVectorEnv→AsyncVectorEnv(context=spawn) |
-| `simulator/engine/observation.go` | globals[6] score normalized by /500 |
-| `simulator/c_api/` | Rebuilt libminimetro.so |
+> **Objective**: Directly eliminate the degenerate *"connect every station with every line"* behavior by removing parallel duplicate actions from the action mask and penalizing wasteful/redundant connections.
 
-**Next**: run full training for 5M steps, then proceed to Phase 2 (observation improvements).
+| # | Task | File(s) | Impact |
+|---|---|---|---|
+| 23 | **Mask Duplicate Direct Lines in Action Mask**<br>In `GetActionMask`, set `outMask[AddLine(u, v)] = false` if a direct connection between station $u$ and station $v$ already exists on ANY active line. | `simulator/engine/action_space.go` | **CRITICAL**: Completely prevents agent from spending line tokens to create duplicate parallel lines between the same two starter stations. |
+| 24 | **Direct Redundancy Penalty in Reward**<br>Add an explicit penalty (e.g. $-0.75$) when `AddLine` or `ExtendLine` connects two stations that are already directly connected or reachable in $\le 2$ hops. Grant a $+0.50$ bonus when connecting a previously isolated station. | `simulator/engine/scoring.go`<br>`ml/env.py` | **CRITICAL**: Replaces neutral feedback with an active negative gradient against redundant infrastructure. |
+| 25 | **Loop Action Thrashing Cooldown / Friction**<br>Mask `OpenLoop` or enforce a cooldown (e.g. 15s) after `CloseLoop` is executed to prevent rapid alternating back and forth without gameplay effect. | `simulator/engine/action_space.go`<br>`simulator/engine/simulator.go` | **HIGH**: Stops random/entropy-driven toggle thrashing of loop actions. |
+| 26 | **Line Opportunity Cost & Under-Utilization Penalty**<br>Penalize active lines carrying 0 passengers over a sustained duration (e.g. 30s) while stations are overcrowded, training the agent to only keep productive lines. | `simulator/engine/scoring.go`<br>`ml/env.py` | **MEDIUM**: Forces the agent to prune or extend ineffective lines. |
 
-Retrain from scratch for 5M steps. Measure: episode length, game score, NoOp rate.
+---
 
-### Phase 2 — Improve Observation ✅ COMPLETED (branch: fixes)
+### Phase 7 — Retraining & Live Verification 🚀 (ACTIVE)
 
-| # | Change | File(s) |
-|---|---|---|
-| 8 | Add fill_ratio + timer + line_count to nodes (NodeDim: 25→29) | `observation.go` + `env.py` + `model.py` |
-| 9 | Add max_queue, overcrowding_count, pending_reward flag to globals (GlobalDim: 8→13) | `observation.go` + `env.py` + `model.py` |
-| 10 | Expose num_nodes/num_edges from C API; remove heuristic | `c_api/main.go` + `env.py` + `agent.py` |
+> **Objective**: Train a fresh model from scratch using the new Phase 5/6 architecture and verify in real-time gameplay.
 
-**Status**: All 3 tasks applied and smoke-tested on branch `fixes`.
-
-**Changes**:
-| File | Changes |
-|---|---|
-| `simulator/engine/observation.go` | NodeDim 25→29 (+fill_ratio, lines_serving, timer_norm, queue_norm); GlobalDim 8→13 (+station_count, max_fill, overcrowd_count, pending_reward, game_time) |
-| `simulator/c_api/main.go` | GetObservation now returns numNodes/numEdges via int32 output params |
-| `ml/env.py` | Updated dims; new C API call; removed fragile heuristic node/edge counting |
-| `ml/model.py` | Updated default dims (node 25→29, global 8→13); mean+max pooling; fc dims ×2→×3 |
-
-**Test results**:
-```
-PASS node shape (30, 29), global shape (13,)
-PASS num_nodes from C API = 3  (no heuristic)
-PASS new globals: station_count=0.100 max_fill=0.000 overcrowd=0.000 pending=0 gametime=0.000
-PASS model forward: action=2 logprob=-1.4402 entropy=1.3800 value=-0.1020
-PASS mean+max pool: fc_actor input = 96 = 3*H
-PASS all losses finite across 3 PPO updates
-```
-
-**Next**: Phase 3 — Fix GNN Architecture (dst_feat in messages, 3rd GCN layer, edge update MLP).
-
-Retrain for 10M steps. Verify: congested stations get served more reliably.
-
-### Phase 3 — Fix GNN Architecture ✅ COMPLETED (branch: fixes)
-
-| # | Change | File(s) |
-|---|---|---|
-| 11 | Replace mean pool with mean+max pool | `ml/model.py` |
-| 12 | Include dst_feat in GCN message function | `ml/model.py` |
-| 13 | Add 3rd GCN layer with residual connection | `ml/model.py` |
-| 14 | Add edge update MLP; pass updated edges between layers | `ml/model.py` |
-
-**Status**: All 3 tasks applied and smoke-tested on branch `fixes`.
-
-**Changes** (all in `ml/model.py`):
-| Task | What changed |
-|---|---|
-| GNN-1: edge update MLP | `DenseGCNLayer` replaced with `GNNLayer` which returns `(new_nodes, new_edges)`; each layer now evolves edge embeddings via `edge_update(src, dst, e)` and passes them to the next layer |
-| GNN-2: dst_feat in messages | `msg_proj` input changed from `[src, edge]` (2H) to `[src, dst, edge]` (3H) — destination node state now influences messages, enabling "station A is congested" to propagate upstream |
-| GNN-3: 3rd layer + residual | Added `gcn3 = GNNLayer(...)` with `x3 = gcn3(x2) + x2` residual — information now propagates 3 hops (was 2); residual prevents oversmoothing |
-
-**Test results**:
-```
-PASS: GNNLayer present, DenseGCNLayer removed
-PASS: 3 GNNLayers present
-PASS: msg_proj input = 96 = 3H (dst_feat included)
-PASS: edge_update MLP present
-PASS: forward pass — action=0 lp=-1.3581 ent=1.3811 val=-0.0798
-PASS: 5 env steps — all model outputs finite with residual connection
-INFO: model params = 175,821
-PASS: 3 PPO updates — all losses finite, KL < 0.001
-```
-
-**Next**: Phase 4 — Fix Action Space & Reward (AddCarriage by lineID, improved reward, BetaGameOverPenalty×4).
-
-Retrain. Verify: policy selects different actions for different congested stations.
-
-### Phase 4 — Fix Action Space & Reward ✅ COMPLETED (branch: fixes)
-
-| # | Change | File(s) |
-|---|---|---|
-| 15 | Change AddCarriage to index by lineID | `action_space.go` + `simulator.go` |
-| 16 | Implement improved reward with survival bonus + connectivity bonus | `scoring.go` + `env.py` |
-| 17 | Increase BetaGameOverPenalty to 200 | `scoring.go` |
-| 18 | Add `pending_reward` binary flag to globals | `observation.go` |
-
-**Status**: Tasks 15, 16, 17 applied and smoke-tested. Task 18 (pending_reward global flag) was completed in Phase 2.
-
-**Changes**:
-| Task | File(s) | Change |
-|---|---|---|
-| 15: AddCarriage by lineID | `engine/action_space.go`, `engine/actions.go`, `engine/simulator.go`, `server/actions.go` | `AddCarriage{TrainID}`→`AddCarriage{LineID}`; action space 4108→4087; agent now targets a line it can reason about, not an opaque train slot |
-| 16: Improved reward | `engine/scoring.go` | Added `ConnectivityBonus=2.0` — reward per reachable distinct-type station pair; eliminates positive gradient for redundant connections |
-| 16: Survival bonus | already in `env.py` | Kept from Phase 1 (+0.01/step) |
-| 17: BetaGameOverPenalty×4 | `engine/scoring.go` | 50→200; game-over signal now dominates |
-| 17: AlphaCrowdPenalty×6 | `engine/scoring.go` | 0.05→0.30; crowding penalty now meaningful vs delivery reward |
-| 18: pending_reward flag | `engine/observation.go` | globals[11] — done in Phase 2 |
-
-**Test results**:
-```
-PASS: action_space_size=4087 (was 4108)
-PASS: model output dim=4087
-PASS: rewards include positive signal (connectivity bonus + survival)
-PASS: mean reward=0.010 over non-gameover steps
-PASS: forward pass — action=0 ent=1.0980
-Go build: ALL OK (libminimetro.so rebuilt)
-```
-
-**Next**: Phase 5 — Advanced Architecture (hierarchical action head, bilinear scoring, train position features, value clipping).
-
-### Phase 5 — Advanced Architecture ✅ COMPLETED (branch: fixes)
-
-| # | Change | File(s) |
-|---|---|---|
-| 19 | Hierarchical action head (action type first, then params) | `ml/model.py` |
-| 20 | Bilinear action scoring using per-node embeddings directly | `ml/model.py` |
-| 21 | Add train position/load/proximity to node features (NodeDim: 29→32) | `observation.go` + `env.py` + `agent.py` + `model.py` |
-| 22 | Value function clipping in PPO (`PPO-5`) + gamma=0.995 (`PPO-6`) + deterministic eval (`INF-1`) | `ml/ppo.py` + `ml/train.py` + `ml/train_local.py` + `ml/eval.py` |
-
-**Status**: All 4 tasks applied and smoke-tested.
-
-**Changes**:
-| Task | File(s) | Change |
-|---|---|---|
-| 19: Hierarchical action head | `ml/model.py` | 12-way action type selector head (`type_net`); factorizes $P(a) = P(\text{type } t) \cdot P(a \mid t)$; eliminates 76.7% `InsertStation` dominance bias while keeping exact 4087-way action ID compatibility |
-| 20: Bilinear action scoring | `ml/model.py` | `AddLine` (435) scored via symmetric bilinear form $S = \frac{1}{2}(q_u^T k_v + q_v^T k_u)$; `UpgradeInterchange` (30) scored via station projection; `ExtendLine` (420) and `InsertStation` (3150) scored via factored line/end and line/segment embeddings against station embeddings $x_u$ |
-| 21: Train position/load/prox | `engine/observation.go`, `ml/env.py`, `ml/agent.py`, `ml/model.py` | `NodeFeatureDim` 29→32: +incoming_train_count ([29]), +incoming_train_load ([30]), +nearest_train_proximity ([31]); `libminimetro.so` rebuilt |
-| 22: Value clipping & gamma | `ml/ppo.py`, `ml/train.py`, `ml/train_local.py`, `ml/eval.py` | Added $v_{\text{clipped}}$ loss in PPO critic; default $\gamma = 0.995$; `eval.py` uses `deterministic=True` argmax |
-
-**Test results**:
-```
-PASS: node shape = (30, 32)
-PASS: train_count, train_load, train_prox in [0.0, 1.0]
-PASS: Hierarchical action probabilities sum to 1.0 per batch element (exact sum=1.000000)
-PASS: get_action_and_value sampling valid (entropy=5.4946)
-PASS: deterministic eval returns valid argmax
-PASS: PPO update with value clipping: pg=1.1512, v=0.0500, ent=5.5086, kl=0.001748
-PASS: Gradients successfully backpropagated to GNN, bilinear heads, and type selector!
-Go build: ALL OK (libminimetro.so rebuilt)
-```
+| # | Task | Command / File | Verification Criteria |
+|---|---|---|---|
+| 27 | **Train Model from Scratch**<br>Run local PPO training for 2M–5M steps with the new 32-dim observation, hierarchical bilinear policy, and anti-redundancy reward. | `python ml/train_local.py` | • Checkpoint saved to `runs/minimetro_ppo_local/`<br>• NoOp rate 15–35%<br>• Monitored redundant connection rate $< 15\%$ |
+| 28 | **Verify Live Gameplay (`make game`)**<br>Launch the full system (Vite UI, Go backend, Python AI agent) and observe network construction. | `make game` | • Agent loads new checkpoint with zero shape mismatch warnings<br>• Agent builds distinct, branching metro lines<br>• Survives past 500+ game seconds with high score |
+| 29 | **Benchmark Evaluation**<br>Run deterministic evaluation across seeds. | `python ml/eval.py` | • Average score $> 300$<br>• Zero crash or dimension mismatch |
 
 ---
 
