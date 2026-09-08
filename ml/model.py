@@ -56,15 +56,15 @@ class GNNLayer(nn.Module):
 
         edge_mask = (torch.arange(E, device=x.device).unsqueeze(0) < num_edges)  # [B, E]
         
-        attn_score = attn_score.masked_fill(~edge_mask, -1e9)
-        exp_score = torch.exp(attn_score) * edge_mask.float()
+        attn_score = attn_score.masked_fill(~edge_mask, -1e4)
+        exp_score = torch.exp(attn_score) * edge_mask.to(attn_score.dtype)
         
         sum_exp = torch.zeros(B * N, device=x.device, dtype=exp_score.dtype)
         offsets = torch.arange(B, device=x.device).unsqueeze(-1) * N  # [B, 1]
         flat_dst = (dst + offsets).view(-1)
         sum_exp.index_add_(0, flat_dst, exp_score.view(-1))
         
-        edge_sum_exp = torch.gather(sum_exp.view(B, N), 1, dst) + 1e-9
+        edge_sum_exp = torch.gather(sum_exp.view(B, N), 1, dst) + 1e-6
         alpha = exp_score / edge_sum_exp # [B, E]
         
         msg = msg * alpha.unsqueeze(-1)
@@ -83,7 +83,7 @@ class GNNLayer(nn.Module):
         new_edges = new_edges * edge_mask.unsqueeze(-1)
         
         node_mask = (torch.arange(N, device=x.device).unsqueeze(0) < num_nodes)
-        mean_pool = (new_nodes * node_mask.unsqueeze(-1)).sum(dim=1) / num_nodes.clamp(min=1).float()
+        mean_pool = (new_nodes * node_mask.unsqueeze(-1)).sum(dim=1) / num_nodes.clamp(min=1).to(new_nodes.dtype)
         new_global_ctx = self.global_update(torch.cat([mean_pool, global_ctx], dim=-1))
 
         return new_nodes, new_edges, new_global_ctx
@@ -292,17 +292,17 @@ class MiniMetroActorCritic(nn.Module):
             all_invalid = (~type_valid).all(dim=-1, keepdim=True)
             type_valid = torch.where(all_invalid, torch.ones_like(type_valid), type_valid)
 
-            type_log_probs = F.log_softmax(type_logits.masked_fill(~type_valid, -1e9), dim=-1)  # [B, 12]
+            type_log_probs = F.log_softmax(type_logits.masked_fill(~type_valid, -1e4), dim=-1)  # [B, 12]
 
-            action_log_probs = torch.full((B, 4087), -1e9, device=combined.device, dtype=combined.dtype)
+            action_log_probs = torch.full((B, 4087), -1e4, device=combined.device, dtype=combined.dtype)
             for k, (s, p_scores) in enumerate(zip(ACTION_TYPE_SLICES, param_scores_list)):
                 p_mask = mask[:, s]
                 p_valid = p_mask.any(dim=-1, keepdim=True)
                 safe_mask = torch.where(p_valid, p_mask, torch.ones_like(p_mask))
-                p_log_probs = F.log_softmax(p_scores.masked_fill(~safe_mask, -1e9), dim=-1)
+                p_log_probs = F.log_softmax(p_scores.masked_fill(~safe_mask, -1e4), dim=-1)
 
                 joint = type_log_probs[:, k:k+1] + p_log_probs
-                action_log_probs[:, s] = torch.where(p_mask, joint, -1e9)
+                action_log_probs[:, s] = torch.where(p_mask, joint, -1e4)
         else:
             type_log_probs = F.log_softmax(type_logits, dim=-1)
             action_log_probs = torch.zeros(B, 4087, device=combined.device, dtype=combined.dtype)
@@ -323,7 +323,7 @@ class MiniMetroActorCritic(nn.Module):
         logits, value, next_lstm_state = self.forward(obs, lstm_state=lstm_state, mask=mask)
 
         if mask is not None and not self.use_hierarchical:
-            logits = logits.masked_fill(~mask, -1e9)
+            logits = logits.masked_fill(~mask, -1e4)
 
         probs = torch.distributions.Categorical(logits=logits)
 
@@ -331,7 +331,7 @@ class MiniMetroActorCritic(nn.Module):
             if deterministic:
                 # INF-1 fix: deterministic argmax selection for evaluation
                 if mask is not None:
-                    action = torch.argmax(logits.masked_fill(~mask, -1e9), dim=-1)
+                    action = torch.argmax(logits.masked_fill(~mask, -1e4), dim=-1)
                 else:
                     action = torch.argmax(logits, dim=-1)
             else:
@@ -378,7 +378,7 @@ class MiniMetroActorCritic(nn.Module):
 
         # PHASE-2: Hierarchical Pooling (DiffPool)
         assign_logits = self.diffpool_assign(x3) # [B_flat, N, 4]
-        assign_logits = assign_logits.masked_fill(~node_mask.unsqueeze(-1), -1e9)
+        assign_logits = assign_logits.masked_fill(~node_mask.unsqueeze(-1), -1e4)
         S = F.softmax(assign_logits, dim=1) # Softmax over nodes [B_flat, N, 4]
         
         # cluster features: S^T * X
