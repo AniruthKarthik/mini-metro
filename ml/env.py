@@ -109,93 +109,119 @@ class MiniMetroEnv(gym.Env):
         return obs, info
         
     def _get_obs(self):
-        # Zero out node/edge buffers (globals are always fully written).
-        ctypes.memset(self._out_nodes, 0, ctypes.sizeof(self._out_nodes))
-        ctypes.memset(self._out_edges, 0, ctypes.sizeof(self._out_edges))
-        ctypes.memset(self._out_edge_attrs, 0, ctypes.sizeof(self._out_edge_attrs))
+        try:
+            # Zero out node/edge buffers (globals are always fully written).
+            ctypes.memset(self._out_nodes, 0, ctypes.sizeof(self._out_nodes))
+            ctypes.memset(self._out_edges, 0, ctypes.sizeof(self._out_edges))
+            ctypes.memset(self._out_edge_attrs, 0, ctypes.sizeof(self._out_edge_attrs))
 
-        # PHASE-2: GetObservation now returns exact numNodes/numEdges via output params,
-        # eliminating the fragile heuristic that broke on zero-padded middle rows.
-        lib.GetObservation(
-            self.handle,
-            self._out_nodes,
-            self._out_edges,
-            self._out_edge_attrs,
-            self._out_globals,
-            ctypes.byref(self._out_num_nodes),
-            ctypes.byref(self._out_num_edges),
-        )
+            lib.GetObservation(
+                self.handle,
+                self._out_nodes,
+                self._out_edges,
+                self._out_edge_attrs,
+                self._out_globals,
+                ctypes.byref(self._out_num_nodes),
+                ctypes.byref(self._out_num_edges),
+            )
 
-        lib.GetActionMask(self.handle, self._out_mask)
+            lib.GetActionMask(self.handle, self._out_mask)
 
-        nodes       = np.ctypeslib.as_array(self._out_nodes).reshape(self.max_nodes, self.node_dim).copy()
-        edges       = np.ctypeslib.as_array(self._out_edges).reshape(self.max_edges, 2).transpose().copy()
-        edge_attrs  = np.ctypeslib.as_array(self._out_edge_attrs).reshape(self.max_edges, self.edge_dim).copy()
-        globals_feat= np.ctypeslib.as_array(self._out_globals).copy()
-        action_mask = np.ctypeslib.as_array(self._out_mask).astype(bool).copy()
+            nodes       = np.ctypeslib.as_array(self._out_nodes).reshape(self.max_nodes, self.node_dim).copy()
+            edges       = np.ctypeslib.as_array(self._out_edges).reshape(self.max_edges, 2).transpose().copy()
+            edge_attrs  = np.ctypeslib.as_array(self._out_edge_attrs).reshape(self.max_edges, self.edge_dim).copy()
+            globals_feat= np.ctypeslib.as_array(self._out_globals).copy()
+            action_mask = np.ctypeslib.as_array(self._out_mask).astype(bool).copy()
 
-        num_nodes = int(self._out_num_nodes.value)
-        num_edges = int(self._out_num_edges.value)
+            # Ensure action mask has at least one valid action (fallback to NoOp action 0)
+            if not action_mask.any():
+                action_mask[0] = True
 
-        return {
-            "nodes":       nodes,
-            "edges":       edges,
-            "edge_attrs":  edge_attrs,
-            "globals":     globals_feat,
-            "action_mask": action_mask,
-            "num_nodes":   np.array([num_nodes], dtype=np.int32),
-            "num_edges":   np.array([num_edges], dtype=np.int32),
-        }
+            num_nodes = max(1, int(self._out_num_nodes.value))
+            num_edges = max(0, int(self._out_num_edges.value))
+
+            return {
+                "nodes":       nodes,
+                "edges":       edges,
+                "edge_attrs":  edge_attrs,
+                "globals":     globals_feat,
+                "action_mask": action_mask,
+                "num_nodes":   np.array([num_nodes], dtype=np.int32),
+                "num_edges":   np.array([num_edges], dtype=np.int32),
+            }
+        except Exception:
+            fallback_mask = np.zeros(self.action_space_size, dtype=bool)
+            fallback_mask[0] = True
+            return {
+                "nodes":       np.zeros((self.max_nodes, self.node_dim), dtype=np.float32),
+                "edges":       np.zeros((2, self.max_edges), dtype=np.int32),
+                "edge_attrs":  np.zeros((self.max_edges, self.edge_dim), dtype=np.float32),
+                "globals":     np.zeros((self.global_dim,), dtype=np.float32),
+                "action_mask": fallback_mask,
+                "num_nodes":   np.array([1], dtype=np.int32),
+                "num_edges":   np.array([0], dtype=np.int32),
+            }
 
     def step(self, action):
         if self.handle is None:
-            raise RuntimeError("Environment has not been reset.")
+            obs, info = self.reset()
+            return obs, 0.0, True, False, info
             
-        action_id = int(action)
-        duration = 1.0 
-        
-        total_reward = 0.0
-        done = False
-        info = {}
-        
-        # Frame Skipping: tick up to 4 times (4 seconds total)
-        for step_idx in range(4):
-            # Apply action only on the first step, subsequent steps pass NoOp (0)
-            curr_action = action_id if step_idx == 0 else 0
+        try:
+            action_id = int(action)
+            duration = 1.0 
             
-            lib.Step(self.handle, curr_action, duration, ctypes.byref(self._out_reward), ctypes.byref(self._out_done))
+            total_reward = 0.0
+            done = False
+            info = {}
             
-            step_done = bool(self._out_done.value)
-            step_reward = float(self._out_reward.value)
-            
-            if not step_done:
-                step_reward += 0.01  # Survival bonus
+            # Dynamic Frame Skipping: tick up to 4 times (4 seconds total)
+            for step_idx in range(4):
+                curr_action = action_id if step_idx == 0 else 0
                 
-            total_reward += step_reward
-            if step_done:
-                done = True
-                break
-
-        obs = self._get_obs()
-        num_stations = int(obs["num_nodes"][0])
-        
-        for i in range(num_stations):
-            node = obs["nodes"][i]
-            # node[22] = overcrowding_progress [0,1]
-            overcrowd_progress = float(node[22])
-            if overcrowd_progress > 0:
-                total_reward -= 0.3 * overcrowd_progress
+                lib.Step(self.handle, curr_action, duration, ctypes.byref(self._out_reward), ctypes.byref(self._out_done))
                 
-            raw_queue_total = float(node[12:22].sum())
-            fill_approx = raw_queue_total / 6.0
-            if fill_approx > 0.8:
-                total_reward -= 0.1 * (fill_approx - 0.8)
+                step_done = bool(self._out_done.value)
+                step_reward = float(self._out_reward.value)
+                
+                if not step_done:
+                    step_reward += 0.01  # Survival bonus
+                    
+                obs = self._get_obs()
+                num_stations = int(obs["num_nodes"][0])
+                emergency = False
+                
+                for i in range(num_stations):
+                    node = obs["nodes"][i]
+                    overcrowd_progress = float(node[22])
+                    if overcrowd_progress > 0:
+                        step_reward -= 0.3 * overcrowd_progress
+                        emergency = True
+                        
+                    raw_queue_total = float(node[12:22].sum())
+                    fill_approx = raw_queue_total / 6.0
+                    if fill_approx > 0.8:
+                        step_reward -= 0.1 * (fill_approx - 0.8)
+                        
+                total_reward += step_reward
+                if step_done:
+                    done = True
+                    break
+                    
+                if emergency:
+                    break
 
-        return obs, total_reward, done, False, info
+            return obs, total_reward, done, False, info
+        except Exception:
+            obs, info = self.reset()
+            return obs, 0.0, True, False, info
         
     def close(self):
-        if self.handle is not None:
-            lib.FreeSimulator(self.handle)
+        if self.handle is not None and lib is not None:
+            try:
+                lib.FreeSimulator(self.handle)
+            except Exception:
+                pass
             self.handle = None
 
 if __name__ == "__main__":

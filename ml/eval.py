@@ -1,7 +1,15 @@
+import sys
+import os
+try:
+    import gymnasium as gym
+except ImportError:
+    venv_python = os.path.join(os.path.dirname(os.path.abspath(__file__)), "venv", "bin", "python")
+    if os.path.exists(venv_python) and os.path.realpath(sys.executable) != os.path.realpath(venv_python):
+        os.execv(venv_python, [venv_python] + sys.argv)
+
 import torch
 import numpy as np
 import time
-import os
 import glob
 
 from env import MiniMetroEnv
@@ -46,7 +54,7 @@ def evaluate(model_path=None, map_id=0):
         mask = obs_tensor["action_mask"].bool()
         
         with torch.no_grad():
-            action, _, _, value = model.get_action_and_value(obs_tensor, mask=mask, deterministic=True)
+            action, _, _, value, _ = model.get_action_and_value(obs_tensor, mask=mask, deterministic=True)
             
         action_np = action.item()
         

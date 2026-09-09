@@ -1,10 +1,17 @@
+import sys
 import os
+try:
+    import gymnasium as gym
+except ImportError:
+    venv_python = os.path.join(os.path.dirname(os.path.abspath(__file__)), "venv", "bin", "python")
+    if os.path.exists(venv_python) and os.path.realpath(sys.executable) != os.path.realpath(venv_python):
+        os.execv(venv_python, [venv_python] + sys.argv)
+
 import time
 import glob
 
 import numpy as np
 import torch
-import gymnasium as gym
 try:
     import intel_extension_for_pytorch as ipex
 except ImportError:
@@ -221,18 +228,25 @@ def run_training():
     )
 
     # CPU configuration.
-    torch.set_num_threads(8)
-
     if torch.cuda.is_available():
         device = torch.device("cuda")
+        torch.set_float32_matmul_precision('high')
+        torch.backends.cudnn.benchmark = True
+        torch.set_num_threads(2)
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         # Apple Silicon integrated graphics
         device = torch.device("mps")
+        torch.set_num_threads(8)
     elif hasattr(torch, "xpu") and torch.xpu.is_available():
         # Intel integrated graphics
         device = torch.device("xpu")
+        torch.set_num_threads(8)
     else:
         device = torch.device("cpu")
+        torch.set_num_threads(8)
+
+    use_amp = (device.type == "cuda")
+    amp_dtype = torch.bfloat16 if (use_amp and torch.cuda.is_bf16_supported()) else torch.float16
 
     print("=" * 70)
     print("MiniMetro PPO Training")
@@ -278,8 +292,6 @@ def run_training():
     # DEVICE & MODEL
     # --------------------------------------------------------
 
-    device = torch.device("cpu")
-    
     model = MiniMetroActorCritic(hidden_dim=32).to(device)
     agent = PPO(
         model,
@@ -453,13 +465,14 @@ def run_training():
                         ].bool()
                     )
 
-                    action, logprob, _, value, next_lstm_state = (
-                        model.get_action_and_value(
-                            next_obs_tensor,
-                            lstm_state=next_lstm_state,
-                            mask=mask,
+                    with torch.amp.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
+                        action, logprob, _, value, next_lstm_state = (
+                            model.get_action_and_value(
+                                next_obs_tensor,
+                                lstm_state=next_lstm_state,
+                                mask=mask,
+                            )
                         )
-                    )
 
                     values[step] = value.flatten()
 
