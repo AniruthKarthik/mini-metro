@@ -499,7 +499,6 @@ def run_evaluation_suite(
             ckpt = torch.load(model_path, map_location=device, weights_only=False)
             state_dict = ckpt["model_state_dict"] if "model_state_dict" in ckpt else ckpt
             model.load_state_dict(state_dict)
-            model.debias_extension_embeddings()
         else:
             print(f"⚠️ No checkpoint found at '{model_path}', using randomly initialized model")
         model.eval()
