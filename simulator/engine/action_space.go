@@ -207,7 +207,7 @@ func (s *Simulator) GetActionMask(outMask []bool) []bool {
 	}
 
 	// 2. ExtendLine
-	for lID := 0; lID < len(s.State.Lines); lID++ {
+	for lID := 0; lID < len(s.State.Lines) && lID < MaxLines; lID++ {
 		line := &s.State.Lines[lID]
 		if line.Removed || len(line.Stations) == 0 {
 			continue
@@ -253,7 +253,7 @@ func (s *Simulator) GetActionMask(outMask []bool) []bool {
 	}
 
 	// 2b. InsertStation
-	for lID := 0; lID < len(s.State.Lines); lID++ {
+	for lID := 0; lID < len(s.State.Lines) && lID < MaxLines; lID++ {
 		line := &s.State.Lines[lID]
 		if line.Removed || len(line.Stations) < 2 {
 			continue
@@ -312,7 +312,7 @@ func (s *Simulator) GetActionMask(outMask []bool) []bool {
 
 	// 3. AddTrain
 	if s.State.Resources.CanSpend(RewardTrain) {
-		for lID := 0; lID < len(s.State.Lines); lID++ {
+		for lID := 0; lID < len(s.State.Lines) && lID < MaxLines; lID++ {
 			line := &s.State.Lines[lID]
 			if line.Removed || len(line.Stations) < 2 {
 				continue
@@ -363,7 +363,7 @@ func (s *Simulator) GetActionMask(outMask []bool) []bool {
 	// 6. CloseLoop / OpenLoop / RemoveLine / ShortenLine
 	const LoopToggleCooldownTicks = 900 // P1-4: 30 seconds at 30 Hz
 
-	for lID := 0; lID < len(s.State.Lines); lID++ {
+	for lID := 0; lID < len(s.State.Lines) && lID < MaxLines; lID++ {
 		line := &s.State.Lines[lID]
 		if line.Removed {
 			continue
