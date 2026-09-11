@@ -1,8 +1,15 @@
-.PHONY: back front clean fnlist game build-lib
+.PHONY: back front clean fnlist game build-lib test
 
 build-lib:
 	@echo "Building Mini Metro C-shared library for Python bindings..."
 	@bash ml/build_lib.sh
+
+test: build-lib
+	@echo "Running Go engine test suite..."
+	cd simulator && go test -v ./...
+	@echo "Running Python test suites..."
+	PYTHONPATH=. ./ml/venv/bin/python -m unittest discover -s ml -p "test_*.py"
+	@echo "All tests passed successfully!"
 
 back:
 	@echo "Starting Mini Metro Go backend server on port 6969..."
