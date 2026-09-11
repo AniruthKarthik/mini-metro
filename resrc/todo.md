@@ -14,9 +14,9 @@ Every task is designed to be immediately actionable by human developers and auto
   * [x] [P0-3: Evaluation & Probing Distribution Normalization Fix](#p0-3-evaluation--probing-distribution-normalization-fix)
 * **P1 — Major Policy & Architecture Problems**
   * [x] [P1-1: Explicit Candidate Distance & Geometric Awareness in AddLine](#p1-1-explicit-candidate-distance--geometric-awareness-in-addline)
-  * [ ] [P1-2: Redundant / Indiscriminate Network Expansion Mitigation](#p1-2-redundant--indiscriminate-network-expansion-mitigation)
-  * [ ] [P1-3: Candidate-Conditioned Line Scoring for AddTrain and AddCarriage](#p1-3-candidate-conditioned-line-scoring-for-addtrain-and-addcarriage)
-  * [ ] [P1-4: Loop Toggling Hysteresis & Reversal Oscillation Mitigation](#p1-4-loop-toggling-hysteresis--reversal-oscillation-mitigation)
+  * [x] [P1-2: Redundant / Indiscriminate Network Expansion Mitigation](#p1-2-redundant--indiscriminate-network-expansion-mitigation)
+  * [x] [P1-3: Candidate-Conditioned Line Scoring for AddTrain and AddCarriage](#p1-3-candidate-conditioned-line-scoring-for-addtrain-and-addcarriage)
+  * [x] [P1-4: Loop Toggling Hysteresis & Reversal Oscillation Mitigation](#p1-4-loop-toggling-hysteresis--reversal-oscillation-mitigation)
 * **P2 — Reward Shaping & Training Improvements**
   * [ ] [P2-1: Comprehensive Reward Decomposition & Ablation Suite](#p2-1-comprehensive-reward-decomposition--ablation-suite)
   * [ ] [P2-2: Geometric Efficiency & Track Sprawl Regularization](#p2-2-geometric-efficiency--track-sprawl-regularization)
@@ -269,7 +269,7 @@ Issues that significantly degrade decision quality or create behavioral patholog
 
 ---
 
-### P1-2: Redundant / Indiscriminate Network Expansion Mitigation
+### P1-2: Redundant / Indiscriminate Network Expansion Mitigation [COMPLETED]
 
 * **Problem**:
   The agent exhibits an "over-expansion / indiscriminate connectivity" bias: whenever a new station spawns, the model repeatedly attempts to connect it to multiple or all existing lines, regardless of whether additional lines provide any marginal benefit.
@@ -315,7 +315,7 @@ Issues that significantly degrade decision quality or create behavioral patholog
 
 ---
 
-### P1-3: Candidate-Conditioned Line Scoring for AddTrain and AddCarriage
+### P1-3: Candidate-Conditioned Line Scoring for AddTrain and AddCarriage [COMPLETED]
 
 * **Problem**:
   When a locomotive (`AddTrain`) or carriage (`AddCarriage`) becomes available, the model strongly favors **Line 0** ($45.0\%$) over **Line 1** ($28.7\%$) and **Line 2** ($26.2\%$), even when Line 2 has 15 waiting passengers and Line 0 has 0.
@@ -364,7 +364,7 @@ Issues that significantly degrade decision quality or create behavioral patholog
 
 ---
 
-### P1-4: Loop Toggling Hysteresis & Reversal Oscillation Mitigation
+### P1-4: Loop Toggling Hysteresis & Reversal Oscillation Mitigation [COMPLETED]
 
 * **Problem**:
   In evaluation rollouts on NYC and Tokyo, the model executed `CloseLoop` 5 times and `OpenLoop` 5 times on the exact same line, repeatedly toggling the line between a closed circle and an open linear track.

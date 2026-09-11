@@ -21,6 +21,7 @@ import time
 from env import MiniMetroEnv
 from model import MiniMetroActorCritic
 from ppo import PPO
+from probing import compute_expansion_metrics
 
 def make_env(seed, map_id=-1):
     def thunk():
@@ -292,6 +293,13 @@ def run_training():
         # PHASE-1 diagnostic: monitor NoOp rate (high = agent learned passivity).
         noop_rate = (b_actions == 0).float().mean().item()
         writer.add_scalar("charts/noop_rate", noop_rate, global_step)
+
+        # P1-2: Track network expansion and station redundancy metrics
+        exp_metrics = compute_expansion_metrics(b_obs, b_actions)
+        writer.add_scalar("charts/expansion_action_rate", exp_metrics.expansion_action_rate, global_step)
+        writer.add_scalar("charts/expansion_ratio", exp_metrics.expansion_ratio, global_step)
+        writer.add_scalar("charts/avg_lines_per_station", exp_metrics.lines_per_station_mean, global_step)
+        writer.add_scalar("charts/redundant_station_rate", exp_metrics.redundant_station_rate, global_step)
         
         update_time = time.time() - update_start_time
         print(f"✅ Completed {update}/{num_updates} | steps={global_step} | SPS={int(global_step / max(time.time() - start_time, 1e-6))} | v_loss={v_loss:.4f} | pg_loss={pg_loss:.4f} | entropy={ent_loss:.4f} | KL={approx_kl:.6f} | time={update_time:.2f}s", flush=True)

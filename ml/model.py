@@ -199,6 +199,20 @@ class MiniMetroActorCritic(nn.Module):
             nn.Linear(hidden_dim, 52)
         )
 
+        # P1-3: Candidate-conditioned dispatch heads for AddTrain and AddCarriage (7 lines)
+        self.dispatch_line_ctx = nn.Linear(hidden_dim * 5, hidden_dim)
+        self.dispatch_train_mlp = nn.Sequential(
+            nn.Linear(hidden_dim + 8 + hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1)
+        )
+        self.dispatch_carriage_mlp = nn.Sequential(
+            nn.Linear(hidden_dim + 8 + hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1)
+        )
+        self._init_dispatch_mlps()
+
         # Fallback flat actor head (for baseline ablation)
         self.fc_actor = nn.Sequential(
             nn.Linear(hidden_dim * 5, hidden_dim),
@@ -237,6 +251,137 @@ class MiniMetroActorCritic(nn.Module):
             linear2.weight[0, 16:24] = -0.5 / 8.0
             linear2.weight[0, 24:32] = -0.5 / 8.0
 
+    def _init_dispatch_mlps(self):
+        # Inductive bias: prioritize congested lines and long routes; penalize over-supplied lines
+        H = self.hidden_dim
+        nn.init.orthogonal_(self.dispatch_line_ctx.weight, gain=0.1)
+        self.dispatch_line_ctx.bias.data.zero_()
+
+        for mlp in (self.dispatch_train_mlp, self.dispatch_carriage_mlp):
+            lin1 = mlp[0]
+            lin2 = mlp[2]
+            with torch.no_grad():
+                lin1.weight.zero_()
+                lin1.bias.zero_()
+                lin2.weight.zero_()
+                lin2.bias.zero_()
+
+                # Inductive feature channels:
+                # Stat 2: total queue -> unit 0
+                lin1.weight[0, H + 2] = 2.0
+                # Stat 3: avg queue -> unit 1
+                lin1.weight[1, H + 3] = 2.0
+                # Stat 4: max overcrowding -> unit 2
+                lin1.weight[2, H + 4] = 2.0
+                # Stat 0: station count -> unit 3
+                lin1.weight[3, H + 0] = 1.0
+                # Stat 1: track len -> unit 4
+                lin1.weight[4, H + 1] = 1.0
+                # Stat 6: train load -> unit 5
+                lin1.weight[5, H + 6] = 1.0
+                # Stat 7: is active -> unit 6
+                lin1.weight[6, H + 7] = 1.0
+                # Stat 5: train count -> unit 7 (negative contribution)
+                lin1.weight[7, H + 5] = 1.0
+
+                # Linear 2 weights
+                lin2.weight[0, 0] = 1.5   # total queue
+                lin2.weight[0, 1] = 1.5   # avg queue
+                lin2.weight[0, 2] = 1.5   # max overcrowding
+                lin2.weight[0, 3] = 0.5   # station count
+                lin2.weight[0, 4] = 0.5   # track len
+                if mlp is self.dispatch_carriage_mlp:
+                    lin2.weight[0, 5] = 2.0  # carriage prioritizes packed trains
+                else:
+                    lin2.weight[0, 5] = 0.5  # train load
+                lin2.weight[0, 6] = 0.5   # is active
+                lin2.weight[0, 7] = -0.5  # train count penalty
+
+                # Small random orthogonal init for remaining units
+                if H > 8:
+                    nn.init.orthogonal_(lin1.weight[8:, :H], gain=0.05)
+                    nn.init.orthogonal_(lin1.weight[8:, H+8:], gain=0.05)
+                    nn.init.orthogonal_(lin2.weight[:, 8:], gain=0.05)
+
+    def _extract_line_representations(self, nodes, edges, edge_attrs, x):
+        """
+        Constructs dynamic candidate line representations for lines 0..6:
+        h_line = [mean_pool(x_u for u in line), LineStats] in R^{H + 8}
+        """
+        B = x.shape[0]
+        H = x.shape[-1]
+        device = x.device
+        dtype = x.dtype
+
+        if edges is None or edge_attrs is None or edges.shape[-1] == 0:
+            return torch.zeros(B, 7, H + 8, device=device, dtype=dtype)
+
+        # edges: [B, 2, E], edge_attrs: [B, E, 10]
+        # edge_attrs[:, :, 0:7]: one-hot line ID for each edge segment
+        edge_lines = edge_attrs[:, :, 0:7].to(dtype=dtype)  # [B, E, 7]
+        src = edges[:, 0, :].clamp(min=0, max=29)  # [B, E]
+        dst = edges[:, 1, :].clamp(min=0, max=29)  # [B, E]
+
+        # Scatter line indicators to stations: station_line[b, u, i] > 0 if station u is in line i
+        station_line = torch.zeros(B, 30, 7, device=device, dtype=dtype)
+        station_line.scatter_add_(1, src.unsqueeze(-1).expand(-1, -1, 7), edge_lines)
+        station_line.scatter_add_(1, dst.unsqueeze(-1).expand(-1, -1, 7), edge_lines)
+        station_in_line = (station_line > 0).to(dtype=dtype).permute(0, 2, 1)  # [B, 7, 30]
+
+        # Station count per line: [B, 7, 1]
+        num_stations = station_in_line.sum(dim=-1, keepdim=True)
+        is_active = (num_stations >= 2.0).to(dtype=dtype)
+
+        # 1. Mean-pool node embeddings x: [B, 7, H]
+        line_x = torch.bmm(station_in_line, x) / torch.clamp(num_stations, min=1.0)
+        line_x = line_x * is_active
+
+        # 2. Extract LineStats [B, 7, 8]:
+        stat_station_count = num_stations / 10.0
+
+        # Physical track length: sum forward edge distances (direction > 0)
+        fwd_mask = (edge_attrs[:, :, 8:9] > 0).to(dtype=dtype)
+        fwd_dist = edge_attrs[:, :, 7:8].to(dtype=dtype) * fwd_mask  # [B, E, 1]
+        stat_track_len = torch.bmm(edge_lines.permute(0, 2, 1), fwd_dist)  # [B, 7, 1]
+
+        if nodes is not None:
+            nodes_dt = nodes.to(dtype=dtype)
+            st_queue = nodes_dt[:, :, 12:22].sum(dim=-1, keepdim=True)  # [B, 30, 1]
+            stat_total_queue = torch.bmm(station_in_line, st_queue) / 20.0  # [B, 7, 1]
+            stat_avg_queue = (stat_total_queue * 20.0) / (torch.clamp(num_stations, min=1.0) * 10.0)
+
+            st_overcrowd = nodes_dt[:, :, 22:23]  # [B, 30, 1]
+            masked_overcrowd = station_in_line.unsqueeze(-1) * st_overcrowd.unsqueeze(1)
+            stat_max_overcrowd = masked_overcrowd.max(dim=2)[0]  # [B, 7, 1]
+
+            st_train_count = nodes_dt[:, :, 29:30] * 4.0  # [B, 30, 1]
+            stat_train_count = torch.bmm(station_in_line, st_train_count) / 4.0  # [B, 7, 1]
+
+            st_train_load = nodes_dt[:, :, 30:31]  # [B, 30, 1]
+            stat_train_load = torch.bmm(station_in_line, st_train_load) / torch.clamp(num_stations, min=1.0)
+        else:
+            stat_total_queue = torch.zeros(B, 7, 1, device=device, dtype=dtype)
+            stat_avg_queue = torch.zeros(B, 7, 1, device=device, dtype=dtype)
+            stat_max_overcrowd = torch.zeros(B, 7, 1, device=device, dtype=dtype)
+            stat_train_count = torch.zeros(B, 7, 1, device=device, dtype=dtype)
+            stat_train_load = torch.zeros(B, 7, 1, device=device, dtype=dtype)
+
+        stat_is_active = is_active
+
+        line_stats = torch.cat([
+            stat_station_count,
+            stat_track_len,
+            stat_total_queue,
+            stat_avg_queue,
+            stat_max_overcrowd,
+            stat_train_count,
+            stat_train_load,
+            stat_is_active,
+        ], dim=-1)  # [B, 7, 8]
+
+        h_line = torch.cat([line_x, line_stats], dim=-1)  # [B, 7, H + 8]
+        return h_line
+
     def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
         # Handle backward compatibility: adapt legacy checkpoint weights (e.g. global_dim 13 -> 23)
         node_proj_key = prefix + "gcn1.node_proj.weight"
@@ -261,9 +406,21 @@ class MiniMetroActorCritic(nn.Module):
             if full_k not in state_dict:
                 state_dict[full_k] = gv.clone()
 
+        # Handle backward compatibility: populate dispatch MLPs if missing from legacy checkpoint
+        dispatch_named_modules = [
+            ("dispatch_line_ctx", self.dispatch_line_ctx),
+            ("dispatch_train_mlp", self.dispatch_train_mlp),
+            ("dispatch_carriage_mlp", self.dispatch_carriage_mlp),
+        ]
+        for mod_name, mod in dispatch_named_modules:
+            for k, v in mod.state_dict().items():
+                full_k = prefix + f"{mod_name}." + k
+                if full_k not in state_dict:
+                    state_dict[full_k] = v.clone()
+
         super()._load_from_state_dict(state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs)
 
-    def _compute_hierarchical_logits(self, x, combined, mask=None, nodes=None):
+    def _compute_hierarchical_logits(self, x, combined, mask=None, nodes=None, edges=None, edge_attrs=None):
         """
         Compute hierarchical action log-probabilities:
             log P(a) = log P(type t(a)) + log P(a | type t(a))
@@ -279,8 +436,9 @@ class MiniMetroActorCritic(nn.Module):
         S_sym = 0.5 * (S + S.transpose(1, 2))
         scores_add_line = S_sym[:, self.triu_u, self.triu_v]  # [B, 435]
 
-        # P1-1: Add explicit candidate distance & geometric displacement penalty
+        # P1-1 & P1-2: Candidate geometry and redundancy attenuation
         if nodes is not None:
+            # P1-1: Distance & geometric displacement penalty
             pos_u = nodes[:, self.triu_u, 0:2]  # [B, 435, 2]
             pos_v = nodes[:, self.triu_v, 0:2]  # [B, 435, 2]
             delta = (pos_u - pos_v).abs()       # [B, 435, 2]
@@ -288,7 +446,16 @@ class MiniMetroActorCritic(nn.Module):
             dist_sq = dist ** 2
             triu_geom = torch.cat([dist, delta, dist_sq], dim=-1)  # [B, 435, 4]
             geom_bias = self.add_line_geom_mlp(triu_geom).squeeze(-1)  # [B, 435]
-            scores_add_line = scores_add_line + geom_bias
+
+            # P1-2: Redundant expansion attenuation: penalize stations with >2 lines unless interchange
+            lines_serving = nodes[:, :, 26] * 7.0  # [B, 30]
+            is_interchange = nodes[:, :, 24]       # [B, 30]
+            redundant_lines = torch.relu(lines_serving - 2.0) * (1.0 - is_interchange)  # [B, 30]
+            redundancy_uv = redundant_lines[:, self.triu_u] + redundant_lines[:, self.triu_v]  # [B, 435]
+
+            scores_add_line = scores_add_line + geom_bias - 0.75 * redundancy_uv
+        else:
+            redundant_lines = None
 
         # 2. Per-station UpgradeInterchange scores (30 actions)
         scores_interchange = self.interchange_net(x).squeeze(-1)  # [B, 30]
@@ -304,6 +471,8 @@ class MiniMetroActorCritic(nn.Module):
         ext_ctx = self.ext_context(combined).unsqueeze(1)  # [B, 1, H]
         line_ends = F.relu(self.ext_proj(le_base.unsqueeze(0) + ext_ctx))  # [B, 14, H]
         ext_mat = torch.bmm(line_ends, x.transpose(1, 2)) * scale          # [B, 14, 30]
+        if redundant_lines is not None:
+            ext_mat = ext_mat - 0.75 * redundant_lines.unsqueeze(1)
         # Permute (lineID, end, stID) -> (lineID, stID, end) then flatten to [B, 420]
         scores_extend = ext_mat.view(B, 7, 2, 30).permute(0, 1, 3, 2).reshape(B, 420)
 
@@ -316,14 +485,26 @@ class MiniMetroActorCritic(nn.Module):
         ins_ctx = self.ins_context(combined).unsqueeze(1)  # [B, 1, H]
         line_segs = F.relu(self.ins_proj(ls_base.unsqueeze(0) + ins_ctx))  # [B, 105, H]
         ins_mat = torch.bmm(line_segs, x.transpose(1, 2)) * scale          # [B, 105, 30]
+        if redundant_lines is not None:
+            ins_mat = ins_mat - 0.75 * redundant_lines.unsqueeze(1)
         # Permute (lineID, seg, stID) -> (lineID, stID, seg) then flatten to [B, 3150]
         scores_insert = ins_mat.view(B, 7, 15, 30).permute(0, 1, 3, 2).reshape(B, 3150)
 
         # 5. Non-spatial scores (52 actions)
         ns = self.non_spatial_head(combined)  # [B, 52]
         scores_noop          = ns[:, 0:1]     # 1
-        scores_add_train     = ns[:, 1:8]     # 7
-        scores_add_carriage  = ns[:, 8:15]    # 7
+
+        # P1-3: Candidate-conditioned dispatch scoring for AddTrain and AddCarriage
+        if edges is not None and edge_attrs is not None:
+            h_line = self._extract_line_representations(nodes, edges, edge_attrs, x)  # [B, 7, H + 8]
+            g_ctx = self.dispatch_line_ctx(combined).unsqueeze(1).expand(-1, 7, -1)   # [B, 7, H]
+            dispatch_feat = torch.cat([h_line, g_ctx], dim=-1)                        # [B, 7, 2H + 8]
+            scores_add_train = self.dispatch_train_mlp(dispatch_feat).squeeze(-1)     # [B, 7]
+            scores_add_carriage = self.dispatch_carriage_mlp(dispatch_feat).squeeze(-1) # [B, 7]
+        else:
+            scores_add_train     = ns[:, 1:8]     # 7
+            scores_add_carriage  = ns[:, 8:15]    # 7
+
         scores_choose_reward = ns[:, 15:17]   # 2
         scores_close_loop    = ns[:, 17:24]   # 7
         scores_open_loop     = ns[:, 24:31]   # 7
@@ -505,7 +686,10 @@ class MiniMetroActorCritic(nn.Module):
         if self.use_hierarchical:
             # PHASE-5: Hierarchical action head + Bilinear parameter scoring
             # P1-1: Pass nodes for explicit candidate pairwise geometric awareness
-            logits = self._compute_hierarchical_logits(x3, lstm_out_flat, mask=mask, nodes=nodes)
+            # P1-3: Pass edges and edge_attrs for candidate-conditioned line dispatch
+            logits = self._compute_hierarchical_logits(
+                x3, lstm_out_flat, mask=mask, nodes=nodes, edges=edges, edge_attrs=edge_attrs
+            )
         else:
             logits = self.fc_actor(lstm_out_flat)
             self._last_type_log_probs = None

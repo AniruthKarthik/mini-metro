@@ -21,6 +21,7 @@ from torch.utils.tensorboard import SummaryWriter
 from env import MiniMetroEnv
 from model import MiniMetroActorCritic
 from ppo import PPO
+from probing import compute_expansion_metrics
 
 
 # ============================================================
@@ -745,6 +746,29 @@ def run_training():
             writer.add_scalar(
                 "charts/update_time",
                 update_time,
+                global_step,
+            )
+
+            # P1-2: Track network expansion and station redundancy metrics
+            exp_metrics = compute_expansion_metrics(b_obs, b_actions)
+            writer.add_scalar(
+                "charts/expansion_action_rate",
+                exp_metrics.expansion_action_rate,
+                global_step,
+            )
+            writer.add_scalar(
+                "charts/expansion_ratio",
+                exp_metrics.expansion_ratio,
+                global_step,
+            )
+            writer.add_scalar(
+                "charts/avg_lines_per_station",
+                exp_metrics.lines_per_station_mean,
+                global_step,
+            )
+            writer.add_scalar(
+                "charts/redundant_station_rate",
+                exp_metrics.redundant_station_rate,
                 global_step,
             )
 

@@ -6,9 +6,10 @@ import (
 )
 
 type Simulator struct {
-	State        GameState
-	graphVersion uint64 // tracks which TopologyVersion the cached Graph was built for
-	rng          *rand.Rand
+	State             GameState
+	graphVersion      uint64 // tracks which TopologyVersion the cached Graph was built for
+	rng               *rand.Rand
+	loopTogglePenalty float64 // P1-4: penalty on rapid loop reversals (<60s)
 }
 
 func (s *Simulator) RNG() *rand.Rand {
@@ -505,8 +506,14 @@ func (s *Simulator) closeLoop(a CloseLoop) error {
 		}
 	}
 
+	// P1-4: Apply penalty (-0.50) if loop status is toggled back within 60 seconds (1800 ticks)
+	if line.HasBeenLoopToggled && s.State.Tick < line.LastLoopToggleTick+1800 {
+		s.loopTogglePenalty += 0.50
+	}
 	line.IsLoop = true
 	line.LoopTunnel = a.UseTunnel
+	line.HasBeenLoopToggled = true
+	line.LastLoopToggleTick = s.State.Tick
 	s.State.TopologyVersion++
 	return nil
 }
@@ -523,11 +530,17 @@ func (s *Simulator) openLoop(a OpenLoop) error {
 	if !line.IsLoop {
 		return errors.New("line is not a loop")
 	}
+	// P1-4: Apply penalty (-0.50) if loop status is toggled back within 60 seconds (1800 ticks)
+	if line.HasBeenLoopToggled && s.State.Tick < line.LastLoopToggleTick+1800 {
+		s.loopTogglePenalty += 0.50
+	}
 	if line.LoopTunnel {
 		s.State.Resources.Grant(RewardTunnel)
 	}
 	line.IsLoop = false
 	line.LoopTunnel = false
+	line.HasBeenLoopToggled = true
+	line.LastLoopToggleTick = s.State.Tick
 	// trains that were heading "through" the wrap-around now need a valid direction
 	for i := range s.State.Trains {
 		tr := &s.State.Trains[i]

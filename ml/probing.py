@@ -15,7 +15,7 @@ assert np.isclose(probs.sum(), 1.0, atol=1e-5)
 """
 
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -267,3 +267,149 @@ def format_probability_table(
         lines.append(" | ".join(row_vals))
 
     return "\n".join(lines)
+
+
+@dataclass
+class ExpansionMetrics:
+    """Diagnostic metrics tracking network expansion and station redundancy."""
+    expansion_ratio: float
+    expansion_action_rate: float
+    lines_per_station_mean: float
+    redundant_stations_count: float
+    redundant_station_rate: float
+    total_legal_connections: float
+    selected_connections: float
+
+    def __getitem__(self, item: str) -> float:
+        return getattr(self, item)
+
+    def to_dict(self) -> Dict[str, float]:
+        return {
+            "expansion_ratio": self.expansion_ratio,
+            "expansion_action_rate": self.expansion_action_rate,
+            "lines_per_station_mean": self.lines_per_station_mean,
+            "redundant_stations_count": self.redundant_stations_count,
+            "redundant_station_rate": self.redundant_station_rate,
+            "total_legal_connections": self.total_legal_connections,
+            "selected_connections": self.selected_connections,
+        }
+
+
+def compute_expansion_metrics(
+    obs: Dict[str, Union[np.ndarray, torch.Tensor]],
+    actions: Optional[Union[np.ndarray, torch.Tensor]] = None,
+) -> ExpansionMetrics:
+    """
+    Computes network expansion and redundancy metrics:
+    1. expansion_ratio: selected line connections / total legal connections
+    2. expansion_action_rate: fraction of actions that expand lines (AddLine, ExtendLine, InsertStation)
+    3. lines_per_station_mean: average lines serving per active station
+    4. redundant_stations_count: average number of non-interchange stations served by >2 lines
+    5. redundant_station_rate: fraction of active stations that are redundant (>2 lines, not interchange)
+    """
+    nodes = obs.get("nodes")
+    if nodes is None:
+        raise ValueError("obs must contain 'nodes' tensor/array")
+
+    if isinstance(nodes, torch.Tensor):
+        nodes_np = nodes.detach().cpu().numpy()
+    else:
+        nodes_np = np.asarray(nodes)
+
+    orig_shape = nodes_np.shape
+    if len(orig_shape) == 2:
+        nodes_np = nodes_np[None, ...]
+    elif len(orig_shape) > 3:
+        nodes_np = nodes_np.reshape(-1, orig_shape[-2], orig_shape[-1])
+
+    B = nodes_np.shape[0]
+
+    mask_np = None
+    if "action_mask" in obs:
+        mask_raw = obs["action_mask"]
+        if isinstance(mask_raw, torch.Tensor):
+            mask_np = mask_raw.detach().cpu().numpy()
+        else:
+            mask_np = np.asarray(mask_raw)
+        if len(mask_np.shape) == 1:
+            mask_np = mask_np[None, ...]
+        elif len(mask_np.shape) > 2:
+            mask_np = mask_np.reshape(-1, mask_np.shape[-1])
+
+    act_np = None
+    if actions is not None:
+        if isinstance(actions, torch.Tensor):
+            act_np = actions.detach().cpu().numpy()
+        else:
+            act_np = np.asarray(actions)
+        act_np = act_np.reshape(-1)
+
+    num_nodes_np = None
+    if "num_nodes" in obs:
+        nn_raw = obs["num_nodes"]
+        if isinstance(nn_raw, torch.Tensor):
+            num_nodes_np = nn_raw.detach().cpu().numpy()
+        else:
+            num_nodes_np = np.asarray(nn_raw)
+        num_nodes_np = num_nodes_np.reshape(-1)
+
+    total_stations = 0
+    total_lines_serving = 0.0
+    total_redundant_stations = 0.0
+    total_legal_connections = 0.0
+    total_selected_connections = 0.0
+    total_expansion_actions = 0.0
+
+    for b in range(B):
+        if num_nodes_np is not None and b < len(num_nodes_np):
+            n_st = min(30, max(1, int(num_nodes_np[b])))
+        else:
+            # Active if kind one-hot is nonzero or coords != 0
+            has_kind = (nodes_np[b, :, 2:12].sum(axis=-1) > 0)
+            n_st = int(has_kind.sum())
+            if n_st == 0:
+                n_st = 30
+
+        st_nodes = nodes_np[b, :n_st]
+        lines_serving = np.round(st_nodes[:, 26] * 7.0)
+        is_interchange = st_nodes[:, 24] > 0.5
+        is_redundant = (lines_serving > 2.0) & (~is_interchange)
+
+        total_stations += n_st
+        total_lines_serving += float(lines_serving.sum())
+        total_redundant_stations += float(is_redundant.sum())
+
+        if mask_np is not None:
+            # Slices: AddLine (1:436), ExtendLine (436:856), InsertStation (856:4006)
+            legal_conn = float(mask_np[b, 1:4006].sum())
+            total_legal_connections += legal_conn
+
+        if act_np is not None and b < len(act_np):
+            act = act_np[b]
+            if 1 <= act < 4006:
+                total_expansion_actions += 1.0
+                total_selected_connections += 1.0
+
+    avg_lines_per_st = total_lines_serving / max(total_stations, 1)
+    redundant_count_avg = total_redundant_stations / max(B, 1)
+    redundant_st_rate = total_redundant_stations / max(total_stations, 1)
+
+    if act_np is not None:
+        expansion_action_rate = total_expansion_actions / max(len(act_np), 1)
+        expansion_ratio = total_selected_connections / max(total_legal_connections, 1.0)
+    else:
+        expansion_action_rate = 0.0
+        # If no actions provided, ratio is existing connections / legal connection candidates
+        expansion_ratio = total_lines_serving / max(total_legal_connections, 1.0)
+        total_selected_connections = total_lines_serving
+
+    return ExpansionMetrics(
+        expansion_ratio=float(expansion_ratio),
+        expansion_action_rate=float(expansion_action_rate),
+        lines_per_station_mean=float(avg_lines_per_st),
+        redundant_stations_count=float(redundant_count_avg),
+        redundant_station_rate=float(redundant_st_rate),
+        total_legal_connections=float(total_legal_connections),
+        selected_connections=float(total_selected_connections),
+    )
+

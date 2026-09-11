@@ -116,6 +116,36 @@ func (s *Simulator) ComputeStepReward(deliveredDelta int) float64 {
 		}
 		// Normalize by max possible pairs (45) so bonus stays in [0, ~2.0]
 		reward += ConnectivityBonus * float64(reachablePairs) / 45.0
+
+		// P1-2: Redundant network expansion penalty.
+		// Penalize stations served by >2 lines unless upgraded to an interchange hub.
+		linesServingStation := make([]int, N)
+		for _, line := range s.State.Lines {
+			if line.Removed {
+				continue
+			}
+			seenInLine := make(map[int]bool)
+			for _, stID := range line.Stations {
+				if stID >= 0 && stID < N && !seenInLine[stID] {
+					linesServingStation[stID]++
+					seenInLine[stID] = true
+				}
+			}
+		}
+		redundancyPenalty := 0.0
+		for i := 0; i < N; i++ {
+			st := &s.State.Stations[i]
+			if st.Alive && !st.IsInterchange && linesServingStation[i] > 2 {
+				redundancyPenalty += 0.05 * float64(linesServingStation[i]-2)
+			}
+		}
+		reward -= redundancyPenalty
+	}
+
+	// P1-4: Loop rapid reversal penalty
+	if s.loopTogglePenalty > 0 {
+		reward -= s.loopTogglePenalty
+		s.loopTogglePenalty = 0.0
 	}
 
 	return reward
