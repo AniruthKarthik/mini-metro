@@ -281,13 +281,16 @@ func FindOptimalRoute(g *NetworkGraph, state *GameState, fromID int, destKind St
 					dwell = dwellTime
 				}
 
-				// Wait penalty for embarking or transferring lines / directions
-				waitPenalty := 0.0
-				if cur.lineID == -1 || cur.lineID != lineID || cur.direction != dir {
-					waitPenalty = expectedTrainWaitTime(state, cur.stationID, lineID, dir)
+				// Transfer cost: in authentic Mini Metro, passenger routing prioritizes
+				// topological transfer depth first (0 transfers > 1 transfer > 2 transfers).
+				transferPenalty := 0.0
+				if cur.lineID != -1 && cur.lineID != lineID {
+					transferPenalty = 1000.0 // large penalty for changing lines
+				} else if cur.lineID != -1 && cur.lineID == lineID && cur.direction != dir {
+					transferPenalty = 500.0 // penalty for reversing direction on the same line
 				}
 
-				stepCost := rideTime + dwell + waitPenalty
+				stepCost := rideTime + dwell + transferPenalty
 				newG := cur.g + stepCost
 				nbKey := stateKey{nb, lineID, dir}
 
