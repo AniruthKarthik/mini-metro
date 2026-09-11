@@ -333,7 +333,9 @@ class MiniMetroActorCritic(nn.Module):
                 p_log_probs = F.log_softmax(p_scores, dim=-1)
                 action_log_probs[:, s] = type_log_probs[:, k:k+1] + p_log_probs
 
+        self._last_type_logits = type_logits
         self._last_type_log_probs = type_log_probs
+        self._last_param_scores = param_scores_list
         return action_log_probs
 
     def get_value(self, obs, lstm_state=None):
