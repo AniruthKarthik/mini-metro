@@ -365,6 +365,7 @@ class MiniMetroActorCritic(nn.Module):
         self.gnn_type = gnn_type
         self.use_transformer_scorer = use_transformer_scorer
         self.num_heads = num_heads
+        self.is_legacy_checkpoint = False
 
         # GNN passes: legacy GCN trunk for backward compatibility
         self.gcn1 = GNNLayer(node_dim, edge_dim, global_dim, hidden_dim)
@@ -784,6 +785,7 @@ class MiniMetroActorCritic(nn.Module):
 
         # P4-2: Dual architecture compatibility for GATv2 and Transformer Scorer
         is_legacy = (prefix + "gatv2_1.node_proj.weight") not in state_dict
+        self.is_legacy_checkpoint = is_legacy
         if is_legacy:
             self.gnn_type = "gcn"
             self.use_transformer_scorer = False
