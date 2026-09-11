@@ -13,7 +13,7 @@ Every task is designed to be immediately actionable by human developers and auto
   * [x] [P0-2: Weekly Reward-Card Observation Blindness Fix](#p0-2-weekly-reward-card-observation-blindness-fix)
   * [x] [P0-3: Evaluation & Probing Distribution Normalization Fix](#p0-3-evaluation--probing-distribution-normalization-fix)
 * **P1 — Major Policy & Architecture Problems**
-  * [ ] [P1-1: Explicit Candidate Distance & Geometric Awareness in AddLine](#p1-1-explicit-candidate-distance--geometric-awareness-in-addline)
+  * [x] [P1-1: Explicit Candidate Distance & Geometric Awareness in AddLine](#p1-1-explicit-candidate-distance--geometric-awareness-in-addline)
   * [ ] [P1-2: Redundant / Indiscriminate Network Expansion Mitigation](#p1-2-redundant--indiscriminate-network-expansion-mitigation)
   * [ ] [P1-3: Candidate-Conditioned Line Scoring for AddTrain and AddCarriage](#p1-3-candidate-conditioned-line-scoring-for-addtrain-and-addcarriage)
   * [ ] [P1-4: Loop Toggling Hysteresis & Reversal Oscillation Mitigation](#p1-4-loop-toggling-hysteresis--reversal-oscillation-mitigation)

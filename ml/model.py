@@ -166,6 +166,15 @@ class MiniMetroActorCritic(nn.Module):
         self.register_buffer("triu_u", triu_indices[0])
         self.register_buffer("triu_v", triu_indices[1])
 
+        # P1-1: Explicit pairwise candidate distance & geometric awareness in AddLine
+        # Triu geometry: [distance, dx, dy, distance^2] in R^4
+        self.add_line_geom_mlp = nn.Sequential(
+            nn.Linear(4, 32),
+            nn.ReLU(),
+            nn.Linear(32, 1),
+        )
+        self._init_add_line_geom_mlp()
+
         # UpgradeInterchange (30): Linear projection directly on per-station embedding
         self.interchange_net = nn.Linear(hidden_dim, 1)
 
@@ -208,6 +217,26 @@ class MiniMetroActorCritic(nn.Module):
             nn.Linear(hidden_dim, 1)
         )
 
+    def _init_add_line_geom_mlp(self):
+        # Inductive geometric bias: penalize candidate distance and coordinate span
+        linear1 = self.add_line_geom_mlp[0]
+        linear2 = self.add_line_geom_mlp[2]
+        with torch.no_grad():
+            linear1.weight.zero_()
+            linear1.bias.zero_()
+            # First 16 units for distance
+            linear1.weight[:16, 0] = 1.0
+            # Next 8 units for dx
+            linear1.weight[16:24, 1] = 1.0
+            # Next 8 units for dy
+            linear1.weight[24:32, 2] = 1.0
+
+            linear2.weight.zero_()
+            linear2.bias.zero_()
+            linear2.weight[0, :16] = -3.0 / 16.0
+            linear2.weight[0, 16:24] = -0.5 / 8.0
+            linear2.weight[0, 24:32] = -0.5 / 8.0
+
     def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
         # Handle backward compatibility: adapt legacy checkpoint weights (e.g. global_dim 13 -> 23)
         node_proj_key = prefix + "gcn1.node_proj.weight"
@@ -226,9 +255,15 @@ class MiniMetroActorCritic(nn.Module):
                 diff = curr_w.shape[1] - w.shape[1]
                 state_dict[glob_up_key] = torch.cat([w, torch.zeros(w.shape[0], diff, device=w.device, dtype=w.dtype)], dim=1)
 
+        # Handle backward compatibility: populate add_line_geom_mlp if missing from legacy checkpoint
+        for gk, gv in self.add_line_geom_mlp.state_dict().items():
+            full_k = prefix + "add_line_geom_mlp." + gk
+            if full_k not in state_dict:
+                state_dict[full_k] = gv.clone()
+
         super()._load_from_state_dict(state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs)
 
-    def _compute_hierarchical_logits(self, x, combined, mask=None):
+    def _compute_hierarchical_logits(self, x, combined, mask=None, nodes=None):
         """
         Compute hierarchical action log-probabilities:
             log P(a) = log P(type t(a)) + log P(a | type t(a))
@@ -243,6 +278,17 @@ class MiniMetroActorCritic(nn.Module):
         S = torch.bmm(q, k.transpose(1, 2)) * scale  # [B, 30, 30]
         S_sym = 0.5 * (S + S.transpose(1, 2))
         scores_add_line = S_sym[:, self.triu_u, self.triu_v]  # [B, 435]
+
+        # P1-1: Add explicit candidate distance & geometric displacement penalty
+        if nodes is not None:
+            pos_u = nodes[:, self.triu_u, 0:2]  # [B, 435, 2]
+            pos_v = nodes[:, self.triu_v, 0:2]  # [B, 435, 2]
+            delta = (pos_u - pos_v).abs()       # [B, 435, 2]
+            dist = torch.sqrt(delta[:, :, 0]**2 + delta[:, :, 1]**2 + 1e-8).unsqueeze(-1)  # [B, 435, 1]
+            dist_sq = dist ** 2
+            triu_geom = torch.cat([dist, delta, dist_sq], dim=-1)  # [B, 435, 4]
+            geom_bias = self.add_line_geom_mlp(triu_geom).squeeze(-1)  # [B, 435]
+            scores_add_line = scores_add_line + geom_bias
 
         # 2. Per-station UpgradeInterchange scores (30 actions)
         scores_interchange = self.interchange_net(x).squeeze(-1)  # [B, 30]
@@ -458,7 +504,8 @@ class MiniMetroActorCritic(nn.Module):
 
         if self.use_hierarchical:
             # PHASE-5: Hierarchical action head + Bilinear parameter scoring
-            logits = self._compute_hierarchical_logits(x3, lstm_out_flat, mask=mask)
+            # P1-1: Pass nodes for explicit candidate pairwise geometric awareness
+            logits = self._compute_hierarchical_logits(x3, lstm_out_flat, mask=mask, nodes=nodes)
         else:
             logits = self.fc_actor(lstm_out_flat)
             self._last_type_log_probs = None
