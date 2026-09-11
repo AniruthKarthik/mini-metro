@@ -244,12 +244,24 @@ class SpatialCrossAttentionScorer(nn.Module):
         self._init_geom_bias()
 
     def _init_geom_bias(self):
-        # Standard orthogonal initialization for geometric attention layers
-        for m in self.geom_bias_mlp:
-            if isinstance(m, nn.Linear):
-                nn.init.orthogonal_(m.weight, gain=1.0)
-                if m.bias is not None:
-                    nn.init.zeros_(m.bias)
+        # Inductive geometric prior: penalize candidate distance in attention logits
+        l1 = self.geom_bias_mlp[0]
+        l2 = self.geom_bias_mlp[2]
+        with torch.no_grad():
+            l1.weight.zero_()
+            l1.bias.zero_()
+            l2.weight.zero_()
+            l2.bias.zero_()
+            # Channel 0: Euclidean distance (first 16 hidden units)
+            l1.weight[:16, 0] = 1.0
+            l2.weight[:, :16] = -2.0 / 16.0
+            # Channel 1: dx (next 8 units)
+            l1.weight[16:24, 1] = 1.0
+            l2.weight[:, 16:24] = -0.5 / 8.0
+            # Channel 2: dy (next 8 units)
+            l1.weight[24:32, 2] = 1.0
+            l2.weight[:, 24:32] = -0.5 / 8.0
+
         for m in self.out_proj:
             if isinstance(m, nn.Linear):
                 nn.init.orthogonal_(m.weight, gain=0.05)
