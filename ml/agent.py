@@ -1,3 +1,13 @@
+import sys
+import os
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
 import torch
 try:
     import intel_extension_for_pytorch as ipex
@@ -7,7 +17,6 @@ import json
 import requests
 import time
 import glob
-import os
 from websockets.sync.client import connect
 from model import MiniMetroActorCritic
 
@@ -22,11 +31,22 @@ ACTION_SPACE_SIZE = 4087  # PHASE-4: was 4108; AddCarriage 28→7 slots
 
 def load_model(device):
     """Find and load the best available checkpoint. Returns (model, path_or_None)."""
-    local_files   = glob.glob("runs/minimetro_ppo_local/model_*.pt") + \
-                    glob.glob("runs/minimetro_ppo_local/checkpoint_*.pt")
-    default_files = glob.glob("runs/minimetro_ppo/model_*.pt") + \
-                    glob.glob("runs/minimetro_ppo/checkpoint_*.pt")
-    all_files = local_files + default_files
+    search_dirs = [
+        "runs/minimetro_ppo_local",
+        "runs/minimetro_ppo",
+        os.path.join(SCRIPT_DIR, "runs/minimetro_ppo_local"),
+        os.path.join(SCRIPT_DIR, "runs/minimetro_ppo"),
+        os.path.join(REPO_ROOT, "runs/minimetro_ppo_local"),
+        os.path.join(REPO_ROOT, "runs/minimetro_ppo"),
+    ]
+    all_files = []
+    seen = set()
+    for d in search_dirs:
+        for p in glob.glob(os.path.join(d, "model_*.pt")) + glob.glob(os.path.join(d, "checkpoint_*.pt")):
+            abs_p = os.path.abspath(p)
+            if abs_p not in seen and os.path.exists(abs_p):
+                seen.add(abs_p)
+                all_files.append(abs_p)
 
     if not all_files:
         print("[AI] No saved models found. Using random-initialized weights.")
@@ -35,16 +55,20 @@ def load_model(device):
     all_files.sort(key=os.path.getmtime)
     model_path = all_files[-1]
 
-    # Infer hidden_dim from which training script produced the checkpoint.
-    hidden_dim = 32 if "minimetro_ppo_local" in model_path else 256
+    raw_data = torch.load(model_path, map_location=device, weights_only=False)
+    state_dict = raw_data["model_state_dict"] if isinstance(raw_data, dict) and "model_state_dict" in raw_data else raw_data
+
+    # Introspect hidden_dim directly from projection weight dimensions
+    node_w = state_dict.get("gcn1.node_proj.weight", state_dict.get("gatv2_1.node_proj.weight", None))
+    if node_w is not None:
+        hidden_dim = int(node_w.shape[0])
+    else:
+        hidden_dim = 32 if "minimetro_ppo_local" in model_path else 256
     print(f"[AI] Loading latest model: {model_path} (hidden_dim={hidden_dim})")
 
     model = MiniMetroActorCritic(hidden_dim=hidden_dim).to(device)
 
-    # PHASE-2/3 fix: gracefully handle incompatible checkpoints (wrong obs dims or
-    # missing layers from old architecture) so `make game` never hard-crashes.
-    # strict=False handles missing/extra keys; the try/except handles size mismatches.
-    state_dict = torch.load(model_path, map_location=device, weights_only=False)
+    # Gracefully handle missing/extra keys
     try:
         missing, unexpected = model.load_state_dict(state_dict, strict=False)
         if missing or unexpected:
