@@ -51,6 +51,13 @@ An exhaustive forensic audit of the repository—focusing on recent commits (`0b
 - [x] [P4: Honest Benchmarking, Evaluation & Verification](#p4-honest-benchmarking-evaluation--verification)
   - [x] [P4-1: Re-Run & Replace Falsified Evaluation Reports with True Measurements](#p4-1-re-run--replace-falsified-evaluation-reports-with-true-measurements)
   - [x] [P4-2: Establish Automated End-to-End CI Verification Suite](#p4-2-establish-automated-end-to-end-ci-verification-suite)
+- [x] [P5: Multi-Map Grandmaster Strategy Optimization & Benchmark Verification (>300 Pax)](#p5-multi-map-grandmaster-strategy-optimization--benchmark-verification-300-pax)
+  - [x] [P5-1: Fix Train Reservation Deficit for Unspent Line Tokens](#p5-1-fix-train-reservation-deficit-for-unspent-line-tokens)
+  - [x] [P5-2: Proactive Interchange Placement on Major Transfer Junctions](#p5-2-proactive-interchange-placement-on-major-transfer-junctions)
+  - [x] [P5-3: Short-Line Headway Balancing (<45s Round-Trip Constraint)](#p5-3-short-line-headway-balancing-45s-round-trip-constraint)
+  - [x] [P5-4: Dual-Service Multi-Line Overcrowding Crisis Intervention](#p5-4-dual-service-multi-line-overcrowding-crisis-intervention)
+  - [x] [P5-5: Live Game Agent Integration in `ml/agent.py`](#p5-5-live-game-agent-integration-in-mlagentpy)
+  - [x] [P5-6: Rigorous Empirical Verification: Mean > 200, Peaks > 300 Across Maps](#p5-6-rigorous-empirical-verification-mean--200-peaks--300-across-maps)
 
 ---
 
@@ -297,3 +304,63 @@ An exhaustive forensic audit of the repository—focusing on recent commits (`0b
     3. Python unit and integration tests (`PYTHONPATH=. ./ml/venv/bin/python -m unittest discover -s ml`)
 - **Verification**:
   Run `make test` from repo root and ensure all tests pass.
+
+### P5: Multi-Map Grandmaster Strategy Optimization & Benchmark Verification (>300 Pax)
+
+#### P5-1: Fix Train Reservation Deficit for Unspent Line Tokens
+- **Error/Bug**:
+  In [`simulator/engine/simulator.go`](file:///home/leomarshall/mm/simulator/engine/simulator.go#L194-L196), `AddLine` strictly requires an available locomotive (`CanSpend(RewardTrain)`). Previous heuristics prematurely spent weekly locomotive grants on existing lines via `AddTrain`, stranding newly granted `RewardLine` tokens indefinitely.
+- **Files**: [`ml/eval.py`](file:///home/leomarshall/mm/ml/eval.py), [`ml/test_grandmaster_policy.py`](file:///home/leomarshall/mm/ml/test_grandmaster_policy.py)
+- **Doable Task**:
+  - Enforce train reservation invariant: `AddTrain` is only permitted when `unused_trains > unused_lines`.
+  - Prioritize building available lines before allocating extra locomotives.
+- **Verification**:
+  [`ml/test_grandmaster_policy.py:test_train_reservation_guard`](file:///home/leomarshall/mm/ml/test_grandmaster_policy.py) passes.
+
+#### P5-2: Proactive Interchange Placement on Major Transfer Junctions
+- **Error/Bug**:
+  Interchanges were only triggered when a station reached crisis (`progress > 0.5`), long after transfer hub queues (15+ passengers) formed.
+- **Files**: [`ml/eval.py`](file:///home/leomarshall/mm/ml/eval.py)
+- **Doable Task**:
+  - Proactively upgrade major multi-line transfer hubs (`degree >= 3` or `queue >= 5`) to expand station capacity from 6 to 18 and cut passenger boarding dwell time in half.
+- **Verification**:
+  [`ml/test_grandmaster_policy.py:test_interchange_upgrade_priority`](file:///home/leomarshall/mm/ml/test_grandmaster_policy.py) passes.
+
+#### P5-3: Short-Line Headway Balancing (<45s Round-Trip Constraint)
+- **Error/Bug**:
+  Lines extended beyond 6 stations with only 1 train suffer round-trip times > 80s, mathematically exceeding the 45.0s overcrowding countdown limit during Week 3 passenger surges.
+- **Files**: [`ml/eval.py`](file:///home/leomarshall/mm/ml/eval.py)
+- **Doable Task**:
+  - Maintain compact lines (3–5 stations per single-train line) guaranteeing round-trip headway < 45s.
+  - Prioritize connecting unconnected stations using the shortest active lines with shape alternation.
+- **Verification**:
+  Empirical survival extended beyond $t > 300\text{s}$ across maps.
+
+#### P5-4: Dual-Service Multi-Line Overcrowding Crisis Intervention
+- **Error/Bug**:
+  Stations in critical overcrowding (`nodes[s, 22] > 0.20`) were neglected when single-line trains lacked capacity (6 seats).
+- **Files**: [`ml/eval.py`](file:///home/leomarshall/mm/ml/eval.py)
+- **Doable Task**:
+  - Detect critical stations and immediately connect adjacent short lines via `ExtendLine` or `InsertStation`, creating parallel service to halve headway and clear queue backlogs.
+- **Verification**:
+  Multi-seed rollouts survive station surges without fatal bottlenecks.
+
+#### P5-5: Live Game Agent Integration in `ml/agent.py`
+- **Error/Bug**:
+  When running `make game`, [`ml/agent.py`](file:///home/leomarshall/mm/ml/agent.py) previously fell back to random untrained neural network weights if no checkpoint was saved.
+- **Files**: [`ml/agent.py`](file:///home/leomarshall/mm/ml/agent.py)
+- **Doable Task**:
+  - Integrate `GrandmasterPolicy` into `ml/agent.py` so the live in-browser game executes grandmaster-level play.
+- **Verification**:
+  Compiles cleanly and executes without error in `agent.py`.
+
+#### P5-6: Rigorous Empirical Verification: Mean > 200, Peaks > 300 Across Maps
+- **Error/Bug**:
+  Previous baseline scores hovered around 80–120 passengers before collapsing in Week 1.
+- **Files**: [`eval_benchmark_report.md`](file:///home/leomarshall/mm/eval_benchmark_report.md)
+- **Doable Task**:
+  - Benchmark across London, NYC, and Tokyo over multiple seeds.
+  - Empirically verify mean scores > 200 and peak transit scores > 300.
+- **Verification**:
+  Report recorded in `eval_benchmark_report.md` with zero fabrication.
+
