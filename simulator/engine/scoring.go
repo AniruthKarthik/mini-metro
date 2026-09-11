@@ -51,8 +51,10 @@ type RewardBreakdown struct {
 	Redundancy      float64
 	LoopReversal    float64
 	TrackEfficiency float64
+	Disruption      float64
 	Total           float64
 }
+
 
 // StationCrowdPenalty calculates an overcrowding penalty for a station.
 func StationCrowdPenalty(st *Station, linear ...bool) float64 {
@@ -203,8 +205,15 @@ func (s *Simulator) ComputeStepRewardBreakdown(deliveredDelta int) (float64, Rew
 		rb.TrackEfficiency = -cfg.TrackEfficiencyWeight * (s.TotalTrackLength() / 100.0)
 	}
 
-	rb.Total = rb.Delivery + rb.Connectivity + rb.CrowdPenalty + rb.GameOver + rb.Redundancy + rb.LoopReversal + rb.TrackEfficiency
+	// 7. Operational disruption penalty (structural line deletion / severe disruption)
+	if s.disruptionPenalty > 0 {
+		rb.Disruption = -s.disruptionPenalty
+		s.disruptionPenalty = 0.0
+	}
+
+	rb.Total = rb.Delivery + rb.Connectivity + rb.CrowdPenalty + rb.GameOver + rb.Redundancy + rb.LoopReversal + rb.TrackEfficiency + rb.Disruption
 	return rb.Total, rb
+
 }
 
 // TotalTrackLength calculates the sum of all physical track segment lengths across all active lines (P2-2).

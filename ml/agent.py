@@ -44,7 +44,7 @@ def load_model(device):
     # PHASE-2/3 fix: gracefully handle incompatible checkpoints (wrong obs dims or
     # missing layers from old architecture) so `make game` never hard-crashes.
     # strict=False handles missing/extra keys; the try/except handles size mismatches.
-    state_dict = torch.load(model_path, map_location=device, weights_only=True)
+    state_dict = torch.load(model_path, map_location=device, weights_only=False)
     try:
         missing, unexpected = model.load_state_dict(state_dict, strict=False)
         if missing or unexpected:

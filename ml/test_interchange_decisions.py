@@ -21,6 +21,9 @@ from env import MiniMetroEnv
 from model import MiniMetroActorCritic, ACTION_TYPE_SLICES
 
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "runs/minimetro_ppo/model_final.pt")
+if not os.path.exists(MODEL_PATH):
+    MODEL_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "runs/minimetro_ppo/model_final.pt")
+
 
 FEATURE_NAMES = [
     "PosX", "PosY",

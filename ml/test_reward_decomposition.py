@@ -29,6 +29,7 @@ class TestRewardDecomposition(unittest.TestCase):
             "redundancy",
             "loop_reversal",
             "track_efficiency",
+            "disruption",
         }
         self.assertEqual(set(info["reward_breakdown"].keys()), expected_channels)
         self.assertEqual(set(info["episode_reward_breakdown"].keys()), expected_channels)
@@ -45,7 +46,9 @@ class TestRewardDecomposition(unittest.TestCase):
             "redundancy": 0.0,
             "loop_reversal": 0.0,
             "track_efficiency": 0.0,
+            "disruption": 0.0,
         }
+
         cum_reward = 0.0
 
         for step in range(50):

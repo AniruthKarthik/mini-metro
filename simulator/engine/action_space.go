@@ -390,14 +390,17 @@ func (s *Simulator) GetActionMask(outMask []bool) []bool {
 			}
 		}
 
-		// Action disabled per user request to prevent AI from messing up passenger progress:
-		// outMask[RemoveLineOffset+lID] = true
-		// 
-		// if len(line.Stations) > 2 && !line.IsLoop {
-		// 	outMask[ShortenLineOffset+lID*2+0] = true
-		// 	outMask[ShortenLineOffset+lID*2+1] = true
-		// }
+		// P4-1: Safe Dynamic Line Re-Routing & Deletion
+		if !line.Removed && len(line.Stations) >= 2 {
+			outMask[RemoveLineOffset+lID] = true
+		}
+
+		if !line.Removed && len(line.Stations) > 2 && !line.IsLoop {
+			outMask[ShortenLineOffset+lID*2+0] = true
+			outMask[ShortenLineOffset+lID*2+1] = true
+		}
 	}
 
 	return outMask
 }
+

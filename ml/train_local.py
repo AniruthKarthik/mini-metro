@@ -113,20 +113,23 @@ def find_latest_checkpoint(checkpoint_dir=CHECKPOINT_DIR):
     """
     Find the checkpoint with the highest update number.
     """
-
-    pattern = os.path.join(
-        checkpoint_dir,
-        "checkpoint_*.pt"
-    )
-
-    checkpoints = glob.glob(pattern)
-
-    if not checkpoints:
+    if not os.path.exists(checkpoint_dir):
         return None
 
-    checkpoints.sort()
+    valid_ckpts = []
+    for f in os.listdir(checkpoint_dir):
+        if f.startswith("checkpoint_") and f.endswith(".pt"):
+            if f in ("checkpoint_error.pt", "checkpoint_emergency.pt"):
+                continue
+            parts = f.replace("checkpoint_", "").replace(".pt", "")
+            if parts.isdigit():
+                valid_ckpts.append((int(parts), os.path.join(checkpoint_dir, f)))
 
-    return checkpoints[-1]
+    if not valid_ckpts:
+        return None
+
+    valid_ckpts.sort(key=lambda x: x[0])
+    return valid_ckpts[-1][1]
 
 
 def load_checkpoint(
@@ -154,36 +157,48 @@ def load_checkpoint(
         weights_only=False,
     )
 
-    model.load_state_dict(
-        checkpoint["model_state_dict"]
-    )
+    model_sd = checkpoint.get("model_state_dict", checkpoint.get("model"))
+    if model_sd is not None:
+        model.load_state_dict(model_sd)
 
-    if (
-        "optimizer_state_dict" in checkpoint
-        and hasattr(agent, "optimizer")
-    ):
-        agent.optimizer.load_state_dict(
-            checkpoint["optimizer_state_dict"]
-        )
+    if hasattr(agent, "optimizer"):
+        optim_sd = checkpoint.get("optimizer_state_dict", checkpoint.get("optimizer"))
+        if optim_sd is not None:
+            try:
+                agent.optimizer.load_state_dict(optim_sd)
+            except Exception as opt_err:
+                print(
+                    f"⚠️ Could not restore optimizer state ({opt_err}). "
+                    f"Architecture parameters changed — using reinitialized optimizer."
+                )
 
     # Restore RNG state when available.
     if "torch_rng_state" in checkpoint:
-        torch.set_rng_state(
-            checkpoint["torch_rng_state"]
-        )
+        try:
+            torch.set_rng_state(
+                checkpoint["torch_rng_state"]
+            )
+        except Exception:
+            pass
 
     if (
         torch.cuda.is_available()
         and "cuda_rng_state" in checkpoint
     ):
-        torch.cuda.set_rng_state_all(
-            checkpoint["cuda_rng_state"]
-        )
+        try:
+            torch.cuda.set_rng_state_all(
+                checkpoint["cuda_rng_state"]
+            )
+        except Exception:
+            pass
 
     if "numpy_rng_state" in checkpoint:
-        np.random.set_state(
-            checkpoint["numpy_rng_state"]
-        )
+        try:
+            np.random.set_state(
+                checkpoint["numpy_rng_state"]
+            )
+        except Exception:
+            pass
 
     update = int(
         checkpoint.get("update", 0)
@@ -314,28 +329,17 @@ def run_training():
     start_update = 1
     global_step = 0
 
-    checkpoint_files = [
-        f for f in os.listdir("runs/minimetro_ppo_local")
-        if f.startswith("checkpoint_") and f.endswith(".pt")
-    ]
+    latest_ckpt = find_latest_checkpoint(CHECKPOINT_DIR)
 
-    if checkpoint_files:
-        latest_ckpt = sorted(checkpoint_files)[-1]
-        ckpt_path = os.path.join(
-            "runs/minimetro_ppo_local",
-            latest_ckpt
-        )
-        print(f"🔄 Loading checkpoint: {ckpt_path}")
-        
+    if latest_ckpt:
         try:
-            checkpoint = torch.load(
-                ckpt_path,
-                map_location=device
+            loaded_update, global_step = load_checkpoint(
+                latest_ckpt,
+                model,
+                agent,
+                device,
             )
-            model.load_state_dict(checkpoint["model"])
-            agent.optimizer.load_state_dict(checkpoint["optimizer"])
-            start_update = checkpoint["update"] + 1
-            global_step = checkpoint["global_step"]
+            start_update = loaded_update + 1
             print(f"✅ Resumed from update {start_update - 1} | global_step={global_step}")
         except Exception as e:
             print(f"⚠️ Could not load checkpoint:\n{e}\nStarting a new training run.")

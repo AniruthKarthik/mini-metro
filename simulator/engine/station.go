@@ -51,6 +51,9 @@ type Station struct {
 	Alive             bool
 	IsInterchange     bool
 	OvercrowdingTimer float64 // seconds remaining before game over; -1 = no active timer
+	PrevQueueLen      int     // queue length at last rate sampling interval
+	QueueGrowthRate   float64 // smoothed delta queue per second (positive = growing, negative = draining)
 }
 
 const defaultStationCapacity = 6
+

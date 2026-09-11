@@ -9,4 +9,6 @@ type Line struct {
 	Removed            bool
 	LastLoopToggleTick uint64 // P1-4: tick when loop status was last changed
 	HasBeenLoopToggled bool   // P1-4: true if line loop status has ever been toggled
+	LastModifiedTick   uint64 // tick when line was created or modified (AddLine, ExtendLine, InsertStation, ShortenLine)
 }
+

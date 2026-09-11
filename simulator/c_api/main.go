@@ -61,6 +61,17 @@ func FreeSimulator(handle C.uintptr_t) {
 	unregisterSim(uintptr(handle))
 }
 
+//export CloneSimulator
+func CloneSimulator(handle C.uintptr_t) C.uintptr_t {
+	sim := getSim(uintptr(handle))
+	if sim == nil {
+		return 0
+	}
+	cloned := sim.Clone()
+	h := registerSim(cloned)
+	return C.uintptr_t(h)
+}
+
 //export Step
 func Step(handle C.uintptr_t, actionID C.int, duration C.float, outReward *C.float, outDone *C.uint8_t) {
 	sim := getSim(uintptr(handle))
@@ -110,7 +121,7 @@ func StepWithBreakdown(handle C.uintptr_t, actionID C.int, duration C.float, out
 		}
 	}
 	if outBreakdown != nil {
-		slice := unsafe.Slice((*float32)(unsafe.Pointer(outBreakdown)), 7)
+		slice := unsafe.Slice((*float32)(unsafe.Pointer(outBreakdown)), 8)
 		slice[0] = float32(rb.Delivery)
 		slice[1] = float32(rb.Connectivity)
 		slice[2] = float32(rb.CrowdPenalty)
@@ -118,8 +129,10 @@ func StepWithBreakdown(handle C.uintptr_t, actionID C.int, duration C.float, out
 		slice[4] = float32(rb.Redundancy)
 		slice[5] = float32(rb.LoopReversal)
 		slice[6] = float32(rb.TrackEfficiency)
+		slice[7] = float32(rb.Disruption)
 	}
 }
+
 
 //export SetScoringConfig
 func SetScoringConfig(handle C.uintptr_t, alphaCrowd C.float, betaGameOver C.float, connectivityBonus C.float, trackEfficiency C.float, linearCrowd C.uint8_t) {

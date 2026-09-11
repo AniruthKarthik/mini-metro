@@ -90,6 +90,7 @@ extern "C" {
 
 extern uintptr_t CreateSimulator(int mapID, uint64_t seed);
 extern void FreeSimulator(uintptr_t handle);
+extern uintptr_t CloneSimulator(uintptr_t handle);
 extern void Step(uintptr_t handle, int actionID, float duration, float* outReward, uint8_t* outDone);
 extern void StepWithBreakdown(uintptr_t handle, int actionID, float duration, float* outReward, uint8_t* outDone, float* outBreakdown);
 extern void SetScoringConfig(uintptr_t handle, float alphaCrowd, float betaGameOver, float connectivityBonus, float trackEfficiency, uint8_t linearCrowd);

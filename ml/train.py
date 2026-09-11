@@ -161,7 +161,10 @@ def run_training():
             if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
                 raw_model.load_state_dict(checkpoint["model_state_dict"])
                 if "optimizer_state_dict" in checkpoint and hasattr(agent, "optimizer"):
-                    agent.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+                    try:
+                        agent.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+                    except Exception as opt_err:
+                        print(f"⚠️ Could not restore optimizer state ({opt_err}). Using reinitialized optimizer.", flush=True)
                 start_update = checkpoint.get("update", latest_update) + 1
                 global_step = checkpoint.get("global_step", (start_update - 1) * batch_size)
             elif isinstance(checkpoint, dict):

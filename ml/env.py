@@ -74,6 +74,11 @@ if lib:
         lib.ReverseLine.argtypes = [ctypes.c_void_p, ctypes.c_int]
         lib.ReverseLine.restype = ctypes.c_int
 
+    # extern uintptr_t CloneSimulator(uintptr_t handle);
+    if hasattr(lib, "CloneSimulator"):
+        lib.CloneSimulator.argtypes = [ctypes.c_void_p]
+        lib.CloneSimulator.restype = ctypes.c_void_p
+
 class MiniMetroEnv(gym.Env):
     """
     Gymnasium environment wrapper for the Mini Metro Go simulator.
@@ -119,8 +124,8 @@ class MiniMetroEnv(gym.Env):
         # PHASE-2: exact node/edge counts from C API (replaces fragile heuristic)
         self._out_num_nodes = ctypes.c_int32(0)
         self._out_num_edges = ctypes.c_int32(0)
-        # P2-1, P2-2: decomposed reward breakdown buffer (7 channels from Go)
-        self._out_breakdown = (ctypes.c_float * 7)()
+        # P2-1, P2-2: decomposed reward breakdown buffer (8 channels from Go, including Disruption)
+        self._out_breakdown = (ctypes.c_float * 8)()
         self.scoring_config = {
             "alpha_crowd": 0.30,
             "beta_game_over": 200.0,
@@ -137,6 +142,7 @@ class MiniMetroEnv(gym.Env):
             "redundancy": 0.0,
             "loop_reversal": 0.0,
             "track_efficiency": 0.0,
+            "disruption": 0.0,
         }
         
     def reset(self, seed=None, options=None):
@@ -164,7 +170,9 @@ class MiniMetroEnv(gym.Env):
             "redundancy": 0.0,
             "loop_reversal": 0.0,
             "track_efficiency": 0.0,
+            "disruption": 0.0,
         }
+
         
         obs = self._get_obs()
         info = {}
@@ -220,6 +228,37 @@ class MiniMetroEnv(gym.Env):
             if np.random.rand() < p:
                 self.reverse_line(line_id)
 
+    def clone(self):
+        """
+        Creates an independent deep clone of this environment, preserving complete simulator state
+        for fast counterfactual rollouts without mutating the current environment.
+        """
+        if self.handle is None:
+            raise RuntimeError("Cannot clone an uninitialized environment")
+        if not hasattr(lib, "CloneSimulator"):
+            raise RuntimeError("CloneSimulator not supported by libminimetro")
+        cloned_handle = lib.CloneSimulator(self.handle)
+        if not cloned_handle:
+            raise RuntimeError("CloneSimulator returned null handle")
+        new_env = MiniMetroEnv(map_id=self.map_id, seed=self._seed_val)
+        if new_env.handle is not None:
+            lib.FreeSimulator(new_env.handle)
+        new_env.handle = cloned_handle
+        new_env.scoring_config = dict(self.scoring_config)
+        return new_env
+
+    def simulate_candidate(self, action_id: int, duration: float = 4.0):
+        """
+        Executes a candidate action inside an isolated cloned environment forward for duration seconds.
+        Returns: (delta_utility, step_breakdown, done, end_obs)
+        """
+        cloned_env = self.clone()
+        try:
+            obs, reward, done, truncated, info = cloned_env.step(action_id, duration=duration)
+            return reward, info.get("reward_breakdown", {}), done, obs
+        finally:
+            cloned_env.close()
+
     def _get_obs(self):
         try:
             # Zero out node/edge buffers (globals are always fully written).
@@ -274,14 +313,14 @@ class MiniMetroEnv(gym.Env):
                 "num_edges":   np.array([0], dtype=np.int32),
             }
 
-    def step(self, action):
+    def step(self, action, duration: float = 1.0):
         if self.handle is None:
             obs, info = self.reset()
             return obs, 0.0, True, False, info
             
         try:
             action_id = int(action)
-            duration = 1.0 
+ 
             
             total_reward = 0.0
             done = False
@@ -296,10 +335,15 @@ class MiniMetroEnv(gym.Env):
                 "redundancy": 0.0,
                 "loop_reversal": 0.0,
                 "track_efficiency": 0.0,
+                "disruption": 0.0,
             }
+
+            sub_steps = 0
+            emergency_break = False
 
             # Dynamic Frame Skipping: tick up to 4 times (4 seconds total)
             for step_idx in range(4):
+                sub_steps += 1
                 curr_action = action_id if step_idx == 0 else 0
                 
                 if hasattr(lib, "StepWithBreakdown"):
@@ -318,6 +362,7 @@ class MiniMetroEnv(gym.Env):
                     go_redundancy = float(self._out_breakdown[4])
                     go_loop_reversal = float(self._out_breakdown[5])
                     go_track_efficiency = float(self._out_breakdown[6])
+                    go_disruption = float(self._out_breakdown[7])
                 else:
                     lib.Step(self.handle, curr_action, duration, ctypes.byref(self._out_reward), ctypes.byref(self._out_done))
                     go_delivery = float(self._out_reward.value)
@@ -327,6 +372,7 @@ class MiniMetroEnv(gym.Env):
                     go_redundancy = 0.0
                     go_loop_reversal = 0.0
                     go_track_efficiency = 0.0
+                    go_disruption = 0.0
 
                 step_done = bool(self._out_done.value)
                 sub_survival = 0.01 if not step_done else 0.0
@@ -355,6 +401,7 @@ class MiniMetroEnv(gym.Env):
                 step_breakdown["redundancy"] += go_redundancy
                 step_breakdown["loop_reversal"] += go_loop_reversal
                 step_breakdown["track_efficiency"] += go_track_efficiency
+                step_breakdown["disruption"] += go_disruption
                 step_breakdown["survival"] += sub_survival
 
                 sub_step_reward = (
@@ -366,6 +413,7 @@ class MiniMetroEnv(gym.Env):
                     + go_redundancy
                     + go_loop_reversal
                     + go_track_efficiency
+                    + go_disruption
                     + sub_survival
                 )
                 total_reward += sub_step_reward
@@ -375,6 +423,7 @@ class MiniMetroEnv(gym.Env):
                     break
                     
                 if emergency:
+                    emergency_break = True
                     break
 
             for k, v in step_breakdown.items():
@@ -383,6 +432,9 @@ class MiniMetroEnv(gym.Env):
             info["reward_breakdown"] = step_breakdown
             info["episode_reward_breakdown"] = dict(self._episode_reward_breakdown)
             info["total_track_length"] = self.get_total_track_length()
+            info["sub_steps"] = sub_steps
+            info["simulation_seconds"] = float(sub_steps * duration)
+            info["emergency_break"] = emergency_break
 
             return obs, total_reward, done, False, info
         except Exception:
@@ -390,7 +442,12 @@ class MiniMetroEnv(gym.Env):
             info["reward_breakdown"] = {k: 0.0 for k in self._episode_reward_breakdown}
             info["episode_reward_breakdown"] = dict(self._episode_reward_breakdown)
             info["total_track_length"] = 0.0
+            info["sub_steps"] = 0
+            info["simulation_seconds"] = 0.0
+            info["emergency_break"] = False
             return obs, 0.0, True, False, info
+
+
         
     def set_pending_reward(self, card0, card1):
         """Mock or set pending reward choices (for testing/probing). Use -1 to clear."""
