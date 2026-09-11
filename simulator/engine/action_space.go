@@ -194,10 +194,34 @@ func (s *Simulator) GetActionMask(outMask []bool) []bool {
 		for u := 0; u < MaxStations; u++ {
 			for v := u + 1; v < MaxStations; v++ {
 				if u < N && v < N && s.State.Stations[u].Alive && s.State.Stations[v].Alive {
+					// Check if any active line already directly connects station u and station v
+					alreadyDirect := false
+					for _, line := range s.State.Lines {
+						if line.Removed || len(line.Stations) < 2 {
+							continue
+						}
+						stList := line.Stations
+						for i := 0; i+1 < len(stList); i++ {
+							if (stList[i] == u && stList[i+1] == v) || (stList[i] == v && stList[i+1] == u) {
+								alreadyDirect = true
+								break
+							}
+						}
+						if !alreadyDirect && line.IsLoop && len(stList) >= 3 {
+							if (stList[0] == u && stList[len(stList)-1] == v) || (stList[0] == v && stList[len(stList)-1] == u) {
+								alreadyDirect = true
+								break
+							}
+						}
+						if alreadyDirect {
+							break
+						}
+					}
+
 					uPos := s.State.Stations[u].Pos
 					vPos := s.State.Stations[v].Pos
 					needsTunnel := CrossesWater(uPos, vPos, s.State.Rivers, s.State.WaterPolygons)
-					if !needsTunnel || s.State.Resources.CanSpend(RewardTunnel) {
+					if !alreadyDirect && (!needsTunnel || s.State.Resources.CanSpend(RewardTunnel)) {
 						outMask[AddLineOffset+currIdx] = true
 					}
 				}
