@@ -10,6 +10,7 @@ type Simulator struct {
 	graphVersion      uint64 // tracks which TopologyVersion the cached Graph was built for
 	rng               *rand.Rand
 	loopTogglePenalty float64 // P1-4: penalty on rapid loop reversals (<60s)
+	ScoringConfig     ScoringConfig // P2-1: configurable reward coefficients and modes
 }
 
 func (s *Simulator) RNG() *rand.Rand {
@@ -48,7 +49,8 @@ func NewSimulatorWithWater(stations []Station, rivers []RiverSegment, polygons [
 			Alive:            true,
 			MaxTrainsPerLine: 4,
 		},
-		rng: rand.New(rand.NewSource(int64(sSeed))),
+		rng:           rand.New(rand.NewSource(int64(sSeed))),
+		ScoringConfig: DefaultScoringConfig(),
 	}
 	sim.State.Scheduler.Schedule(rewardInterval(), EventReward)
 	sim.State.Scheduler.Schedule(initialSpawnInterval(), EventSpawnStation)
@@ -561,6 +563,49 @@ func (s *Simulator) openLoop(a OpenLoop) error {
 	return nil
 }
 
+// ReverseLine reverses the station sequence of an active non-loop line,
+// preserving identical physical connectivity and updating active trains.
+func (s *Simulator) ReverseLine(lineID int) error {
+	if lineID < 0 || lineID >= len(s.State.Lines) {
+		return errors.New("invalid line ID")
+	}
+	line := &s.State.Lines[lineID]
+	if line.Removed || len(line.Stations) < 2 || line.IsLoop {
+		return nil
+	}
+
+	n := len(line.Stations)
+	// 1. Reverse Stations slice
+	for i, j := 0, n-1; i < j; i, j = i+1, j-1 {
+		line.Stations[i], line.Stations[j] = line.Stations[j], line.Stations[i]
+	}
+
+	// 2. Reverse TunnelAt slice (length is n-1)
+	nTunnels := len(line.TunnelAt)
+	for i, j := 0, nTunnels-1; i < j; i, j = i+1, j-1 {
+		line.TunnelAt[i], line.TunnelAt[j] = line.TunnelAt[j], line.TunnelAt[i]
+	}
+
+	// 3. Update active trains on this line
+	for i := range s.State.Trains {
+		tr := &s.State.Trains[i]
+		if !tr.Active || tr.LineID != lineID {
+			continue
+		}
+		// Segment k in original line corresponds to (n - 1) - k in reversed line
+		tr.Segment = (n - 1) - tr.Segment
+		if tr.Segment < 0 {
+			tr.Segment = 0
+		} else if tr.Segment >= n {
+			tr.Segment = n - 1
+		}
+		tr.Direction = -tr.Direction
+	}
+
+	s.State.TopologyVersion++
+	return nil
+}
+
 // repositionTrain moves an active train to a specific station segment on its line.
 func (s *Simulator) repositionTrain(a RepositionTrain) error {
 	if a.TrainID < 0 || a.TrainID >= len(s.State.Trains) {
@@ -707,9 +752,9 @@ type SimInfo struct {
 	StepTicks      int
 }
 
-// StepMacro applies an action and advances physics for up to duration seconds (in fixed 30 Hz sub-ticks)
-// or until an asynchronous event (station spawn, reward choice, game over) triggers.
-func (s *Simulator) StepMacro(action Action, duration float64) (obs Observation, reward float64, done bool, info SimInfo) {
+// StepMacroBreakdown applies an action and advances physics for up to duration seconds (in fixed 30 Hz sub-ticks)
+// or until an asynchronous event (station spawn, reward choice, game over) triggers, returning the decomposed reward breakdown (P2-1).
+func (s *Simulator) StepMacroBreakdown(action Action, duration float64) (obs Observation, reward float64, done bool, info SimInfo, rb RewardBreakdown) {
 	info.EventTriggered = "none"
 	if action != nil {
 		_ = s.ApplyAction(action)
@@ -754,7 +799,14 @@ func (s *Simulator) StepMacro(action Action, duration float64) (obs Observation,
 		}
 	}
 
-	stepReward := s.ComputeStepReward(s.State.Score - initialScore)
+	stepReward, breakdown := s.ComputeStepRewardBreakdown(s.State.Score - initialScore)
 
-	return s.Observation(), stepReward, !s.State.Alive, info
+	return s.Observation(), stepReward, !s.State.Alive, info, breakdown
+}
+
+// StepMacro applies an action and advances physics for up to duration seconds (in fixed 30 Hz sub-ticks)
+// or until an asynchronous event (station spawn, reward choice, game over) triggers.
+func (s *Simulator) StepMacro(action Action, duration float64) (obs Observation, reward float64, done bool, info SimInfo) {
+	obs, reward, done, info, _ = s.StepMacroBreakdown(action, duration)
+	return obs, reward, done, info
 }

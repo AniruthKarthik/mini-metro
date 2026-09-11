@@ -18,7 +18,7 @@ except ImportError:
     pass
 from torch.utils.tensorboard import SummaryWriter
 
-from env import MiniMetroEnv
+from env import MiniMetroEnv, LineOrientationAugmentation
 from model import MiniMetroActorCritic
 from ppo import PPO
 from probing import compute_expansion_metrics
@@ -28,12 +28,14 @@ from probing import compute_expansion_metrics
 # ENVIRONMENT
 # ============================================================
 
-def make_env(seed, map_id=0):
+def make_env(seed, map_id=0, flip_prob=0.5):
     def thunk():
         env = MiniMetroEnv(
             map_id=map_id,
             seed=seed
         )
+        if flip_prob > 0:
+            env = LineOrientationAugmentation(env, flip_prob=flip_prob)
 
         env = gym.wrappers.RecordEpisodeStatistics(env)
 
@@ -565,6 +567,11 @@ def run_training():
 
                             writer.add_scalar("charts/episodic_return", episode_return, global_step)
                             writer.add_scalar("charts/episodic_length", episode_length, global_step)
+                            if "episode_reward_breakdown" in info:
+                                for channel, val in info["episode_reward_breakdown"].items():
+                                    writer.add_scalar(f"rewards/{channel}", val, global_step)
+                            if "total_track_length" in info:
+                                writer.add_scalar("metrics/total_track_length", info["total_track_length"], global_step)
 
             # ------------------------------------------------
             # GAE

@@ -303,6 +303,16 @@ class MiniMetroActorCritic(nn.Module):
                     nn.init.orthogonal_(lin1.weight[8:, H+8:], gain=0.05)
                     nn.init.orthogonal_(lin2.weight[:, 8:], gain=0.05)
 
+    def debias_extension_embeddings(self):
+        """
+        P2-3: Symmetrize ext_end_emb weights between front (end=0) and tail (end=1).
+        Eliminates the legacy +1.282 logit static offset that favored tail extension.
+        """
+        with torch.no_grad():
+            w_avg = 0.5 * (self.ext_end_emb.weight[0] + self.ext_end_emb.weight[1])
+            self.ext_end_emb.weight[0] = w_avg
+            self.ext_end_emb.weight[1] = w_avg
+
     def _extract_line_representations(self, nodes, edges, edge_attrs, x):
         """
         Constructs dynamic candidate line representations for lines 0..6:
@@ -475,6 +485,41 @@ class MiniMetroActorCritic(nn.Module):
             ext_mat = ext_mat - 0.75 * redundant_lines.unsqueeze(1)
         # Permute (lineID, end, stID) -> (lineID, stID, end) then flatten to [B, 420]
         scores_extend = ext_mat.view(B, 7, 2, 30).permute(0, 1, 3, 2).reshape(B, 420)
+
+        # P2-3: Candidate-to-endpoint geometric distance conditioning
+        if nodes is not None and edges is not None and edge_attrs is not None and edges.shape[-1] > 0:
+            dtype = x.dtype
+            fwd_mask = (edge_attrs[:, :, 8:9] > 0).to(dtype=dtype)  # [B, E, 1]
+            edge_lines = edge_attrs[:, :, 0:7].to(dtype=dtype)      # [B, E, 7]
+            fwd_lines = edge_lines * fwd_mask                       # [B, E, 7]
+            src = edges[:, 0, :].clamp(min=0, max=29)               # [B, E]
+            dst = edges[:, 1, :].clamp(min=0, max=29)               # [B, E]
+
+            fwd_out = torch.zeros(B, 30, 7, device=x.device, dtype=dtype)
+            fwd_in = torch.zeros(B, 30, 7, device=x.device, dtype=dtype)
+            fwd_out.scatter_add_(1, src.unsqueeze(-1).expand(-1, -1, 7), fwd_lines)
+            fwd_in.scatter_add_(1, dst.unsqueeze(-1).expand(-1, -1, 7), fwd_lines)
+
+            # Front endpoint (end=0) is source: out-degree 1, in-degree 0 in forward chain
+            # Back endpoint (end=1) is sink: in-degree 1, out-degree 0 in forward chain
+            is_front = ((fwd_out > 0.5) & (fwd_in < 0.5)).to(dtype=dtype)  # [B, 30, 7]
+            is_back = ((fwd_in > 0.5) & (fwd_out < 0.5)).to(dtype=dtype)   # [B, 30, 7]
+
+            # [B, 7, 2, 30]
+            is_end = torch.stack([is_front.permute(0, 2, 1), is_back.permute(0, 2, 1)], dim=2)
+            has_endpoint = is_end.any(dim=-1, keepdim=True).to(dtype=dtype)  # [B, 7, 2, 1]
+
+            pos = nodes[:, :, 0:2].to(dtype=dtype)  # [B, 30, 2]
+            pos_end = torch.einsum("bler,brc->blec", is_end, pos)  # [B, 7, 2, 2]
+
+            delta = pos.unsqueeze(1).unsqueeze(2) - pos_end.unsqueeze(3)  # [B, 7, 2, 30, 2]
+            dist_cand = torch.sqrt(delta[..., 0]**2 + delta[..., 1]**2 + 1e-8)  # [B, 7, 2, 30]
+            dist_cand = dist_cand * has_endpoint
+
+            # Distance penalty (2.0 per 100 distance units)
+            ext_geom_bias = 2.0 * dist_cand  # [B, 7, 2, 30]
+            ext_geom_bias_flat = ext_geom_bias.permute(0, 1, 3, 2).reshape(B, 420)
+            scores_extend = scores_extend - ext_geom_bias_flat
 
         # 4. Bilinear InsertStation scores (3150 actions)
         segs15 = torch.arange(15, device=x.device)

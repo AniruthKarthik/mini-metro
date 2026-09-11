@@ -18,9 +18,9 @@ Every task is designed to be immediately actionable by human developers and auto
   * [x] [P1-3: Candidate-Conditioned Line Scoring for AddTrain and AddCarriage](#p1-3-candidate-conditioned-line-scoring-for-addtrain-and-addcarriage)
   * [x] [P1-4: Loop Toggling Hysteresis & Reversal Oscillation Mitigation](#p1-4-loop-toggling-hysteresis--reversal-oscillation-mitigation)
 * **P2 — Reward Shaping & Training Improvements**
-  * [ ] [P2-1: Comprehensive Reward Decomposition & Ablation Suite](#p2-1-comprehensive-reward-decomposition--ablation-suite)
-  * [ ] [P2-2: Geometric Efficiency & Track Sprawl Regularization](#p2-2-geometric-efficiency--track-sprawl-regularization)
-  * [ ] [P2-3: Tail vs. Front Extension Symmetry Audit & Debiasing](#p2-3-tail-vs-front-extension-symmetry-audit--debiasing)
+  * [x] [P2-1: Comprehensive Reward Decomposition & Ablation Suite](#p2-1-comprehensive-reward-decomposition--ablation-suite)
+  * [x] [P2-2: Geometric Efficiency & Track Sprawl Regularization](#p2-2-geometric-efficiency--track-sprawl-regularization)
+  * [x] [P2-3: Tail vs. Front Extension Symmetry Audit & Debiasing](#p2-3-tail-vs-front-extension-symmetry-audit--debiasing)
 * **P3 — Evaluation, Diagnostics & Empirical Audits**
   * [ ] [P3-1: Rigorous Multi-Seed & Cross-Map Evaluation Suite](#p3-1-rigorous-multi-seed--cross-map-evaluation-suite)
   * [ ] [P3-2: Semantic Permutation & Spatial Invariance Audit](#p3-2-semantic-permutation--spatial-invariance-audit)

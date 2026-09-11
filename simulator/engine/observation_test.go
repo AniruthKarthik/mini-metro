@@ -96,6 +96,7 @@ func TestRewardObservationSerialization(t *testing.T) {
 
 func TestRedundancyPenalty(t *testing.T) {
 	sim := NewSimulatorWithMap(LondonMap(), 42)
+	sim.ScoringConfig.TrackEfficiencyWeight = 0.0
 
 	// Ensure at least 4 lines exist in State
 	for len(sim.State.Lines) < 4 {

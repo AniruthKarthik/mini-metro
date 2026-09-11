@@ -18,14 +18,16 @@ import gymnasium as gym
 from torch.utils.tensorboard import SummaryWriter
 import time
 
-from env import MiniMetroEnv
+from env import MiniMetroEnv, LineOrientationAugmentation
 from model import MiniMetroActorCritic
 from ppo import PPO
 from probing import compute_expansion_metrics
 
-def make_env(seed, map_id=-1):
+def make_env(seed, map_id=-1, flip_prob=0.5):
     def thunk():
         env = MiniMetroEnv(map_id=map_id, seed=seed)
+        if flip_prob > 0:
+            env = LineOrientationAugmentation(env, flip_prob=flip_prob)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         return env
     return thunk
@@ -251,6 +253,11 @@ def run_training():
                         print(f"global_step={global_step}, episodic_return={info['episode']['r']}, length={info['episode']['l']}", flush=True)
                         writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
                         writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
+                        if "episode_reward_breakdown" in info:
+                            for channel, val in info["episode_reward_breakdown"].items():
+                                writer.add_scalar(f"rewards/{channel}", val, global_step)
+                        if "total_track_length" in info:
+                            writer.add_scalar("metrics/total_track_length", info["total_track_length"], global_step)
 
         with torch.no_grad():
             with torch.amp.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
