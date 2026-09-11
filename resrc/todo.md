@@ -24,8 +24,8 @@ Every task is designed to be immediately actionable by human developers and auto
 * **P3 — Evaluation, Diagnostics & Empirical Audits**
   * [x] [P3-1: Rigorous Multi-Seed & Cross-Map Evaluation Suite](#p3-1-rigorous-multi-seed--cross-map-evaluation-suite)
   * [x] [P3-2: Semantic Permutation & Spatial Invariance Audit](#p3-2-semantic-permutation--spatial-invariance-audit)
-  * [ ] [P3-3: Station-Shape Affinity Validation vs. Dynamic Demand Distributions](#p3-3-station-shape-affinity-validation-vs-dynamic-demand-distributions)
-  * [ ] [P3-4: Counterfactual Interchange Decision Verification](#p3-4-counterfactual-interchange-decision-verification)
+  * [x] [P3-3: Station-Shape Affinity Validation vs. Dynamic Demand Distributions](#p3-3-station-shape-affinity-validation-vs-dynamic-demand-distributions)
+  * [x] [P3-4: Counterfactual Interchange Decision Verification](#p3-4-counterfactual-interchange-decision-verification)
   * [ ] [P3-5: NoOp Disambiguation & Macro-Step Simulation Accounting](#p3-5-noop-disambiguation--macro-step-simulation-accounting)
 * **P4 — Long-Term Architectural & Environment Improvements**
   * [ ] [P4-1: Safe Dynamic Line Re-Routing & Deletion (RemoveLine / ShortenLine)](#p4-1-safe-dynamic-line-re-routing--deletion-removeline--shortenline)
@@ -528,7 +528,7 @@ Rigorous testing protocols, counterfactual verification, and metrics.
 
 ---
 
-### P3-3: Station-Shape Affinity Validation vs. Dynamic Demand Distributions
+### P3-3: Station-Shape Affinity Validation vs. Dynamic Demand Distributions [COMPLETED]
 
 * **Problem**:
   The audit demonstrated high bilinear affinity for Square stations ($0.094$) vs Circles ($0.072$). It must be verified whether this reflects true demand awareness or is a static artifact of map defaults.
@@ -548,7 +548,7 @@ Rigorous testing protocols, counterfactual verification, and metrics.
 
 ---
 
-### P3-4: Counterfactual Interchange Decision Verification
+### P3-4: Counterfactual Interchange Decision Verification [COMPLETED]
 
 * **Problem**:
   The audit's interchange findings relied on gradient sensitivity ($+0.020$ Degree, $+0.031$ Incoming trains, $-0.048$ Overcrowding timer). Behavioral verification requires counterfactual state intervention.

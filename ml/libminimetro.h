@@ -98,6 +98,8 @@ extern void GetObservation(uintptr_t handle, float* outNodes, int32_t* outEdges,
 extern void GetActionMask(uintptr_t handle, uint8_t* outMask);
 extern void SetPendingReward(uintptr_t handle, int c0, int c1);
 extern int ReverseLine(uintptr_t handle, int lineID);
+extern void SetStationSpawnWeights(uintptr_t handle, int circleW, int triangleW, int squareW, int starW, int pentagonW);
+extern void ResetStationSpawnWeights(uintptr_t handle);
 
 #ifdef __cplusplus
 }

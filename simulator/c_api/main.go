@@ -246,4 +246,29 @@ func ReverseLine(handle C.uintptr_t, lineID C.int) C.int {
 	return 0
 }
 
+//export SetStationSpawnWeights
+func SetStationSpawnWeights(handle C.uintptr_t, circleW C.int, triangleW C.int, squareW C.int, starW C.int, pentagonW C.int) {
+	sim := getSim(uintptr(handle))
+	if sim == nil {
+		return
+	}
+	weights := map[engine.StationKind]int{
+		engine.Circle:   int(circleW),
+		engine.Triangle: int(triangleW),
+		engine.Square:   int(squareW),
+		engine.Star:     int(starW),
+		engine.Pentagon: int(pentagonW),
+	}
+	sim.SetStationSpawnWeights(weights)
+}
+
+//export ResetStationSpawnWeights
+func ResetStationSpawnWeights(handle C.uintptr_t) {
+	sim := getSim(uintptr(handle))
+	if sim == nil {
+		return
+	}
+	sim.ResetStationSpawnWeights()
+}
+
 func main() {}

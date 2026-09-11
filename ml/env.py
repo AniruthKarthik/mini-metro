@@ -399,6 +399,16 @@ class MiniMetroEnv(gym.Env):
             return self._get_obs()
         return None
 
+    def set_station_spawn_weights(self, circle=10, triangle=8, square=6, star=2, pentagon=2):
+        """P3-3: Configure custom station spawn weights on the simulator instance."""
+        if self.handle is not None and lib is not None and hasattr(lib, "SetStationSpawnWeights"):
+            lib.SetStationSpawnWeights(self.handle, int(circle), int(triangle), int(square), int(star), int(pentagon))
+
+    def reset_station_spawn_weights(self):
+        """P3-3: Reset station spawn weights to default."""
+        if self.handle is not None and lib is not None and hasattr(lib, "ResetStationSpawnWeights"):
+            lib.ResetStationSpawnWeights(self.handle)
+
     def close(self):
         if self.handle is not None and lib is not None:
             try:
