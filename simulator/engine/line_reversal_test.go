@@ -109,6 +109,86 @@ func TestReverseLineActiveTrains(t *testing.T) {
 	}
 }
 
+func TestReverseLineKinematicContinuity(t *testing.T) {
+	sim := NewSimulatorWithMap(LondonMap(), 42)
+	sim.State.Stations = append(sim.State.Stations, Station{
+		ID: 3, Kind: Cross, Pos: Pos{X: 90, Y: 70}, Alive: true, Capacity: 6,
+	})
+	_ = sim.ApplyAction(AddLine{Stations: []int{0, 1}})
+	_ = sim.ApplyAction(ExtendLine{LineID: 0, StationID: 2, FromFront: false})
+	_ = sim.ApplyAction(ExtendLine{LineID: 0, StationID: 3, FromFront: false})
+
+	// Line has stations [0, 1, 2, 3]
+	testCases := []struct {
+		seg  int
+		dir  int
+		prog float64
+	}{
+		{seg: 0, dir: 1, prog: 0.0},
+		{seg: 0, dir: 1, prog: 0.25},
+		{seg: 0, dir: 1, prog: 0.8},
+		{seg: 1, dir: 1, prog: 0.5},
+		{seg: 2, dir: -1, prog: 0.1},
+		{seg: 2, dir: -1, prog: 0.75},
+		{seg: 3, dir: -1, prog: 0.0},
+		{seg: 3, dir: -1, prog: 0.99},
+	}
+
+	getTrainSpatialState := func(s *Simulator, tr *Train) (x, y float64, fromSt, toSt int) {
+		line := &s.State.Lines[tr.LineID]
+		fromSt = line.Stations[tr.Segment]
+		nextIdx := tr.Segment + tr.Direction
+		if nextIdx < 0 {
+			nextIdx = 0
+		}
+		if nextIdx >= len(line.Stations) {
+			nextIdx = len(line.Stations) - 1
+		}
+		toSt = line.Stations[nextIdx]
+		stA := &s.State.Stations[fromSt]
+		stB := &s.State.Stations[toSt]
+		x = float64(stA.Pos.X) + tr.Progress*float64(stB.Pos.X-stA.Pos.X)
+		y = float64(stA.Pos.Y) + tr.Progress*float64(stB.Pos.Y-stA.Pos.Y)
+		return
+	}
+
+	for idx, tc := range testCases {
+		sim.State.Trains[0].Segment = tc.seg
+		sim.State.Trains[0].Direction = tc.dir
+		sim.State.Trains[0].Progress = tc.prog
+
+		xBefore, yBefore, fromBefore, toBefore := getTrainSpatialState(sim, &sim.State.Trains[0])
+
+		if err := sim.ReverseLine(0); err != nil {
+			t.Fatalf("case %d: ReverseLine failed: %v", idx, err)
+		}
+
+		xAfter, yAfter, fromAfter, toAfter := getTrainSpatialState(sim, &sim.State.Trains[0])
+
+		diffX := xBefore - xAfter
+		diffY := yBefore - yAfter
+		if diffX < 0 {
+			diffX = -diffX
+		}
+		if diffY < 0 {
+			diffY = -diffY
+		}
+
+		if diffX > 1e-4 || diffY > 1e-4 {
+			t.Errorf("case %d: spatial jump detected: before=(%.4f, %.4f), after=(%.4f, %.4f), diff=(%.4f, %.4f)",
+				idx, xBefore, yBefore, xAfter, yAfter, diffX, diffY)
+		}
+
+		if fromBefore != fromAfter || toBefore != toAfter {
+			t.Errorf("case %d: kinematic heading changed: before=(from %d to %d), after=(from %d to %d)",
+				idx, fromBefore, toBefore, fromAfter, toAfter)
+		}
+
+		// Reverse back to original order for next test case
+		_ = sim.ReverseLine(0)
+	}
+}
+
 func TestReverseLineLoopIgnored(t *testing.T) {
 	sim := NewSimulatorWithMap(LondonMap(), 42)
 	_ = sim.ApplyAction(AddLine{Stations: []int{0, 1}})
@@ -127,3 +207,5 @@ func TestReverseLineLoopIgnored(t *testing.T) {
 		}
 	}
 }
+
+
