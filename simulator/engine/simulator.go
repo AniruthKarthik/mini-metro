@@ -1039,8 +1039,9 @@ func (s *Simulator) insertStation(a InsertStation) error {
 
 
 type SimInfo struct {
-	EventTriggered string // "none", "reward_offered", "station_spawned", "game_over"
-	StepTicks      int
+	EventTriggered    string // "none", "reward_offered", "station_spawned", "game_over"
+	StepTicks         int
+	SimulationSeconds float64
 }
 
 // StepMacroBreakdown applies an action and advances physics for up to duration seconds (in fixed 30 Hz sub-ticks)
@@ -1090,7 +1091,8 @@ func (s *Simulator) StepMacroBreakdown(action Action, duration float64) (obs Obs
 		}
 	}
 
-	stepReward, breakdown := s.ComputeStepRewardBreakdown(s.State.Score - initialScore)
+	info.SimulationSeconds = float64(info.StepTicks) * dt
+	stepReward, breakdown := s.ComputeStepRewardBreakdown(s.State.Score-initialScore, info.SimulationSeconds)
 
 	return s.Observation(), stepReward, !s.State.Alive, info, breakdown
 }

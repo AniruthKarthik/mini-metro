@@ -134,3 +134,41 @@ func TestTrackEfficiency_TotalTrackLength(t *testing.T) {
 	}
 }
 
+func TestStepMacroBreakdown_DurationScaling(t *testing.T) {
+	stations := []Station{
+		{ID: 0, Kind: Circle, Pos: Pos{X: 0, Y: 0}, Alive: true, Capacity: 6},
+		{ID: 1, Kind: Triangle, Pos: Pos{X: 30, Y: 0}, Alive: true, Capacity: 6},
+		{ID: 2, Kind: Square, Pos: Pos{X: 30, Y: 40}, Alive: true, Capacity: 6},
+	}
+	sim := NewSimulatorWithWater(stations, nil, nil, 42)
+	sim.State.Lines = []Line{
+		{ID: 0, Stations: []int{0, 1, 2}, IsLoop: false},
+	}
+	sim.ScoringConfig = ScoringConfig{
+		TrackEfficiencyWeight: 0.05,
+		AlphaCrowdPenalty:     0.20,
+		Initialized:           true,
+	}
+
+	// 1.0s step -> 30 ticks
+	_, _, _, info1, rb1 := sim.StepMacroBreakdown(nil, 1.0)
+	if math.Abs(info1.SimulationSeconds-1.0) > 1e-6 {
+		t.Errorf("expected SimulationSeconds 1.0, got %f", info1.SimulationSeconds)
+	}
+
+	// 0.5s step -> 15 ticks
+	_, _, _, info2, rb2 := sim.StepMacroBreakdown(nil, 0.5)
+	if math.Abs(info2.SimulationSeconds-0.5) > 1e-6 {
+		t.Errorf("expected SimulationSeconds 0.5, got %f", info2.SimulationSeconds)
+	}
+
+	// Track efficiency penalty should scale linearly with elapsed duration
+	expectedRatio := 0.5 / 1.0
+	actualRatio := rb2.TrackEfficiency / rb1.TrackEfficiency
+	if math.Abs(actualRatio-expectedRatio) > 1e-4 {
+		t.Errorf("expected track efficiency ratio %f, got %f (rb1=%f, rb2=%f)",
+			expectedRatio, actualRatio, rb1.TrackEfficiency, rb2.TrackEfficiency)
+	}
+}
+
+

@@ -113,7 +113,14 @@ func (s *Simulator) CanReach(u, v int) bool {
 }
 
 // ComputeStepRewardBreakdown computes both the total reward and its decomposed constituents (P2-1).
-func (s *Simulator) ComputeStepRewardBreakdown(deliveredDelta int) (float64, RewardBreakdown) {
+// If stepDuration is provided, continuous rates (crowd penalty, track efficiency, connectivity, redundancy)
+// are normalized by the actual elapsed duration Delta t = info.StepTicks * dt.
+func (s *Simulator) ComputeStepRewardBreakdown(deliveredDelta int, stepDuration ...float64) (float64, RewardBreakdown) {
+	durationScale := 1.0
+	if len(stepDuration) > 0 && stepDuration[0] > 0 {
+		durationScale = stepDuration[0]
+	}
+
 	cfg := s.GetScoringConfig()
 
 	rb := RewardBreakdown{}
@@ -121,7 +128,7 @@ func (s *Simulator) ComputeStepRewardBreakdown(deliveredDelta int) (float64, Rew
 	// 1. Delivery reward
 	rb.Delivery = float64(deliveredDelta)
 
-	// 2. Crowd penalty
+	// 2. Crowd penalty (scaled by elapsed time)
 	totalCrowdPenalty := 0.0
 	for i := range s.State.Stations {
 		st := &s.State.Stations[i]
@@ -129,7 +136,7 @@ func (s *Simulator) ComputeStepRewardBreakdown(deliveredDelta int) (float64, Rew
 			totalCrowdPenalty += StationCrowdPenalty(st, cfg.LinearCrowdPenalty)
 		}
 	}
-	rb.CrowdPenalty = -cfg.AlphaCrowdPenalty * totalCrowdPenalty
+	rb.CrowdPenalty = -cfg.AlphaCrowdPenalty * totalCrowdPenalty * durationScale
 
 	// 3. Game over penalty
 	if !s.State.Alive {
@@ -166,7 +173,7 @@ func (s *Simulator) ComputeStepRewardBreakdown(deliveredDelta int) (float64, Rew
 			}
 		}
 		// Normalize by max possible pairs (45) so bonus stays in [0, ~2.0]
-		rb.Connectivity = cfg.ConnectivityBonus * float64(reachablePairs) / 45.0
+		rb.Connectivity = cfg.ConnectivityBonus * float64(reachablePairs) / 45.0 * durationScale
 
 		// P1-2: Redundant network expansion penalty.
 		// Penalize stations served by >2 lines unless upgraded to an interchange hub.
@@ -190,7 +197,7 @@ func (s *Simulator) ComputeStepRewardBreakdown(deliveredDelta int) (float64, Rew
 				redundancyPenalty += 0.05 * float64(linesServingStation[i]-2)
 			}
 		}
-		rb.Redundancy = -redundancyPenalty
+		rb.Redundancy = -redundancyPenalty * durationScale
 	}
 
 	// 5. Loop rapid reversal penalty
@@ -202,7 +209,7 @@ func (s *Simulator) ComputeStepRewardBreakdown(deliveredDelta int) (float64, Rew
 	// 6. Continuous track-mileage regularization penalty (P2-2)
 	// R_track_efficiency = -w_track * sum_{e in Network} (Distance(e) / 100.0)
 	if cfg.TrackEfficiencyWeight > 0 {
-		rb.TrackEfficiency = -cfg.TrackEfficiencyWeight * (s.TotalTrackLength() / 100.0)
+		rb.TrackEfficiency = -cfg.TrackEfficiencyWeight * (s.TotalTrackLength() / 100.0) * durationScale
 	}
 
 	// 7. Operational disruption penalty (structural line deletion / severe disruption)
@@ -213,7 +220,6 @@ func (s *Simulator) ComputeStepRewardBreakdown(deliveredDelta int) (float64, Rew
 
 	rb.Total = rb.Delivery + rb.Connectivity + rb.CrowdPenalty + rb.GameOver + rb.Redundancy + rb.LoopReversal + rb.TrackEfficiency + rb.Disruption
 	return rb.Total, rb
-
 }
 
 // TotalTrackLength calculates the sum of all physical track segment lengths across all active lines (P2-2).
