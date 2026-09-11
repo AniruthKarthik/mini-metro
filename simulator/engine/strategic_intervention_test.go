@@ -144,3 +144,45 @@ func TestSimulator_HysteresisCooldownAndEmergencyOverride(t *testing.T) {
 	}
 }
 
+func TestRemoveLine_NoFakePassengerDeliveryReward(t *testing.T) {
+	stations := []Station{
+		{ID: 0, Kind: Circle, Pos: Pos{X: 100, Y: 100}, Alive: true, Capacity: 6, OvercrowdingTimer: -1},
+		{ID: 1, Kind: Square, Pos: Pos{X: 200, Y: 100}, Alive: true, Capacity: 6, OvercrowdingTimer: -1},
+	}
+	sim := NewSimulatorWithRivers(stations, nil, 42)
+
+	if err := sim.ApplyAction(AddLine{Stations: []int{0, 1}}); err != nil {
+		t.Fatalf("failed to add line: %v", err)
+	}
+
+	// Place passenger on active train whose destination matches Station 1 (Square)
+	if len(sim.State.Trains) > 0 {
+		sim.State.Trains[0].Progress = 0.9 // close to station 1
+		sim.State.Trains[0].Passengers = []Passenger{
+			{ID: 101, Destination: Square},
+		}
+	}
+
+	initialScore := sim.State.Score
+	if initialScore != 0 {
+		t.Fatalf("expected initial score 0, got %d", initialScore)
+	}
+
+	// Remove the line
+	if err := sim.ApplyAction(RemoveLine{LineID: 0}); err != nil {
+		t.Fatalf("failed to remove line: %v", err)
+	}
+
+	// Correctness check:
+	// 1. Score must NOT increase! Forced unloading is NOT delivery!
+	if sim.State.Score != initialScore {
+		t.Fatalf("fake passenger delivery reward detected! Score increased from %d to %d on line removal", initialScore, sim.State.Score)
+	}
+
+	// 2. Dumped passenger must be in Station 1 queue
+	st1Queue := sim.State.Stations[1].Queue
+	if len(st1Queue) != 1 || st1Queue[0].ID != 101 {
+		t.Fatalf("expected passenger 101 in Station 1 queue, got %+v", st1Queue)
+	}
+}
+

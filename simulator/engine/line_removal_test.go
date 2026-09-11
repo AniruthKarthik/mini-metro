@@ -91,8 +91,8 @@ func TestRemoveLine_PassengerDisembarkation(t *testing.T) {
 	tr.Progress = 0.8
 
 	// Put passengers aboard:
-	// Passenger 1 wants Triangle (matches station 1 kind -> should be delivered and score incremented)
-	// Passenger 2 wants Square (does not match -> should alight to station 1 queue)
+	// Forced unloading due to line destruction must NOT count as a delivery reward.
+	// Both passengers should alight to station 1 queue.
 	tr.Passengers = []Passenger{
 		{ID: 101, Destination: Triangle, SpawnTick: 1},
 		{ID: 102, Destination: Square, SpawnTick: 1},
@@ -104,15 +104,15 @@ func TestRemoveLine_PassengerDisembarkation(t *testing.T) {
 		t.Fatalf("unexpected error removing line: %v", err)
 	}
 
-	// Passenger 1 delivered
-	if sim.State.Score != initialScore+1 {
-		t.Errorf("expected score %d, got %d", initialScore+1, sim.State.Score)
+	// Forced unloading must NOT increment score
+	if sim.State.Score != initialScore {
+		t.Errorf("expected score %d (no fake delivery reward), got %d", initialScore, sim.State.Score)
 	}
 
-	// Passenger 2 queued at station 1
+	// Both passengers queued at station 1
 	st1 := &sim.State.Stations[1]
-	if len(st1.Queue) != 1 || st1.Queue[0].ID != 102 {
-		t.Errorf("expected passenger 102 in station 1 queue, got %+v", st1.Queue)
+	if len(st1.Queue) != 2 {
+		t.Errorf("expected 2 passengers in station 1 queue, got %d: %+v", len(st1.Queue), st1.Queue)
 	}
 }
 

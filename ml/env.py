@@ -3,6 +3,7 @@ import os
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
+from typing import List, Dict, Tuple, Optional, Any
 
 # Load the Go shared library
 lib_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "libminimetro.so")
@@ -256,6 +257,66 @@ class MiniMetroEnv(gym.Env):
         try:
             obs, reward, done, truncated, info = cloned_env.step(action_id, duration=duration)
             return reward, info.get("reward_breakdown", {}), done, obs
+        finally:
+            cloned_env.close()
+
+    def simulate_candidate_multi_horizon(self, action_id: int, horizons: List[float] = None):
+        """
+        Executes candidate action in an isolated cloned environment and tracks performance
+        across multiple future horizons (e.g. 4s, 16s, 32s, 48s).
+        Returns a dict mapping horizon (seconds) -> (cumulative_reward, accumulated_breakdown, done, obs).
+        """
+        if horizons is None:
+            horizons = [4.0, 16.0, 32.0, 48.0]
+        horizons = sorted(horizons)
+        max_horizon = horizons[-1]
+
+        cloned_env = self.clone()
+        results = {}
+        try:
+            curr_action = action_id
+            elapsed_time = 0.0
+            done = False
+            total_reward = 0.0
+            accum_breakdown = {
+                "delivery": 0.0,
+                "survival": 0.0,
+                "connectivity": 0.0,
+                "crowd_penalty": 0.0,
+                "game_over": 0.0,
+                "redundancy": 0.0,
+                "loop_reversal": 0.0,
+                "track_efficiency": 0.0,
+                "disruption": 0.0,
+            }
+
+            next_h_idx = 0
+            obs = None
+
+            while elapsed_time < max_horizon and not done:
+                obs, reward, done, truncated, info = cloned_env.step(curr_action, duration=1.0)
+                curr_action = 0  # subsequent steps are NOOP (network left to run)
+                step_secs = info.get("simulation_seconds", 4.0)
+                elapsed_time += step_secs
+                total_reward += reward
+
+                step_bd = info.get("reward_breakdown", {})
+                for k in accum_breakdown:
+                    accum_breakdown[k] += step_bd.get(k, 0.0)
+
+                # Check if we crossed any horizon checkpoints
+                while next_h_idx < len(horizons) and elapsed_time >= horizons[next_h_idx] - 0.5:
+                    h = horizons[next_h_idx]
+                    results[h] = (total_reward, dict(accum_breakdown), done, obs)
+                    next_h_idx += 1
+
+            # Fill any remaining horizons if episode ended early (e.g. game over)
+            while next_h_idx < len(horizons):
+                h = horizons[next_h_idx]
+                results[h] = (total_reward, dict(accum_breakdown), done, obs)
+                next_h_idx += 1
+
+            return results
         finally:
             cloned_env.close()
 

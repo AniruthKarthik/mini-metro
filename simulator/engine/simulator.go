@@ -545,9 +545,7 @@ func (s *Simulator) removeLine(a RemoveLine) error {
 				if nearestStID >= 0 && nearestStID < len(s.State.Stations) {
 					st := &s.State.Stations[nearestStID]
 					for _, p := range tr.Passengers {
-						if st.Alive && p.Destination == st.Kind {
-							s.State.Score++
-						} else if st.Alive {
+						if st.Alive {
 							st.Queue = append(st.Queue, p)
 						}
 					}
