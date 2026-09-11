@@ -115,12 +115,13 @@ class MiniMetroActorCritic(nn.Module):
         self,
         node_dim=32,
         edge_dim=10,
-        global_dim=13,
+        global_dim=23,
         action_space_size=4087,
         hidden_dim=128,
         use_hierarchical=True,
     ):
         # PHASE-2: global_dim 8→13 to match updated observation.go
+        # P0-2: global_dim 13→23 for two 5-class weekly reward card one-hot encodings
         # PHASE-3: DenseGCNLayer→GNNLayer (dst_feat + edge update); 3rd layer + residual
         # PHASE-4: action_space_size 4108→4087 (AddCarriage now lineID-indexed, 28→7 slots)
         # PHASE-5: node_dim 29→32 (+incoming_train_count, incoming_train_load, nearest_train_proximity)
@@ -206,6 +207,26 @@ class MiniMetroActorCritic(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dim, 1)
         )
+
+    def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
+        # Handle backward compatibility: adapt legacy checkpoint weights (e.g. global_dim 13 -> 23)
+        node_proj_key = prefix + "gcn1.node_proj.weight"
+        if node_proj_key in state_dict:
+            w = state_dict[node_proj_key]
+            curr_w = self.gcn1.node_proj.weight
+            if w.shape[0] == curr_w.shape[0] and w.shape[1] < curr_w.shape[1]:
+                diff = curr_w.shape[1] - w.shape[1]
+                state_dict[node_proj_key] = torch.cat([w, torch.zeros(w.shape[0], diff, device=w.device, dtype=w.dtype)], dim=1)
+
+        glob_up_key = prefix + "gcn1.global_update.0.weight"
+        if glob_up_key in state_dict:
+            w = state_dict[glob_up_key]
+            curr_w = self.gcn1.global_update[0].weight
+            if w.shape[0] == curr_w.shape[0] and w.shape[1] < curr_w.shape[1]:
+                diff = curr_w.shape[1] - w.shape[1]
+                state_dict[glob_up_key] = torch.cat([w, torch.zeros(w.shape[0], diff, device=w.device, dtype=w.dtype)], dim=1)
+
+        super()._load_from_state_dict(state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs)
 
     def _compute_hierarchical_logits(self, x, combined, mask=None):
         """

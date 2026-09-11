@@ -39,6 +39,9 @@ if lib:
     # extern void GetActionMask(uintptr_t handle, uint8_t* outMask);
     lib.GetActionMask.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint8)]
 
+    # extern void SetPendingReward(uintptr_t handle, int c0, int c1);
+    lib.SetPendingReward.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+
 class MiniMetroEnv(gym.Env):
     """
     Gymnasium environment wrapper for the Mini Metro Go simulator.
@@ -59,7 +62,7 @@ class MiniMetroEnv(gym.Env):
         self.max_edges = 200  # From c_api/main.go maxEdges
         self.node_dim = 32    # PHASE-5: was 29; +incoming_train_count, incoming_train_load, nearest_train_proximity
         self.edge_dim = 10
-        self.global_dim = 13  # PHASE-2: was 8; +station_count, max_fill, overcrowd_ct, pending_reward, game_time
+        self.global_dim = 23  # was 13; +two 5-dim one-hot reward card encodings (indices 13..22)
         self.action_space_size = 4087  # PHASE-4: was 4108; AddCarriage reduced 28→7 (now lineID-indexed)
 
         # Observation space definition
@@ -216,6 +219,13 @@ class MiniMetroEnv(gym.Env):
             obs, info = self.reset()
             return obs, 0.0, True, False, info
         
+    def set_pending_reward(self, card0, card1):
+        """Mock or set pending reward choices (for testing/probing). Use -1 to clear."""
+        if self.handle is not None and lib is not None and hasattr(lib, "SetPendingReward"):
+            lib.SetPendingReward(self.handle, int(card0), int(card1))
+            return self._get_obs()
+        return None
+
     def close(self):
         if self.handle is not None and lib is not None:
             try:

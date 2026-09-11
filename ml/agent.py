@@ -14,7 +14,7 @@ from model import MiniMetroActorCritic
 # Observation dims — must match simulator/engine/observation.go constants
 NODE_DIM   = 32   # PHASE-5: was 29
 EDGE_DIM   = 10
-GLOBAL_DIM = 13   # PHASE-2: was 8
+GLOBAL_DIM = 23   # was 13; +two 5-dim one-hot reward card encodings
 MAX_NODES  = 30
 MAX_EDGES  = 200
 ACTION_SPACE_SIZE = 4087  # PHASE-4: was 4108; AddCarriage 28→7 slots

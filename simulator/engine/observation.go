@@ -65,7 +65,7 @@ func (s *Simulator) Observation() Observation {
 const (
 	NodeFeatureDim   = 32 // PHASE-5: was 29; added incoming_train_count, incoming_train_load, nearest_train_proximity
 	EdgeFeatureDim   = 10
-	GlobalFeatureDim = 13 // PHASE-2: was 8; added station_count, max_fill, overcrowd_count, pending_reward, game_time
+	GlobalFeatureDim = 23 // was 13; added two 5-dim one-hot reward card encodings (Card 0: 13..17, Card 1: 18..22)
 )
 
 type VectorizedObservation struct {
@@ -389,6 +389,24 @@ func (s *Simulator) WriteVectorizedObservation(outNodes []float32, outEdges []in
 
 		// [12] game time fraction (capped at 1 for very long games ~1 hour)
 		outGlobals[12] = float32(math.Min(s.State.GameTimeSeconds/3600.0, 1.0))
+
+		// [13..17] Card 0 one-hot encoding (5 floats: Line=0, Train=1, Tunnel=2, Carriage=3, Interchange=4)
+		// [18..22] Card 1 one-hot encoding (5 floats)
+		for k := 13; k < 23; k++ {
+			outGlobals[k] = 0.0
+		}
+		if len(s.State.PendingRewardChoices) > 0 {
+			c0 := int(s.State.PendingRewardChoices[0])
+			if c0 >= 0 && c0 < 5 {
+				outGlobals[13+c0] = 1.0
+			}
+			if len(s.State.PendingRewardChoices) > 1 {
+				c1 := int(s.State.PendingRewardChoices[1])
+				if c1 >= 0 && c1 < 5 {
+					outGlobals[18+c1] = 1.0
+				}
+			}
+		}
 	}
 
 	return numNodes, numEdges

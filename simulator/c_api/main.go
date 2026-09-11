@@ -159,4 +159,19 @@ func GetActionMask(handle C.uintptr_t, outMask *C.uint8_t) {
 	boolMaskMu.Unlock()
 }
 
+//export SetPendingReward
+func SetPendingReward(handle C.uintptr_t, c0 C.int, c1 C.int) {
+	sim := getSim(uintptr(handle))
+	if sim == nil {
+		return
+	}
+	if c0 < 0 {
+		sim.State.PendingRewardChoices = nil
+	} else if c1 < 0 {
+		sim.State.PendingRewardChoices = []engine.RewardType{engine.RewardType(c0)}
+	} else {
+		sim.State.PendingRewardChoices = []engine.RewardType{engine.RewardType(c0), engine.RewardType(c1)}
+	}
+}
+
 func main() {}
