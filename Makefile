@@ -1,4 +1,8 @@
-.PHONY: back front clean fnlist game
+.PHONY: back front clean fnlist game build-lib
+
+build-lib:
+	@echo "Building Mini Metro C-shared library for Python bindings..."
+	@bash ml/build_lib.sh
 
 back:
 	@echo "Starting Mini Metro Go backend server on port 6969..."

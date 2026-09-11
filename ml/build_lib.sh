@@ -1,7 +1,8 @@
 #!/bin/bash
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 echo "Building Mini Metro shared library..."
-cd ../simulator
-go build -buildmode=c-shared -o ../ml/libminimetro.so ./c_api
-echo "Done. Created ../ml/libminimetro.so"
+cd "$SCRIPT_DIR/../simulator"
+go build -buildmode=c-shared -o "$SCRIPT_DIR/libminimetro.so" ./c_api
+echo "Done. Created $SCRIPT_DIR/libminimetro.so"
