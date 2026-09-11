@@ -721,6 +721,47 @@ func (s *Simulator) shortenLine(a ShortenLine) error {
 	s.disruptionPenalty += 0.10 // small local modification cost
 	line.LastModifiedTick = s.State.Tick
 	s.State.TopologyVersion++
+	s.rebuildGraphIfNeeded()
+
+	// Disembark passengers on this line who can no longer reach their destination
+	// on this line or whose route required the removed endpoint station.
+	for i := range s.State.Trains {
+		tr := &s.State.Trains[i]
+		if !tr.Active || tr.LineID != a.LineID || len(tr.Passengers) == 0 {
+			continue
+		}
+
+		curStationIndex := tr.Segment
+		if tr.Progress >= 0.5 {
+			nextSeg := tr.Segment + tr.Direction
+			if nextSeg >= 0 && nextSeg < len(line.Stations) {
+				curStationIndex = nextSeg
+			}
+		}
+		if curStationIndex < 0 {
+			curStationIndex = 0
+		} else if curStationIndex >= len(line.Stations) {
+			curStationIndex = len(line.Stations) - 1
+		}
+		curStationID := line.Stations[curStationIndex]
+
+		var retainedPassengers []Passenger
+		for _, p := range tr.Passengers {
+			route := FindOptimalRoute(&s.State.Graph, &s.State, curStationID, p.Destination)
+			if !route.Reachable || route.NextLineID != tr.LineID || (route.NextDirection != 0 && route.NextDirection != tr.Direction) {
+				if curStationID >= 0 && curStationID < len(s.State.Stations) {
+					st := &s.State.Stations[curStationID]
+					if st.Alive {
+						st.Queue = append(st.Queue, p)
+					}
+				}
+			} else {
+				retainedPassengers = append(retainedPassengers, p)
+			}
+		}
+		tr.Passengers = retainedPassengers
+	}
+
 	return nil
 }
 
