@@ -1078,6 +1078,16 @@ class MiniMetroActorCritic(nn.Module):
         if mask is None and isinstance(obs, dict) and "action_mask" in obs:
             mask = obs["action_mask"].bool()
 
+        if mask is not None and getattr(self, "is_legacy_checkpoint", False):
+            # Legacy checkpoints were trained strictly under pure additive expansion (Phases 1-5).
+            # Mask out untrained dynamic demolition heads (RemoveLine, ShortenLine)
+            # to prevent untrained random logits from triggering infinite deletion loops.
+            mask = mask.clone()
+            mask[:, ACTION_TYPE_SLICES[10]] = False
+            mask[:, ACTION_TYPE_SLICES[11]] = False
+            if not mask.any(dim=-1).all():
+                mask[:, 0] = True
+
         logits, value, next_lstm_state = self.forward(obs, lstm_state=lstm_state, mask=mask)
 
         if mask is not None and not self.use_hierarchical:

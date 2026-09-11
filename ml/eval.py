@@ -30,6 +30,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from env import MiniMetroEnv
 from model import MiniMetroActorCritic, ACTION_TYPE_SLICES
+from intervention import StrategicInterventionArbiter, is_high_impact_structural_action
 
 MAP_NAMES = {
     0: "London",
@@ -66,16 +67,22 @@ class BasePolicy:
 
 
 class ModelPolicy(BasePolicy):
-    def __init__(self, model: MiniMetroActorCritic, deterministic: bool = True, device: torch.device = torch.device("cpu")):
+    def __init__(self, model: MiniMetroActorCritic, deterministic: bool = True, device: torch.device = torch.device("cpu"), use_arbiter: bool = True):
         self.model = model
         self.deterministic = deterministic
         self.device = device
         self.lstm_state = None
+        self.use_arbiter = use_arbiter
+        self.arbiter = StrategicInterventionArbiter() if use_arbiter else None
+        self.sim_time = 0.0
 
     def reset(self, seed: Optional[int] = None):
         self.lstm_state = None
+        self.sim_time = 0.0
+        if self.use_arbiter:
+            self.arbiter = StrategicInterventionArbiter()
 
-    def act(self, obs: Dict[str, np.ndarray]) -> int:
+    def act(self, obs: Dict[str, np.ndarray], env: Optional[Any] = None) -> int:
         obs_tensor = {
             k: torch.as_tensor(v, device=self.device).unsqueeze(0)
             for k, v in obs.items()
@@ -88,7 +95,16 @@ class ModelPolicy(BasePolicy):
                 mask=mask,
                 deterministic=self.deterministic,
             )
-        return int(action.item())
+        action_id = int(action.item())
+
+        if self.use_arbiter and self.arbiter is not None and env is not None:
+            if is_high_impact_structural_action(action_id, obs):
+                candidates = self.arbiter.generate_candidate_portfolio(env, obs, action_id, top_k=6)
+                res = self.arbiter.evaluate_candidates(env, candidates, obs, sim_time=self.sim_time)
+                action_id = res.best_action
+            self.arbiter.record_executed_intervention(action_id, self.sim_time)
+
+        return action_id
 
 
 class RandomLegalPolicy(BasePolicy):
@@ -249,10 +265,15 @@ def run_single_episode(
     last_obs = obs
 
     while not done and step < max_steps:
-        action = policy.act(obs)
+        if isinstance(policy, ModelPolicy):
+            action = policy.act(obs, env=env)
+        else:
+            action = policy.act(obs)
         obs, reward, terminated, truncated, step_info = env.step(action)
         total_reward += reward
         step += 1
+        if isinstance(policy, ModelPolicy):
+            policy.sim_time += step_info.get("simulation_seconds", 1.0)
         done = terminated or truncated
         last_obs = obs
 
