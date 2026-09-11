@@ -213,6 +213,15 @@ class MiniMetroActorCritic(nn.Module):
         )
         self._init_dispatch_mlps()
 
+        # P3-2: Symmetric candidate-conditioned ChooseReward head (Card 0 vs Card 1)
+        self.reward_card_ctx = nn.Linear(hidden_dim * 5, hidden_dim)
+        self.reward_card_mlp = nn.Sequential(
+            nn.Linear(5 + hidden_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1)
+        )
+        self._init_reward_card_mlp()
+
         # Fallback flat actor head (for baseline ablation)
         self.fc_actor = nn.Sequential(
             nn.Linear(hidden_dim * 5, hidden_dim),
@@ -303,15 +312,83 @@ class MiniMetroActorCritic(nn.Module):
                     nn.init.orthogonal_(lin1.weight[8:, H+8:], gain=0.05)
                     nn.init.orthogonal_(lin2.weight[:, 8:], gain=0.05)
 
+    def _init_reward_card_mlp(self):
+        H = self.hidden_dim
+        nn.init.orthogonal_(self.reward_card_ctx.weight, gain=0.1)
+        self.reward_card_ctx.bias.data.zero_()
+
+        lin1 = self.reward_card_mlp[0]
+        lin2 = self.reward_card_mlp[2]
+        with torch.no_grad():
+            lin1.weight.zero_()
+            lin1.bias.zero_()
+            lin2.weight.zero_()
+            lin2.bias.zero_()
+
+            # Map the 5 card types to distinct internal representations:
+            # Line -> unit 0
+            lin1.weight[0, 0] = 1.0
+            # Train -> unit 1
+            lin1.weight[1, 1] = 1.0
+            # Tunnel -> unit 2
+            lin1.weight[2, 2] = 1.0
+            # Carriage -> unit 3
+            lin1.weight[3, 3] = 1.0
+            # Interchange -> unit 4
+            lin1.weight[4, 4] = 1.0
+
+            # Linear 2 weights reflect card value hierarchy
+            lin2.weight[0, 0] = 2.5  # Line
+            lin2.weight[0, 1] = 2.0  # Train
+            lin2.weight[0, 2] = 1.0  # Tunnel
+            lin2.weight[0, 3] = 1.2  # Carriage
+            lin2.weight[0, 4] = 0.5  # Interchange
+
+            if H > 5:
+                nn.init.orthogonal_(lin1.weight[5:, 5:], gain=0.05)
+                nn.init.orthogonal_(lin2.weight[:, 5:], gain=0.05)
+
     def debias_extension_embeddings(self):
         """
-        P2-3: Symmetrize ext_end_emb weights between front (end=0) and tail (end=1).
-        Eliminates the legacy +1.282 logit static offset that favored tail extension.
+        P2-3 & P3-2: Symmetrize extension and line embeddings.
+        - Symmetrizes ext_end_emb weights between front (end=0) and tail (end=1).
+        - Symmetrizes ext_line_emb and ins_line_emb weights across lines 0..6.
+        - Symmetrizes gcn1.edge_proj line one-hot channel weights across lines 0..6.
+        - Symmetrizes non_spatial_head line action slices across lines 0..6.
+        Eliminates arbitrary positional and indexing biases across lines and endpoints.
         """
         with torch.no_grad():
+            # 1. Front vs Tail symmetry (P2-3)
             w_avg = 0.5 * (self.ext_end_emb.weight[0] + self.ext_end_emb.weight[1])
             self.ext_end_emb.weight[0] = w_avg
             self.ext_end_emb.weight[1] = w_avg
+
+            # 2. Line ID permutation symmetry (P3-2)
+            w_ext_line = self.ext_line_emb.weight.mean(dim=0, keepdim=True)
+            self.ext_line_emb.weight.copy_(w_ext_line.expand(7, -1))
+
+            w_ins_line = self.ins_line_emb.weight.mean(dim=0, keepdim=True)
+            self.ins_line_emb.weight.copy_(w_ins_line.expand(7, -1))
+
+            # Symmetrize gcn1 edge line one-hot features (first 7 channels of edge_dim=10)
+            w_edge = self.gcn1.edge_proj.weight[:, 0:7].mean(dim=1, keepdim=True)
+            self.gcn1.edge_proj.weight[:, 0:7].copy_(w_edge.expand(-1, 7))
+
+            # Symmetrize non_spatial_head line action heads
+            # CloseLoop: 17:24 (7 lines)
+            # OpenLoop: 24:31 (7 lines)
+            # RemoveLine: 31:38 (7 lines)
+            # ShortenLine: 38:52 (7 lines x 2 ends)
+            ns_w = self.non_spatial_head[2].weight
+            ns_b = self.non_spatial_head[2].bias
+            for sl in [slice(17, 24), slice(24, 31), slice(31, 38)]:
+                ns_w[sl] = ns_w[sl].mean(dim=0, keepdim=True).expand(7, -1)
+                ns_b[sl] = ns_b[sl].mean(dim=0, keepdim=True).expand(7)
+
+            sl_w = ns_w[38:52].view(7, 2, -1).mean(dim=0, keepdim=True).expand(7, 2, -1).reshape(14, -1)
+            sl_b = ns_b[38:52].view(7, 2).mean(dim=0, keepdim=True).expand(7, 2).reshape(14)
+            ns_w[38:52] = sl_w
+            ns_b[38:52] = sl_b
 
     def _extract_line_representations(self, nodes, edges, edge_attrs, x):
         """
@@ -416,11 +493,13 @@ class MiniMetroActorCritic(nn.Module):
             if full_k not in state_dict:
                 state_dict[full_k] = gv.clone()
 
-        # Handle backward compatibility: populate dispatch MLPs if missing from legacy checkpoint
+        # Handle backward compatibility: populate dispatch and reward card MLPs if missing
         dispatch_named_modules = [
             ("dispatch_line_ctx", self.dispatch_line_ctx),
             ("dispatch_train_mlp", self.dispatch_train_mlp),
             ("dispatch_carriage_mlp", self.dispatch_carriage_mlp),
+            ("reward_card_ctx", self.reward_card_ctx),
+            ("reward_card_mlp", self.reward_card_mlp),
         ]
         for mod_name, mod in dispatch_named_modules:
             for k, v in mod.state_dict().items():
@@ -430,7 +509,7 @@ class MiniMetroActorCritic(nn.Module):
 
         super()._load_from_state_dict(state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs)
 
-    def _compute_hierarchical_logits(self, x, combined, mask=None, nodes=None, edges=None, edge_attrs=None):
+    def _compute_hierarchical_logits(self, x, combined, mask=None, nodes=None, edges=None, edge_attrs=None, globals=None):
         """
         Compute hierarchical action log-probabilities:
             log P(a) = log P(type t(a)) + log P(a | type t(a))
@@ -550,7 +629,18 @@ class MiniMetroActorCritic(nn.Module):
             scores_add_train     = ns[:, 1:8]     # 7
             scores_add_carriage  = ns[:, 8:15]    # 7
 
-        scores_choose_reward = ns[:, 15:17]   # 2
+        # P3-2: Symmetric candidate-conditioned ChooseReward scoring (Card 0 vs Card 1)
+        if globals is not None and hasattr(self, "reward_card_mlp"):
+            c0 = globals[:, 13:18].to(dtype=combined.dtype)  # [B, 5]
+            c1 = globals[:, 18:23].to(dtype=combined.dtype)  # [B, 5]
+            card_ctx = self.reward_card_ctx(combined)        # [B, H]
+            feat0 = torch.cat([c0, card_ctx], dim=-1)        # [B, 5 + H]
+            feat1 = torch.cat([c1, card_ctx], dim=-1)        # [B, 5 + H]
+            score0 = self.reward_card_mlp(feat0)             # [B, 1]
+            score1 = self.reward_card_mlp(feat1)             # [B, 1]
+            scores_choose_reward = torch.cat([score0, score1], dim=-1) # [B, 2]
+        else:
+            scores_choose_reward = ns[:, 15:17]   # 2
         scores_close_loop    = ns[:, 17:24]   # 7
         scores_open_loop     = ns[:, 24:31]   # 7
         scores_remove_line   = ns[:, 31:38]   # 7
@@ -732,8 +822,9 @@ class MiniMetroActorCritic(nn.Module):
             # PHASE-5: Hierarchical action head + Bilinear parameter scoring
             # P1-1: Pass nodes for explicit candidate pairwise geometric awareness
             # P1-3: Pass edges and edge_attrs for candidate-conditioned line dispatch
+            # P3-2: Pass globals for symmetric ChooseReward card evaluation
             logits = self._compute_hierarchical_logits(
-                x3, lstm_out_flat, mask=mask, nodes=nodes, edges=edges, edge_attrs=edge_attrs
+                x3, lstm_out_flat, mask=mask, nodes=nodes, edges=edges, edge_attrs=edge_attrs, globals=globals_feat
             )
         else:
             logits = self.fc_actor(lstm_out_flat)

@@ -22,8 +22,8 @@ Every task is designed to be immediately actionable by human developers and auto
   * [x] [P2-2: Geometric Efficiency & Track Sprawl Regularization](#p2-2-geometric-efficiency--track-sprawl-regularization)
   * [x] [P2-3: Tail vs. Front Extension Symmetry Audit & Debiasing](#p2-3-tail-vs-front-extension-symmetry-audit--debiasing)
 * **P3 — Evaluation, Diagnostics & Empirical Audits**
-  * [ ] [P3-1: Rigorous Multi-Seed & Cross-Map Evaluation Suite](#p3-1-rigorous-multi-seed--cross-map-evaluation-suite)
-  * [ ] [P3-2: Semantic Permutation & Spatial Invariance Audit](#p3-2-semantic-permutation--spatial-invariance-audit)
+  * [x] [P3-1: Rigorous Multi-Seed & Cross-Map Evaluation Suite](#p3-1-rigorous-multi-seed--cross-map-evaluation-suite)
+  * [x] [P3-2: Semantic Permutation & Spatial Invariance Audit](#p3-2-semantic-permutation--spatial-invariance-audit)
   * [ ] [P3-3: Station-Shape Affinity Validation vs. Dynamic Demand Distributions](#p3-3-station-shape-affinity-validation-vs-dynamic-demand-distributions)
   * [ ] [P3-4: Counterfactual Interchange Decision Verification](#p3-4-counterfactual-interchange-decision-verification)
   * [ ] [P3-5: NoOp Disambiguation & Macro-Step Simulation Accounting](#p3-5-noop-disambiguation--macro-step-simulation-accounting)
@@ -508,7 +508,7 @@ Rigorous testing protocols, counterfactual verification, and metrics.
 
 ---
 
-### P3-2: Semantic Permutation & Spatial Invariance Audit
+### P3-2: Semantic Permutation & Spatial Invariance Audit [COMPLETED]
 
 * **Problem**:
   Neural networks in graph environments frequently develop hidden positional biases (such as the confirmed Line 0 train bias and Card 1 reward bias).

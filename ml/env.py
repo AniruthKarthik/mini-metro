@@ -82,10 +82,7 @@ class MiniMetroEnv(gym.Env):
         super().__init__()
         
         self.map_id = map_id
-        if seed is None:
-            self._seed_val = np.random.randint(0, 2**31)
-        else:
-            self._seed_val = seed
+        self._seed_val = seed
             
         self.handle = None
         
@@ -145,7 +142,7 @@ class MiniMetroEnv(gym.Env):
     def reset(self, seed=None, options=None):
         if seed is not None:
             self._seed_val = seed
-        else:
+        elif self._seed_val is None:
             self._seed_val = np.random.randint(0, 2**31)
 
         if self.handle is not None:

@@ -173,9 +173,6 @@ func (s *Simulator) GetActionMask(outMask []bool) []bool {
 		return outMask
 	}
 
-	// Action 0: NoOp is always valid
-	outMask[ActionNoOp] = true
-
 	// If pending reward choices exist, only ChooseReward actions are valid
 	if len(s.State.PendingRewardChoices) > 0 {
 		for cIdx := 0; cIdx < ChooseRewardCount; cIdx++ {
@@ -185,6 +182,9 @@ func (s *Simulator) GetActionMask(outMask []bool) []bool {
 		}
 		return outMask
 	}
+
+	// Action 0: NoOp is always valid
+	outMask[ActionNoOp] = true
 
 	N := len(s.State.Stations)
 
