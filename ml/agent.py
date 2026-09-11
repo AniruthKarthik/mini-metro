@@ -17,8 +17,10 @@ import json
 import requests
 import time
 import glob
+import numpy as np
 from websockets.sync.client import connect
 from model import MiniMetroActorCritic
+from eval import GrandmasterPolicy
 
 # Observation dims — must match simulator/engine/observation.go constants
 NODE_DIM   = 32   # PHASE-5: was 29
@@ -127,8 +129,11 @@ def main():
         device = torch.device("cpu")
     print(f"[AI] Using device: {device}")
 
-    model, _ = load_model(device)
+    model, model_path = load_model(device)
     model.eval()
+    gm_policy = GrandmasterPolicy() if model_path is None else None
+    if gm_policy is not None:
+        print("[AI] Operating in Grandmaster Strategy Mode (Peak Transit Performance).")
 
     print("[AI] Connecting to Mini Metro WebSocket server...")
     while True:
@@ -143,14 +148,10 @@ def main():
                         continue
                     if data.get("paused") or not data.get("alive"):
                         lstm_state = None # Reset state on game over
+                        if gm_policy is not None:
+                            gm_policy.reset()
                         continue
 
-                    # Match training frequency: 1 action per in-game second (30 ticks)
-                    # wait, with dynamic frame skipping, training agent ticks every 4 seconds
-                    # but wait! env.step() ticks 4 times. 
-                    # For agent.py, we only get obs every 30 ticks (1 sec). 
-                    # If we tick every 4 seconds, we should change 30 to 120 ticks.
-                    # Let's use 120 ticks (4 seconds) to match training!
                     if data.get("tick", 0) % 120 != 0:
                         continue
 
@@ -159,14 +160,24 @@ def main():
                         if resp.status_code != 200:
                             continue
 
-                        obs_tensor = obs_from_json(resp.json(), device)
+                        obs_json = resp.json()
+                        if gm_policy is not None:
+                            obs_np = {
+                                "nodes": np.array(obs_json["nodes"], dtype=np.float32).reshape(MAX_NODES, NODE_DIM),
+                                "edges": np.array(obs_json["edges"], dtype=np.int32).reshape(MAX_EDGES, 2).T,
+                                "edge_attrs": np.array(obs_json["edge_attrs"], dtype=np.float32).reshape(MAX_EDGES, EDGE_DIM),
+                                "globals": np.array(obs_json["globals"], dtype=np.float32),
+                                "action_mask": np.array(obs_json["action_mask"], dtype=bool),
+                            }
+                            action_id = gm_policy.act(obs_np)
+                        else:
+                            obs_tensor = obs_from_json(obs_json, device)
+                            with torch.no_grad():
+                                action, _, _, _, lstm_state = model.get_action_and_value(
+                                    obs_tensor, lstm_state=lstm_state, mask=obs_tensor["action_mask"]
+                                )
+                            action_id = int(action.item())
 
-                        with torch.no_grad():
-                            action, _, _, _, lstm_state = model.get_action_and_value(
-                                obs_tensor, lstm_state=lstm_state, mask=obs_tensor["action_mask"]
-                            )
-
-                        action_id = action.item()
                         if action_id == 0:
                             continue  # No-Op — don't spam the server
 
