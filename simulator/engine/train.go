@@ -337,8 +337,7 @@ func (s *Simulator) hasServiceWork(tr *Train, st *Station, stationID int) bool {
 		if p.Destination == st.Kind {
 			return true
 		}
-		route := FindOptimalRoute(&s.State.Graph, &s.State, stationID, p.Destination)
-		if !route.Reachable || route.NextLineID != tr.LineID || (route.NextDirection != 0 && route.NextDirection != tr.Direction) {
+		if !s.CanTrainServeDestination(stationID, tr.LineID, tr.Direction, p.Destination) {
 			return true
 		}
 	}
@@ -347,8 +346,7 @@ func (s *Simulator) hasServiceWork(tr *Train, st *Station, stationID int) bool {
 		return false
 	}
 	for _, p := range st.Queue {
-		route := FindOptimalRoute(&s.State.Graph, &s.State, stationID, p.Destination)
-		if route.Reachable && route.NextLineID == tr.LineID && (route.NextDirection == 0 || route.NextDirection == tr.Direction) {
+		if s.CanTrainServeDestination(stationID, tr.LineID, tr.Direction, p.Destination) {
 			return true
 		}
 	}
@@ -365,24 +363,19 @@ func (s *Simulator) serviceOnePassenger(tr *Train, st *Station, stationID int) b
 	}
 
 	for idx, p := range tr.Passengers {
-		route := FindOptimalRoute(&s.State.Graph, &s.State, stationID, p.Destination)
-		if !route.Reachable || route.NextLineID != tr.LineID || (route.NextDirection != 0 && route.NextDirection != tr.Direction) {
+		if !s.CanTrainServeDestination(stationID, tr.LineID, tr.Direction, p.Destination) {
 			tr.Passengers = append(tr.Passengers[:idx], tr.Passengers[idx+1:]...)
 			st.Queue = append(st.Queue, p)
 			return true
 		}
 	}
 
-	if len(tr.Passengers) >= trainCapacity(tr) {
+	totalCap := trainCapacity(tr)
+	if len(tr.Passengers) >= totalCap {
 		return false
 	}
 
-	// BUG-8 (design): this is a FIFO queue — an ineligible passenger at the head
-	// blocks the slot for one full passengerServiceTime (0.5 s) before the next
-	// candidate is tried. This mirrors real-world transit behaviour. If the front
-	// passenger has no reachable route at all (network disconnected), every call to
-	// serviceOnePassenger wastes 0.5 s while nothing boards. This is intentional;
-	// the gameplay consequence is that a disconnected destination creates a queue jam.
+	// FIFO queue boarding: check whether candidate can be served by this train
 	remaining := st.Queue[:0]
 	boarded := false
 	for _, p := range st.Queue {
@@ -390,16 +383,9 @@ func (s *Simulator) serviceOnePassenger(tr *Train, st *Station, stationID int) b
 			remaining = append(remaining, p)
 			continue
 		}
-		totalCapacity := tr.Capacity
-		if tr.Carriages > 1 {
-			totalCapacity += (tr.Carriages - 1) * 6
-		}
 
-		route := FindOptimalRoute(&s.State.Graph, &s.State, stationID, p.Destination)
-		canBoard := len(tr.Passengers) < totalCapacity &&
-			route.Reachable &&
-					route.NextLineID == tr.LineID &&
-					(route.NextDirection == 0 || route.NextDirection == tr.Direction)
+		canBoard := len(tr.Passengers) < totalCap &&
+			s.CanTrainServeDestination(stationID, tr.LineID, tr.Direction, p.Destination)
 		if canBoard {
 			tr.Passengers = append(tr.Passengers, p)
 			boarded = true
@@ -413,3 +399,4 @@ func (s *Simulator) serviceOnePassenger(tr *Train, st *Station, stationID int) b
 	}
 	return boarded
 }
+
