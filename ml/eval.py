@@ -28,12 +28,20 @@ def evaluate(model_path=None, map_id=0):
     
     # Load model weights if a path is provided, otherwise find the latest
     if model_path is None:
-        model_files = glob.glob("runs/minimetro_ppo/model_*.pt")
+        model_files = glob.glob("runs/minimetro_ppo/model_*.pt") + glob.glob("ml/runs/minimetro_ppo/model_*.pt")
         if not model_files:
             print("No saved models found. Using random initialized weights.")
         else:
-            # Sort by update number
-            model_files.sort(key=lambda x: int(x.split('_')[-1].split('.')[0]))
+            def get_ckpt_priority(f):
+                base = os.path.basename(f).replace("model_", "").replace(".pt", "")
+                if base == "final":
+                    return float("inf")
+                try:
+                    return float(base)
+                except ValueError:
+                    return -1.0
+
+            model_files.sort(key=get_ckpt_priority)
             model_path = model_files[-1]
             print(f"Loading latest model: {model_path}")
             
@@ -45,6 +53,7 @@ def evaluate(model_path=None, map_id=0):
     total_reward = 0.0
     done = False
     step = 0
+    lstm_state = None
     
     print("Starting evaluation...")
     
@@ -54,7 +63,9 @@ def evaluate(model_path=None, map_id=0):
         mask = obs_tensor["action_mask"].bool()
         
         with torch.no_grad():
-            action, _, _, value, _ = model.get_action_and_value(obs_tensor, mask=mask, deterministic=True)
+            action, _, _, value, lstm_state = model.get_action_and_value(
+                obs_tensor, lstm_state=lstm_state, mask=mask, deterministic=True
+            )
             
         action_np = action.item()
         
@@ -63,15 +74,15 @@ def evaluate(model_path=None, map_id=0):
         total_reward += reward
         step += 1
         
-        # global feature 6 is the score
-        score = obs["globals"][6]
+        # global feature 6 is score / 500.0
+        score = int(round(obs["globals"][6] * 500.0))
         
-        if step % 100 == 0:
-            print(f"Step: {step}, Current Score: {score}, Total Reward: {total_reward:.2f}, Value Est: {value.item():.4f}")
+        if step % 20 == 0 or done:
+            print(f"Step: {step:3d}, Current Score: {score:3d}, Total Reward: {total_reward:7.2f}, Value Est: {value.item():6.4f}")
             
     print(f"Evaluation finished!")
     print(f"Total steps survived: {step}")
-    print(f"Final Score: {obs['globals'][6]}")
+    print(f"Final Score: {int(round(obs['globals'][6] * 500.0))}")
     print(f"Final Total Reward: {total_reward:.2f}")
 
 if __name__ == "__main__":

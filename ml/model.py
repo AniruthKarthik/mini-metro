@@ -312,6 +312,7 @@ class MiniMetroActorCritic(nn.Module):
                 p_log_probs = F.log_softmax(p_scores, dim=-1)
                 action_log_probs[:, s] = type_log_probs[:, k:k+1] + p_log_probs
 
+        self._last_type_log_probs = type_log_probs
         return action_log_probs
 
     def get_value(self, obs, lstm_state=None):
@@ -332,11 +333,42 @@ class MiniMetroActorCritic(nn.Module):
 
         if action is None:
             if deterministic:
-                # INF-1 fix: deterministic argmax selection for evaluation
-                if mask is not None:
-                    action = torch.argmax(logits.masked_fill(~mask, -1e9), dim=-1)
+                if self.use_hierarchical and hasattr(self, "_last_type_log_probs") and self._last_type_log_probs is not None:
+                    # P0-1 FIX: Two-stage Hierarchical Argmax
+                    # 1. Select the action type with maximum probability among valid types
+                    type_lp = self._last_type_log_probs
+                    is_seq = logits.dim() == 3
+                    if is_seq:
+                        B, T, _ = logits.shape
+                        flat_type_lp = type_lp.view(B * T, 12)
+                        flat_logits = logits.view(B * T, 4087)
+                        flat_mask = mask.view(B * T, 4087) if mask is not None else None
+                        best_type = torch.argmax(flat_type_lp, dim=-1)  # [B*T]
+                        flat_actions = torch.zeros(B * T, dtype=torch.long, device=logits.device)
+                        for b in range(B * T):
+                            t = best_type[b].item()
+                            sl = ACTION_TYPE_SLICES[t]
+                            sl_logits = flat_logits[b, sl]
+                            if flat_mask is not None:
+                                sl_logits = sl_logits.masked_fill(~flat_mask[b, sl], -1e9)
+                            flat_actions[b] = sl.start + torch.argmax(sl_logits, dim=-1)
+                        action = flat_actions.view(B, T)
+                    else:
+                        B = logits.shape[0]
+                        best_type = torch.argmax(type_lp, dim=-1)  # [B]
+                        action = torch.zeros(B, dtype=torch.long, device=logits.device)
+                        for b in range(B):
+                            t = best_type[b].item()
+                            sl = ACTION_TYPE_SLICES[t]
+                            sl_logits = logits[b, sl]
+                            if mask is not None:
+                                sl_logits = sl_logits.masked_fill(~mask[b, sl], -1e9)
+                            action[b] = sl.start + torch.argmax(sl_logits, dim=-1)
                 else:
-                    action = torch.argmax(logits, dim=-1)
+                    if mask is not None:
+                        action = torch.argmax(logits.masked_fill(~mask, -1e9), dim=-1)
+                    else:
+                        action = torch.argmax(logits, dim=-1)
             else:
                 action = probs.sample()
 
@@ -406,6 +438,7 @@ class MiniMetroActorCritic(nn.Module):
             logits = self._compute_hierarchical_logits(x3, lstm_out_flat, mask=mask)
         else:
             logits = self.fc_actor(lstm_out_flat)
+            self._last_type_log_probs = None
 
         value = self.fc_critic(lstm_out_flat)
         
@@ -415,5 +448,7 @@ class MiniMetroActorCritic(nn.Module):
         if is_sequence:
             logits = logits.view(B, T, -1)
             value = value.view(B, T, -1)
+            if self._last_type_log_probs is not None:
+                self._last_type_log_probs = self._last_type_log_probs.view(B, T, -1)
 
         return logits, value, next_lstm_state
