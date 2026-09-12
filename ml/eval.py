@@ -31,11 +31,13 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from env import MiniMetroEnv
 from model import MiniMetroActorCritic, ACTION_TYPE_SLICES
 from intervention import StrategicInterventionArbiter, is_high_impact_structural_action
+from mcts import GuidedLookaheadSearcher
 
 MAP_NAMES = {
     0: "London",
     1: "New York City",
     2: "Tokyo",
+    3: "Berlin",
 }
 
 STATION_KINDS = [
@@ -105,6 +107,35 @@ class ModelPolicy(BasePolicy):
             self.arbiter.record_executed_intervention(action_id, self.sim_time)
 
         return action_id
+
+
+class ModelGuidedLookaheadPolicy(BasePolicy):
+    """
+    AlphaZero-style tactical lookahead policy.
+    Invokes in-memory forward simulation during station overcrowding crises.
+    """
+    def __init__(self, model: MiniMetroActorCritic, device: torch.device = torch.device("cpu"), top_k: int = 6):
+        self.model = model
+        self.device = device
+        self.searcher = GuidedLookaheadSearcher(model=model, top_k=top_k, device=device)
+        self.lstm_state = None
+
+    def reset(self, seed: Optional[int] = None):
+        self.lstm_state = None
+
+    def act(self, obs: Dict[str, np.ndarray], env: Optional[Any] = None) -> int:
+        if env is not None:
+            act, info = self.searcher.select_action(
+                env, obs, mask=obs["action_mask"], lstm_state=self.lstm_state, emergency_only=True
+            )
+            return act
+        else:
+            obs_tensor = {k: torch.as_tensor(v, device=self.device).unsqueeze(0) for k, v in obs.items()}
+            with torch.no_grad():
+                action, _, _, _, self.lstm_state = self.model.get_action_and_value(
+                    obs_tensor, lstm_state=self.lstm_state, mask=obs_tensor["action_mask"].bool()
+                )
+            return int(action.item())
 
 
 class RandomLegalPolicy(BasePolicy):
@@ -248,7 +279,7 @@ def run_single_episode(
     last_obs = obs
 
     while not done and step < max_steps:
-        if isinstance(policy, ModelPolicy):
+        if isinstance(policy, (ModelPolicy, ModelGuidedLookaheadPolicy)):
             action = policy.act(obs, env=env)
         else:
             action = policy.act(obs)
@@ -461,15 +492,22 @@ def run_evaluation_suite(
 
     # Initialize model if required
     model = None
-    if any("model" in p.lower() or "deterministic" in p.lower() or "stochastic" in p.lower() for p in policy_names):
+    if any(k in p.lower() for p in policy_names for k in ("model", "deterministic", "stochastic", "lookahead", "mcts")):
         model = MiniMetroActorCritic(hidden_dim=256).to(device)
         if model_path is None:
-            model_files = glob.glob("runs/minimetro_ppo/model_*.pt") + glob.glob("ml/runs/minimetro_ppo/model_*.pt")
+            model_files = (
+                glob.glob("runs/minimetro_ppo/model_*.pt")
+                + glob.glob("runs/minimetro_ppo/checkpoint_*.pt")
+                + glob.glob("ml/runs/minimetro_ppo/model_*.pt")
+            )
             if model_files:
                 def get_ckpt_priority(f):
-                    base = os.path.basename(f).replace("model_", "").replace(".pt", "")
-                    if base == "final":
+                    b = os.path.basename(f)
+                    if "best" in b:
                         return float("inf")
+                    if "final" in b:
+                        return 1e12
+                    base = b.replace("model_", "").replace("checkpoint_", "").replace(".pt", "")
                     try:
                         return float(base)
                     except ValueError:
@@ -509,6 +547,10 @@ def run_evaluation_suite(
                     assert model is not None, "Model required for stochastic policy"
                     policy = ModelPolicy(model, deterministic=False, device=device)
                     display_name = "Model (Stochastic)"
+                elif pol_key in ("mcts", "lookahead", "guided_lookahead", "model (guided lookahead)"):
+                    assert model is not None, "Model required for guided lookahead policy"
+                    policy = ModelGuidedLookaheadPolicy(model, device=device)
+                    display_name = "Model (Guided Lookahead)"
                 elif pol_key in ("random", "random_legal", "random legal baseline"):
                     policy = RandomLegalPolicy(seed=seed)
                     display_name = "Random Legal"
@@ -556,7 +598,7 @@ def run_evaluation_suite(
 def main():
     parser = argparse.ArgumentParser(description="Rigorous Multi-Seed & Cross-Map Evaluation Suite (P3-1)")
     parser.add_argument("--seeds", type=int, nargs="+", default=DEFAULT_SEEDS, help="List of random seeds to evaluate")
-    parser.add_argument("--maps", type=int, nargs="+", default=[0, 1, 2], help="List of map IDs: 0=London, 1=NYC, 2=Tokyo")
+    parser.add_argument("--maps", type=int, nargs="+", default=[0, 1, 2, 3], help="List of map IDs: 0=London, 1=NYC, 2=Tokyo, 3=Berlin")
     parser.add_argument("--policies", type=str, nargs="+", default=["deterministic", "stochastic", "greedy", "random"],
                         help="List of policies: deterministic, stochastic, greedy, random")
     parser.add_argument("--model_path", type=str, default=None, help="Path to checkpoint model file")

@@ -7,8 +7,10 @@ except ImportError:
     if os.path.exists(venv_python) and os.path.realpath(sys.executable) != os.path.realpath(venv_python):
         os.execv(venv_python, [venv_python] + sys.argv)
 
+import argparse
 import time
 import glob
+import collections
 
 import numpy as np
 import torch
@@ -22,17 +24,28 @@ from env import MiniMetroEnv, LineOrientationAugmentation
 from model import MiniMetroActorCritic
 from ppo import PPO
 from probing import compute_expansion_metrics
+from curriculum import CurriculumManager
 
 
 # ============================================================
 # ENVIRONMENT
 # ============================================================
 
-def make_env(seed, map_id=0, flip_prob=0.5):
+MAP_NAMES = {
+    0: "London",
+    1: "New York City",
+    2: "Tokyo",
+    3: "Berlin",
+}
+
+def make_env(seed, map_id=0, map_pool=None, map_weights=None, flip_prob=0.5, use_pbrs=True):
     def thunk():
         env = MiniMetroEnv(
             map_id=map_id,
-            seed=seed
+            seed=seed,
+            map_pool=map_pool,
+            map_weights=map_weights,
+            use_pbrs=use_pbrs,
         )
         if flip_prob > 0:
             env = LineOrientationAugmentation(env, flip_prob=flip_prob)
@@ -57,6 +70,8 @@ def save_checkpoint(
     update,
     global_step,
     checkpoint_dir=CHECKPOINT_DIR,
+    curriculum_state_dict=None,
+    best_avg_score=-1.0,
 ):
     """
     Save everything needed to resume training.
@@ -80,7 +95,10 @@ def save_checkpoint(
         "update": update,
         "global_step": global_step,
         "model_state_dict": model.state_dict(),
+        "best_avg_score": best_avg_score,
     }
+    if curriculum_state_dict is not None:
+        checkpoint["curriculum_state_dict"] = curriculum_state_dict
 
     # PPO implementation may expose optimizer as agent.optimizer.
     if hasattr(agent, "optimizer"):
@@ -137,6 +155,7 @@ def load_checkpoint(
     model,
     agent,
     device,
+    curriculum=None,
 ):
     """
     Load model/optimizer/RNG state.
@@ -171,6 +190,10 @@ def load_checkpoint(
                     f"⚠️ Could not restore optimizer state ({opt_err}). "
                     f"Architecture parameters changed — using reinitialized optimizer."
                 )
+
+    if curriculum is not None and "curriculum_state_dict" in checkpoint:
+        curriculum.load_state_dict(checkpoint["curriculum_state_dict"])
+        print(f"🎓 Restored Curriculum State -> {curriculum.get_stage_name()}", flush=True)
 
     # Restore RNG state when available.
     if "torch_rng_state" in checkpoint:
@@ -221,16 +244,57 @@ def load_checkpoint(
 # MAIN TRAINING
 # ============================================================
 
-def run_training():
+def parse_args():
+    parser = argparse.ArgumentParser(description="Mini Metro Local PPO Multi-Map Training")
+    parser.add_argument("--maps", type=int, nargs="+", default=[0, 1, 2, 3],
+                        help="List of map IDs to train on: 0=London, 1=NYC, 2=Tokyo, 3=Berlin")
+    parser.add_argument("--map-mode", type=str, choices=["stratified", "mixed"], default="stratified",
+                        help="Worker map allocation: 'stratified' or 'mixed'")
+    parser.add_argument("--curriculum", action=argparse.BooleanOptionalAction, default=True,
+                        help="Enable procedural multi-map curriculum learning (Stage 1 Berlin -> Stage 2 London/Tokyo -> Stage 3 All Maps)")
+    parser.add_argument("--pbrs", action=argparse.BooleanOptionalAction, default=True,
+                        help="Enable Potential-Based Reward Shaping (Ng et al., 1999) for dense temporal credit assignment")
+    parser.add_argument("--hierarchical", action=argparse.BooleanOptionalAction, default=True,
+                        help="Enable two-stage Hierarchical Action Factorization")
+    parser.add_argument("--hidden-dim", type=int, default=32,
+                        help="Model hidden dimension (default: 32)")
+    parser.add_argument("--total-timesteps", type=int, default=40_000,
+                        help="Total environment steps to train (default: 40,000)")
+    parser.add_argument("--num-envs", type=int, default=16,
+                        help="Number of parallel environments (default: 16)")
+    parser.add_argument("--curriculum-thresholds", type=float, nargs="+", default=[35.0, 55.0, 75.0],
+                        help="Rolling score promotion thresholds for 4 stages: Berlin -> +London -> +Tokyo -> +NYC (default: 35 55 75)")
+    parser.add_argument("--curriculum-min-steps", type=int, nargs="+", default=[8000, 16000, 26000],
+                        help="Minimum steps required before promoting each stage (default: 8000 16000 26000)")
+    parser.add_argument("--fine-tune", action="store_true",
+                        help="Fine-tune from latest checkpoint")
+    parser.add_argument("--pretrained", type=str, default=None,
+                        help="Explicit pretrained model path")
+    return parser.parse_args()
+
+def run_training(args=None):
+    if args is None:
+        args = parse_args()
 
     # --------------------------------------------------------
     # TRAINING CONFIGURATION
     # --------------------------------------------------------
 
-    num_envs = 16
+    num_envs = args.num_envs
     num_steps = 128
+    total_timesteps = args.total_timesteps
+    maps = args.maps
+    map_mode = args.map_mode
 
-    total_timesteps = 40_000
+    curriculum = CurriculumManager(
+        enabled=args.curriculum,
+        custom_maps=args.maps,
+        thresholds=tuple(args.curriculum_thresholds),
+        min_steps=tuple(args.curriculum_min_steps),
+    )
+    maps = curriculum.get_maps()
+    map_mode = "mixed" if args.curriculum else args.map_mode
+    map_weights = curriculum.get_weights() if args.curriculum else None
 
     # Number of environment transitions per update.
     rollout_size = num_envs * num_steps
@@ -267,14 +331,19 @@ def run_training():
     amp_dtype = torch.bfloat16 if (use_amp and torch.cuda.is_bf16_supported()) else torch.float16
 
     print("=" * 70)
-    print("MiniMetro PPO Training")
+    print("🚇 MiniMetro Local Multi-Map PPO Training")
     print("=" * 70)
-    print(f"Device          : {device}")
+    print(f"Device           : {device}")
+    print(f"Curriculum       : {curriculum.get_stage_name() if args.curriculum else 'Disabled'}")
+    print(f"PBRS Shaping     : {'Enabled (Ng et al. 1999)' if args.pbrs else 'Disabled'}")
+    print(f"Hierarchical     : {'Enabled' if args.hierarchical else 'Disabled'}")
+    print(f"Maps             : {[MAP_NAMES.get(m, f'Map_{m}') for m in maps]} (IDs: {maps})")
+    print(f"Map Strategy     : {map_mode.upper()}")
     print(f"Num environments : {num_envs}")
-    print(f"Steps/update    : {num_steps}")
-    print(f"Rollout size    : {rollout_size}")
-    print(f"Target steps    : {total_timesteps}")
-    print(f"Total updates   : {num_updates}")
+    print(f"Steps/update     : {num_steps}")
+    print(f"Rollout size     : {rollout_size}")
+    print(f"Target steps     : {total_timesteps}")
+    print(f"Total updates    : {num_updates}")
     print("=" * 70)
 
     # --------------------------------------------------------
@@ -296,11 +365,19 @@ def run_training():
     # --------------------------------------------------------
 
     print("Creating vectorized environments...")
+    env_fns = []
+    if map_mode == "stratified":
+        for i in range(num_envs):
+            assigned_map = maps[i % len(maps)]
+            env_fns.append(make_env(seed=i, map_id=assigned_map, flip_prob=0.5, use_pbrs=args.pbrs))
+            print(f"  Worker {i:02d} -> {MAP_NAMES.get(assigned_map, f'Map_{assigned_map}')} (ID {assigned_map})")
+    else:
+        for i in range(num_envs):
+            env_fns.append(make_env(seed=i, map_id=-1, map_pool=maps, map_weights=map_weights, flip_prob=0.5, use_pbrs=args.pbrs))
+            print(f"  Worker {i:02d} -> Dynamic Curriculum over maps {maps}")
+
     envs = gym.vector.AsyncVectorEnv(
-        [
-            make_env(i)
-            for i in range(num_envs)
-        ],
+        env_fns,
         context='spawn'
     )
     
@@ -310,7 +387,8 @@ def run_training():
     # DEVICE & MODEL
     # --------------------------------------------------------
 
-    model = MiniMetroActorCritic(hidden_dim=32).to(device)
+    hidden_dim = args.hidden_dim
+    model = MiniMetroActorCritic(hidden_dim=hidden_dim, use_hierarchical=args.hierarchical).to(device)
     agent = PPO(
         model,
         lr=3e-4,
@@ -338,6 +416,7 @@ def run_training():
                 model,
                 agent,
                 device,
+                curriculum=curriculum if args.curriculum else None,
             )
             start_update = loaded_update + 1
             print(f"✅ Resumed from update {start_update - 1} | global_step={global_step}")
@@ -395,7 +474,6 @@ def run_training():
     # LSTM STATE STORAGE
     # --------------------------------------------------------
 
-    hidden_dim = 32
     lstm_hx = torch.zeros(
         (num_steps, num_envs, hidden_dim * 5),
         dtype=torch.float32,
@@ -439,6 +517,9 @@ def run_training():
     )
 
     start_time = time.time()
+    recent_scores = collections.deque(maxlen=20)
+    best_avg_score = -1.0
+    best_model_path = os.path.join(CHECKPOINT_DIR, "model_best.pt")
 
     # --------------------------------------------------------
     # TRAINING EPOCHS
@@ -550,32 +631,66 @@ def run_training():
                 # LOGGING EPISODE STATS
                 # --------------------------------------------
 
-                if "final_info" in infos:
+                # Extract completed episode statistics (supports Gymnasium 1.0+ vectorized format and legacy final_info)
+                completed_episodes = []
+                if "_episode" in infos:
+                    for idx, has_ep in enumerate(infos["_episode"]):
+                        if has_ep:
+                            completed_episodes.append({
+                                "idx": idx,
+                                "r": float(infos["episode"]["r"][idx]),
+                                "l": int(infos["episode"]["l"][idx]),
+                                "score": int(infos["score"][idx]) if "score" in infos else 0,
+                                "map_name": str(infos["map_name"][idx]) if "map_name" in infos else MAP_NAMES.get(maps[idx % len(maps)], f"Map_{idx}"),
+                                "breakdown": {k: float(v[idx]) for k, v in infos.get("episode_reward_breakdown", {}).items()} if "episode_reward_breakdown" in infos else {},
+                                "total_track_length": float(infos["total_track_length"][idx]) if "total_track_length" in infos else 0.0,
+                            })
+                elif "final_info" in infos:
                     for idx, info in enumerate(infos["final_info"]):
                         if info and "episode" in info:
-                            episode_return = info["episode"]["r"]
-                            episode_length = info["episode"]["l"]
+                            completed_episodes.append({
+                                "idx": idx,
+                                "r": float(np.asarray(info["episode"]["r"]).reshape(-1)[0]),
+                                "l": int(np.asarray(info["episode"]["l"]).reshape(-1)[0]),
+                                "score": int(info.get("score", 0)),
+                                "map_name": str(info.get("map_name", MAP_NAMES.get(maps[idx % len(maps)], f"Map_{idx}"))),
+                                "breakdown": info.get("episode_reward_breakdown", {}),
+                                "total_track_length": float(info.get("total_track_length", 0.0)),
+                            })
 
-                            # Convert possible numpy scalars to Python values.
-                            try:
-                                episode_return = float(np.asarray(episode_return).reshape(-1)[0])
-                            except Exception:
-                                pass
+                for ep_data in completed_episodes:
+                    idx = ep_data["idx"]
+                    episode_return = ep_data["r"]
+                    episode_length = ep_data["l"]
+                    score = ep_data["score"]
+                    map_name = ep_data["map_name"]
+                    map_key = map_name.lower().replace(" ", "_")
 
-                            try:
-                                episode_length = int(np.asarray(episode_length).reshape(-1)[0])
-                            except Exception:
-                                pass
+                    print(f"🗺️ [{map_name.upper()} | Env {idx:02d}] step={global_step} | Return={episode_return:.2f} | Score={score} | Length={episode_length}", flush=True)
 
-                            print(f"global_step={global_step}, env={idx}, episodic_return={episode_return:.3f}, length={episode_length}", flush=True)
+                    writer.add_scalar("charts/episodic_return", episode_return, global_step)
+                    writer.add_scalar("charts/episodic_length", episode_length, global_step)
+                    writer.add_scalar(f"charts/episodic_return_{map_key}", episode_return, global_step)
+                    writer.add_scalar(f"charts/episodic_length_{map_key}", episode_length, global_step)
+                    writer.add_scalar(f"charts/score_{map_key}", score, global_step)
+                    for channel, val in ep_data["breakdown"].items():
+                        writer.add_scalar(f"rewards/{channel}", val, global_step)
+                    if ep_data["total_track_length"] > 0:
+                        writer.add_scalar("metrics/total_track_length", ep_data["total_track_length"], global_step)
 
-                            writer.add_scalar("charts/episodic_return", episode_return, global_step)
-                            writer.add_scalar("charts/episodic_length", episode_length, global_step)
-                            if "episode_reward_breakdown" in info:
-                                for channel, val in info["episode_reward_breakdown"].items():
-                                    writer.add_scalar(f"rewards/{channel}", val, global_step)
-                            if "total_track_length" in info:
-                                writer.add_scalar("metrics/total_track_length", info["total_track_length"], global_step)
+                    # Track all-time best model based on rolling average score
+                    recent_scores.append(score)
+                    if len(recent_scores) >= 5:
+                        current_avg = float(np.mean(recent_scores))
+                        if current_avg > best_avg_score:
+                            best_avg_score = current_avg
+                            torch.save(model.state_dict(), best_model_path)
+                            print(f"🌟 New all-time best model! Rolling Avg Score: {best_avg_score:.1f} (Latest: {score}) -> Saved {best_model_path}", flush=True)
+                            writer.add_scalar("charts/best_rolling_score", best_avg_score, global_step)
+
+                        if args.curriculum and curriculum.update(best_avg_score, global_step):
+                            envs.call("set_map_pool", curriculum.get_maps(), curriculum.get_weights())
+                            writer.add_scalar("charts/curriculum_stage", curriculum.stage_num, global_step)
 
             # ------------------------------------------------
             # GAE
@@ -819,6 +934,8 @@ def run_training():
                 agent,
                 update,
                 global_step,
+                curriculum_state_dict=curriculum.state_dict() if args.curriculum else None,
+                best_avg_score=best_avg_score,
             )
 
     except KeyboardInterrupt:

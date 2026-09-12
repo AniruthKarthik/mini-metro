@@ -139,15 +139,40 @@ func (s *Simulator) offerReward() {
 	}
 	unlockedLines := activeLines + s.State.Resources.Lines
 
-	var pool []RewardType
+	// Gather available distinct upgrade candidates (never allow duplicate card choices)
+	var candidates []RewardType
 	if unlockedLines < MaxLines {
-		pool = []RewardType{RewardLine, RewardCarriage, RewardTunnel, RewardTunnel, RewardInterchange}
-	} else {
-		pool = []RewardType{RewardCarriage, RewardTunnel, RewardTunnel, RewardInterchange}
+		candidates = append(candidates, RewardLine)
+	}
+	candidates = append(candidates, RewardCarriage, RewardInterchange)
+	if len(s.State.Rivers) > 0 || len(s.State.WaterPolygons) > 0 {
+		candidates = append(candidates, RewardTunnel)
 	}
 
-	s.RNG().Shuffle(len(pool), func(i, j int) { pool[i], pool[j] = pool[j], pool[i] })
-	s.State.PendingRewardChoices = pool[:2]
+	var c0, c1 RewardType
+	// In early weeks (unlockedLines < 4), guarantee that a New Line is one of the options
+	// so that expanding cities are not starved of basic network connectivity.
+	if unlockedLines < 4 && unlockedLines < MaxLines {
+		c0 = RewardLine
+		var others []RewardType
+		for _, c := range candidates {
+			if c != RewardLine {
+				others = append(others, c)
+			}
+		}
+		c1 = others[s.RNG().Intn(len(others))]
+		// Randomize slot position so Line isn't always fixed to slot 0
+		if s.RNG().Intn(2) == 1 {
+			c0, c1 = c1, c0
+		}
+	} else {
+		// Sample two distinct choices without replacement
+		s.RNG().Shuffle(len(candidates), func(i, j int) { candidates[i], candidates[j] = candidates[j], candidates[i] })
+		c0 = candidates[0]
+		c1 = candidates[1]
+	}
+
+	s.State.PendingRewardChoices = []RewardType{c0, c1}
 	s.State.Scheduler.Schedule(s.State.Tick+rewardInterval(), EventReward)
 }
 

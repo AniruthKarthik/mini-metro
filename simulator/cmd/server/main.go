@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/AniruthKarthik/mini-metro/simulator/engine"
 	"github.com/AniruthKarthik/mini-metro/simulator/server"
@@ -12,7 +13,7 @@ import (
 
 func main() {
 	addr := flag.String("addr", ":6969", "HTTP address to listen on")
-	mapName := flag.String("map", "london", "Map to load: london | nyc | tokyo")
+	mapName := flag.String("map", "london", "Map to load: london | nyc | tokyo | berlin")
 	flag.Parse()
 
 	sim := buildSimulator(*mapName)
@@ -28,15 +29,18 @@ func main() {
 	log.Fatal(http.ListenAndServe(*addr, withCORS(mux)))
 }
 
-// buildSimulator creates a Simulator from a named map config.
+// buildSimulator creates a Simulator from a named map config with a randomized seed.
 func buildSimulator(name string) *engine.Simulator {
+	seed := uint64(time.Now().UnixNano())
 	switch name {
 	case "nyc", "new_york":
-		return engine.NewSimulatorWithMap(engine.NYCMap())
+		return engine.NewSimulatorWithMap(engine.NYCMap(), seed)
 	case "tokyo":
-		return engine.NewSimulatorWithMap(engine.TokyoMap())
+		return engine.NewSimulatorWithMap(engine.TokyoMap(), seed)
+	case "berlin":
+		return engine.NewSimulatorWithMap(engine.BerlinMap(), seed)
 	default:
-		return engine.NewSimulatorWithMap(engine.LondonMap())
+		return engine.NewSimulatorWithMap(engine.LondonMap(), seed)
 	}
 }
 

@@ -68,6 +68,10 @@ func TestWeeklyRewardSamplingAudit1000(t *testing.T) {
 		pairKey := fmt.Sprintf("%s + %s", name0, name1)
 		pairCounts[pairKey]++
 
+		if c0 == c1 {
+			t.Fatalf("Week %d: duplicate reward choices offered: %s and %s", week, name0, name1)
+		}
+
 		hasLine := (c0 == RewardLine || c1 == RewardLine)
 		if hasLine {
 			linesOfferedEvents++

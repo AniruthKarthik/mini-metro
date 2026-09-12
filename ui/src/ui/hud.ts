@@ -201,6 +201,17 @@ export class HUD {
               <p class="map-desc">High-capacity metropolitan network around Tokyo Bay.</p>
               <button class="map-select-btn">SELECT TOKYO</button>
             </div>
+
+            <div class="hud-map-card" data-map="berlin">
+              <div class="map-card-header">
+                <div class="city-title-box">
+                  <h3>Berlin</h3>
+                  <span class="river-name">Plains (No Water)</span>
+                </div>
+              </div>
+              <p class="map-desc">Open plain metropolitan network with no water bodies or tunnels.</p>
+              <button class="map-select-btn">SELECT BERLIN</button>
+            </div>
           </div>
         </div>
       </div>

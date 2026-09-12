@@ -8,24 +8,40 @@ except ImportError:
         os.execv(venv_python, [venv_python] + sys.argv)
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+import collections
+import argparse
+import time
+import numpy as np
 import torch
 try:
     import intel_extension_for_pytorch as ipex
 except ImportError:
     pass
-import numpy as np
 import gymnasium as gym
 from torch.utils.tensorboard import SummaryWriter
-import time
 
 from env import MiniMetroEnv, LineOrientationAugmentation
 from model import MiniMetroActorCritic
 from ppo import PPO
 from probing import compute_expansion_metrics
+from curriculum import CurriculumManager
 
-def make_env(seed, map_id=-1, flip_prob=0.5):
+MAP_NAMES = {
+    0: "London",
+    1: "New York City",
+    2: "Tokyo",
+    3: "Berlin",
+}
+
+def make_env(seed, map_id=-1, map_pool=None, map_weights=None, flip_prob=0.5, use_pbrs=True):
     def thunk():
-        env = MiniMetroEnv(map_id=map_id, seed=seed)
+        env = MiniMetroEnv(
+            map_id=map_id,
+            seed=seed,
+            map_pool=map_pool,
+            map_weights=map_weights,
+            use_pbrs=use_pbrs,
+        )
         if flip_prob > 0:
             env = LineOrientationAugmentation(env, flip_prob=flip_prob)
         env = gym.wrappers.RecordEpisodeStatistics(env)
@@ -46,6 +62,8 @@ def find_latest_checkpoint(checkpoint_dir="runs/minimetro_ppo"):
 
     files = sorted([f for f in files if get_update_num(f) >= 0], key=get_update_num)
     if not files:
+        if "model_final.pt" in os.listdir(checkpoint_dir):
+            return os.path.join(checkpoint_dir, "model_final.pt"), 0
         return None, 0
     
     latest_file = files[-1]
@@ -54,10 +72,10 @@ def find_latest_checkpoint(checkpoint_dir="runs/minimetro_ppo"):
 def cleanup_old_checkpoints(checkpoint_dir="runs/minimetro_ppo", keep_last=5):
     if not os.path.exists(checkpoint_dir):
         return
-    files = [f for f in os.listdir(checkpoint_dir) if (f.startswith("checkpoint_") or f.startswith("model_")) and f.endswith(".pt")]
+    files = [f for f in os.listdir(checkpoint_dir) if f.startswith("checkpoint_") and f.endswith(".pt")]
     
     def get_update_num(f):
-        base = f.replace("checkpoint_", "").replace("model_", "").replace(".pt", "")
+        base = f.replace("checkpoint_", "").replace(".pt", "")
         try:
             return int(base)
         except ValueError:
@@ -73,43 +91,141 @@ def cleanup_old_checkpoints(checkpoint_dir="runs/minimetro_ppo", keep_last=5):
             except Exception:
                 pass
 
-def run_training():
+def parse_args():
+    parser = argparse.ArgumentParser(description="Mini Metro Multi-Map PPO Training & Fine-Tuning")
+    parser.add_argument("--maps", type=int, nargs="+", default=[0, 1, 2, 3],
+                        help="List of map IDs to train on: 0=London, 1=NYC, 2=Tokyo, 3=Berlin (default: [0, 1, 2, 3])")
+    parser.add_argument("--map-mode", type=str, choices=["stratified", "mixed"], default="stratified",
+                        help="Worker map allocation: 'stratified' (round-robin per worker) or 'mixed' (sampled on reset)")
+    parser.add_argument("--map-weights", type=float, nargs="+", default=None,
+                        help="Relative sampling weights for maps in 'mixed' mode (e.g., 1 1 1 2 to emphasize Berlin)")
+    parser.add_argument("--curriculum", action=argparse.BooleanOptionalAction, default=True,
+                        help="Enable procedural multi-map curriculum learning (Stage 1 Berlin -> Stage 2 +London -> Stage 3 +Tokyo -> Stage 4 +NYC)")
+    parser.add_argument("--curriculum-thresholds", type=float, nargs="+", default=[100.0, 150.0, 200.0],
+                        help="Rolling score promotion thresholds for 4 stages: Berlin -> +London -> +Tokyo -> +NYC (default: 100 150 200)")
+    parser.add_argument("--curriculum-min-steps", type=int, nargs="+", default=[30000, 60000, 100000],
+                        help="Minimum steps required before promoting each stage (default: 30000 60000 100000)")
+    parser.add_argument("--pbrs", action=argparse.BooleanOptionalAction, default=True,
+                        help="Enable Potential-Based Reward Shaping (Ng et al., 1999) for dense temporal credit assignment")
+    parser.add_argument("--hierarchical", action=argparse.BooleanOptionalAction, default=True,
+                        help="Enable two-stage Hierarchical Action Factorization")
+    parser.add_argument("--fine-tune", action="store_true",
+                        help="Fine-tune starting from the latest existing model checkpoint")
+    parser.add_argument("--pretrained", type=str, default=None,
+                        help="Explicit path to pretrained checkpoint .pt file to fine-tune from")
+    parser.add_argument("--lr", type=float, default=None,
+                        help="Base learning rate (default: 3e-4 for scratch, 1e-4 for fine-tuning)")
+    parser.add_argument("--total-timesteps", type=int, default=None,
+                        help="Total timesteps to train (default: 5,000,000 scratch, 500,000 fine-tune)")
+    parser.add_argument("--num-envs", type=int, default=None,
+                        help="Number of parallel environments (default: auto based on CPU cores)")
+    parser.add_argument("--target-rollout-size", type=int, default=None,
+                        help="Target rollout size across all envs (default: 2048)")
+    parser.add_argument("--num-steps", type=int, default=None,
+                        help="Rollout steps per environment")
+    parser.add_argument("--num-minibatches", type=int, default=None,
+                        help="Number of minibatches per PPO update (default: 4)")
+    parser.add_argument("--update-epochs", type=int, default=None,
+                        help="PPO update epochs per rollout (default: 2)")
+    parser.add_argument("--target-kl", type=float, default=None,
+                        help="PPO target KL divergence threshold (default: 0.015)")
+    parser.add_argument("--hidden-dim", type=int, default=None,
+                        help="Model hidden dimension (default: 256, or introspected from checkpoint)")
+    parser.add_argument("--checkpoint-dir", type=str, default="runs/minimetro_ppo",
+                        help="Directory to save checkpoints (default: runs/minimetro_ppo)")
+    return parser.parse_args()
+
+def run_training(args=None):
+    if args is None:
+        args = parse_args()
+
     cpu_cores = os.cpu_count() or 2
-    num_envs = int(os.environ.get("NUM_ENVS", min(16, max(4, cpu_cores))))
-    total_timesteps = int(os.environ.get("TOTAL_TIMESTEPS", 5000000))
-    target_rollout_size = int(os.environ.get("TARGET_ROLLOUT_SIZE", 2048))
-    num_steps = int(os.environ.get("NUM_STEPS", target_rollout_size // num_envs))
+    num_envs = args.num_envs or int(os.environ.get("NUM_ENVS", min(16, max(4, cpu_cores))))
+    
+    # Determine timesteps: default 500,000 for fine-tuning, 5,000,000 for scratch
+    if args.total_timesteps is not None:
+        total_timesteps = args.total_timesteps
+    elif "TOTAL_TIMESTEPS" in os.environ:
+        total_timesteps = int(os.environ["TOTAL_TIMESTEPS"])
+    elif args.fine_tune or args.pretrained:
+        total_timesteps = 500000
+    else:
+        total_timesteps = 5000000
+
+    target_rollout_size = args.target_rollout_size or int(os.environ.get("TARGET_ROLLOUT_SIZE", 2048))
+    num_steps = args.num_steps or int(os.environ.get("NUM_STEPS", max(16, target_rollout_size // num_envs)))
     batch_size = num_envs * num_steps
-    num_minibatches = int(os.environ.get("NUM_MINIBATCHES", 4))
+    num_minibatches = args.num_minibatches or int(os.environ.get("NUM_MINIBATCHES", 4))
     minibatch_size = batch_size // num_minibatches
-    update_epochs = int(os.environ.get("UPDATE_EPOCHS", 2))
-    target_kl = float(os.environ.get("TARGET_KL", 0.015))
-    num_updates = total_timesteps // batch_size
-    
-    os.makedirs("runs/minimetro_ppo", exist_ok=True)
-    writer = SummaryWriter("runs/minimetro_ppo")
-    
-    # Use AsyncVectorEnv with 'spawn' and shared_memory=False to prevent Python 3.13 BufferError and POSIX semaphore leaks
+    update_epochs = args.update_epochs or int(os.environ.get("UPDATE_EPOCHS", 2))
+    target_kl = args.target_kl or float(os.environ.get("TARGET_KL", 0.015))
+    num_updates = max(1, total_timesteps // batch_size)
+
+    # Base learning rate
+    if args.lr is not None:
+        base_lr = args.lr
+    elif args.fine_tune or args.pretrained:
+        base_lr = 1e-4
+    else:
+        base_lr = 3e-4
+
+    checkpoint_dir = args.checkpoint_dir
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    writer = SummaryWriter(checkpoint_dir)
+
+    # Construct multi-map environments
+    curriculum = CurriculumManager(
+        enabled=args.curriculum,
+        custom_maps=args.maps,
+        thresholds=tuple(args.curriculum_thresholds),
+        min_steps=tuple(args.curriculum_min_steps),
+    )
+    maps = curriculum.get_maps()
+    map_mode = "mixed" if args.curriculum else args.map_mode
+    map_weights = curriculum.get_weights() if args.curriculum else args.map_weights
+
+    print("=" * 70)
+    print("🚇 MiniMetro Multi-Map PPO Training & Fine-Tuning")
+    print("=" * 70)
+    print(f"Mode            : {'Fine-Tuning' if (args.fine_tune or args.pretrained) else 'Standard Training'}")
+    print(f"Curriculum      : {curriculum.get_stage_name() if args.curriculum else 'Disabled'}")
+    print(f"PBRS Shaping    : {'Enabled (Ng et al. 1999)' if args.pbrs else 'Disabled'}")
+    print(f"Hierarchical    : {'Enabled' if args.hierarchical else 'Disabled'}")
+    print(f"Maps            : {[MAP_NAMES.get(m, f'Map_{m}') for m in maps]} (IDs: {maps})")
+    print(f"Map Strategy    : {map_mode.upper()}")
+    if map_mode == "mixed" and map_weights:
+        print(f"Map Weights     : {map_weights}")
+
+    env_fns = []
+    if map_mode == "stratified":
+        for i in range(num_envs):
+            assigned_map = maps[i % len(maps)]
+            env_fns.append(make_env(seed=i, map_id=assigned_map, flip_prob=0.5, use_pbrs=args.pbrs))
+            print(f"  Worker {i:02d} -> {MAP_NAMES.get(assigned_map, f'Map_{assigned_map}')} (ID {assigned_map})")
+    else:
+        for i in range(num_envs):
+            env_fns.append(make_env(seed=i, map_id=-1, map_pool=maps, map_weights=map_weights, flip_prob=0.5, use_pbrs=args.pbrs))
+            print(f"  Worker {i:02d} -> Dynamic Curriculum over maps {maps}")
+
+    # Use AsyncVectorEnv with 'spawn' and shared_memory=False to prevent Python buffer and POSIX semaphore leaks
     envs = gym.vector.AsyncVectorEnv(
-        [make_env(i) for i in range(num_envs)],
+        env_fns,
         context='spawn',
         shared_memory=False
     )
-    
+
     device = torch.device("cpu")
     if torch.cuda.is_available():
         try:
             major, minor = torch.cuda.get_device_capability()
             if major >= 7:
                 device = torch.device("cuda")
-                # Enable TensorFloat-32 (TF32) for massive speedups on Ampere/Ada/Blackwell GPUs
                 torch.set_float32_matmul_precision('high')
                 torch.backends.cudnn.benchmark = True
-                # Set 2 CPU threads for PyTorch when using GPU to avoid CPU contention with env worker processes
                 torch.set_num_threads(2)
             else:
                 torch.set_num_threads(min(4, max(1, cpu_cores)))
-                print(f"⚠️ Warning: GPU {torch.cuda.get_device_name(0)} has CUDA capability sm_{major}{minor}, which is not supported by PyTorch 2.x wheels. Falling back to CPU.", flush=True)
+                print(f"⚠️ Warning: GPU {torch.cuda.get_device_name(0)} capability sm_{major}{minor} not supported. Using CPU.", flush=True)
         except Exception as e:
             torch.set_num_threads(min(4, max(1, cpu_cores)))
             print(f"⚠️ GPU check error: {e}. Defaulting to CPU.", flush=True)
@@ -121,10 +237,7 @@ def run_training():
         torch.set_num_threads(min(4, max(1, cpu_cores)))
     else:
         torch.set_num_threads(min(4, max(1, cpu_cores)))
-            
-    print("=" * 70)
-    print("MiniMetro PPO Training")
-    print("=" * 70)
+
     print(f"Device          : {device}")
     if device.type == "cuda":
         print(f"GPU Model       : {torch.cuda.get_device_name(0)}")
@@ -135,13 +248,49 @@ def run_training():
     print(f"Steps/update    : {num_steps}")
     print(f"Rollout size    : {batch_size}")
     print(f"Minibatch size  : {minibatch_size} ({num_minibatches} minibatches)")
+    print(f"Base LR         : {base_lr}")
     print(f"Update epochs   : {update_epochs}")
     print(f"Target steps    : {total_timesteps}")
     print(f"Total updates   : {num_updates}")
     print("=" * 70, flush=True)
-    
-    hidden_dim = int(os.environ.get("HIDDEN_DIM", 256))
-    base_model = MiniMetroActorCritic(hidden_dim=hidden_dim).to(device)
+
+    # Checkpoint resolution
+    ckpt_to_load = None
+    if args.pretrained:
+        ckpt_to_load = args.pretrained
+    elif args.fine_tune:
+        search_dirs = [checkpoint_dir, "runs/minimetro_ppo", "runs/minimetro_ppo_local"]
+        for d in search_dirs:
+            f, _ = find_latest_checkpoint(d)
+            if f and os.path.exists(f):
+                ckpt_to_load = f
+                break
+    else:
+        latest_ckpt_path, latest_update = find_latest_checkpoint(checkpoint_dir)
+        if latest_ckpt_path:
+            ckpt_to_load = latest_ckpt_path
+
+    # Introspect architecture dimension if checkpoint exists
+    hidden_dim = args.hidden_dim or int(os.environ.get("HIDDEN_DIM", 0))
+    checkpoint_data = None
+    if ckpt_to_load and os.path.exists(ckpt_to_load):
+        try:
+            print(f"🔄 Inspecting checkpoint: {ckpt_to_load}", flush=True)
+            checkpoint_data = torch.load(ckpt_to_load, map_location=device, weights_only=False)
+            state_dict = checkpoint_data.get("model_state_dict", checkpoint_data) if isinstance(checkpoint_data, dict) else checkpoint_data
+            
+            node_w = state_dict.get("gcn1.node_proj.weight", state_dict.get("gatv2_1.node_proj.weight", None))
+            if node_w is not None and hidden_dim <= 0:
+                hidden_dim = int(node_w.shape[0])
+                print(f"🔍 Introspected hidden_dim={hidden_dim} from checkpoint weights.")
+        except Exception as e:
+            print(f"⚠️ Error reading checkpoint {ckpt_to_load}: {e}")
+
+    if hidden_dim <= 0:
+        hidden_dim = 256
+    print(f"Model hidden_dim: {hidden_dim}", flush=True)
+
+    base_model = MiniMetroActorCritic(hidden_dim=hidden_dim, use_hierarchical=args.hierarchical).to(device)
     if device.type == "cuda" and torch.cuda.device_count() > 1:
         print(f"🔥 Enabling DataParallel across {torch.cuda.device_count()} GPUs!", flush=True)
         model = torch.nn.DataParallel(base_model)
@@ -149,31 +298,37 @@ def run_training():
         model = base_model
         
     raw_model = base_model
-    agent = PPO(model)
-    
+    agent = PPO(model, lr=base_lr)
+
     start_update = 1
     global_step = 0
-    latest_ckpt_path, latest_update = find_latest_checkpoint("runs/minimetro_ppo")
-    if latest_ckpt_path and latest_update > 0:
+
+    if checkpoint_data is not None:
         try:
-            print(f"🔄 Loading existing checkpoint: {latest_ckpt_path}", flush=True)
-            checkpoint = torch.load(latest_ckpt_path, map_location=device, weights_only=False)
-            if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
-                raw_model.load_state_dict(checkpoint["model_state_dict"])
-                if "optimizer_state_dict" in checkpoint and hasattr(agent, "optimizer"):
+            state_dict = checkpoint_data.get("model_state_dict", checkpoint_data) if isinstance(checkpoint_data, dict) else checkpoint_data
+            raw_model.load_state_dict(state_dict, strict=False)
+            print(f"✅ Loaded model weights from {ckpt_to_load}", flush=True)
+
+            if args.fine_tune or args.pretrained:
+                # Fine-tuning: fresh start on updates/optimizer for clean adaptation
+                start_update = 1
+                global_step = 0
+                print(f"🎯 Fine-Tuning Active: Reinitialized optimizer with lr={base_lr} for multi-map adaptation", flush=True)
+            else:
+                # Resume normal training
+                if isinstance(checkpoint_data, dict) and "optimizer_state_dict" in checkpoint_data:
                     try:
-                        agent.optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+                        agent.optimizer.load_state_dict(checkpoint_data["optimizer_state_dict"])
                     except Exception as opt_err:
                         print(f"⚠️ Could not restore optimizer state ({opt_err}). Using reinitialized optimizer.", flush=True)
-                start_update = checkpoint.get("update", latest_update) + 1
-                global_step = checkpoint.get("global_step", (start_update - 1) * batch_size)
-            elif isinstance(checkpoint, dict):
-                raw_model.load_state_dict(checkpoint)
-                start_update = latest_update + 1
-                global_step = (start_update - 1) * batch_size
-            print(f"✅ Resuming training from update {start_update}/{num_updates} | global_step={global_step}", flush=True)
+                start_update = checkpoint_data.get("update", 0) + 1 if isinstance(checkpoint_data, dict) else 1
+                global_step = checkpoint_data.get("global_step", (start_update - 1) * batch_size) if isinstance(checkpoint_data, dict) else 0
+                if isinstance(checkpoint_data, dict) and "curriculum_state_dict" in checkpoint_data and args.curriculum:
+                    curriculum.load_state_dict(checkpoint_data["curriculum_state_dict"])
+                    print(f"🎓 Restored Curriculum State -> {curriculum.get_stage_name()}", flush=True)
+                print(f"✅ Resuming training from update {start_update}/{num_updates} | global_step={global_step}", flush=True)
         except Exception as e:
-            print(f"⚠️ Could not load checkpoint {latest_ckpt_path}: {e}. Starting fresh.", flush=True)
+            print(f"⚠️ Could not apply checkpoint: {e}. Starting fresh.", flush=True)
             start_update = 1
             global_step = 0
 
@@ -200,20 +355,26 @@ def run_training():
     use_amp = (device.type == "cuda")
     amp_dtype = torch.bfloat16 if (use_amp and torch.cuda.is_bf16_supported()) else torch.float16
 
+    recent_scores = collections.deque(maxlen=20)
+    best_avg_score = -1.0
+    best_model_path = os.path.join(checkpoint_dir, "model_best.pt")
+
     for update in range(start_update, num_updates + 1):
         update_start_time = time.time()
-        print(f"\n⏳ Performing {update}/{num_updates}...", flush=True)
+        print(f"\n⏳ Performing Update {update}/{num_updates}...", flush=True)
         
         if update % 10 == 0:
-            checkpoint_path = f"runs/minimetro_ppo/checkpoint_{update:05d}.pt"
-            checkpoint_data = {
+            checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_{update:05d}.pt")
+            checkpoint_save = {
                 "update": update,
                 "global_step": global_step,
                 "model_state_dict": raw_model.state_dict(),
                 "optimizer_state_dict": agent.optimizer.state_dict(),
+                "curriculum_state_dict": curriculum.state_dict(),
+                "best_avg_score": best_avg_score,
             }
-            torch.save(checkpoint_data, checkpoint_path)
-            cleanup_old_checkpoints("runs/minimetro_ppo", keep_last=5)
+            torch.save(checkpoint_save, checkpoint_path)
+            cleanup_old_checkpoints(checkpoint_dir, keep_last=5)
 
         for step in range(num_steps):
             global_step += num_envs
@@ -250,22 +411,72 @@ def run_training():
             next_obs_tensor = {k: torch.as_tensor(v).to(device, non_blocking=True) for k, v in next_obs.items()}
             next_done = torch.tensor(done, dtype=torch.float32, device=cpu_device)
             
-            if "final_info" in infos:
+            # Extract completed episode statistics (supports Gymnasium 1.0+ vectorized format and legacy final_info)
+            completed_episodes = []
+            if "_episode" in infos:
+                for idx, has_ep in enumerate(infos["_episode"]):
+                    if has_ep:
+                        completed_episodes.append({
+                            "idx": idx,
+                            "r": float(infos["episode"]["r"][idx]),
+                            "l": int(infos["episode"]["l"][idx]),
+                            "score": int(infos["score"][idx]) if "score" in infos else 0,
+                            "map_name": str(infos["map_name"][idx]) if "map_name" in infos else MAP_NAMES.get(maps[idx % len(maps)], f"Map_{idx}"),
+                            "breakdown": {k: float(v[idx]) for k, v in infos.get("episode_reward_breakdown", {}).items()} if "episode_reward_breakdown" in infos else {},
+                            "total_track_length": float(infos["total_track_length"][idx]) if "total_track_length" in infos else 0.0,
+                        })
+            elif "final_info" in infos:
                 for idx, info in enumerate(infos["final_info"]):
                     if info and "episode" in info:
-                        print(f"global_step={global_step}, episodic_return={info['episode']['r']}, length={info['episode']['l']}", flush=True)
-                        writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
-                        writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
-                        if "episode_reward_breakdown" in info:
-                            for channel, val in info["episode_reward_breakdown"].items():
-                                writer.add_scalar(f"rewards/{channel}", val, global_step)
-                        if "total_track_length" in info:
-                            writer.add_scalar("metrics/total_track_length", info["total_track_length"], global_step)
+                        completed_episodes.append({
+                            "idx": idx,
+                            "r": float(np.asarray(info["episode"]["r"]).reshape(-1)[0]),
+                            "l": int(np.asarray(info["episode"]["l"]).reshape(-1)[0]),
+                            "score": int(info.get("score", 0)),
+                            "map_name": str(info.get("map_name", MAP_NAMES.get(maps[idx % len(maps)], f"Map_{idx}"))),
+                            "breakdown": info.get("episode_reward_breakdown", {}),
+                            "total_track_length": float(info.get("total_track_length", 0.0)),
+                        })
+
+            for ep_data in completed_episodes:
+                idx = ep_data["idx"]
+                ep_r = ep_data["r"]
+                ep_l = ep_data["l"]
+                ep_score = ep_data["score"]
+                map_name = ep_data["map_name"]
+                map_key = map_name.lower().replace(" ", "_")
+
+                writer.add_scalar("charts/episodic_return", ep_r, global_step)
+                writer.add_scalar("charts/episodic_length", ep_l, global_step)
+                writer.add_scalar(f"charts/episodic_return_{map_key}", ep_r, global_step)
+                writer.add_scalar(f"charts/episodic_length_{map_key}", ep_l, global_step)
+                writer.add_scalar(f"charts/score_{map_key}", ep_score, global_step)
+                writer.add_scalar("charts/score_all", ep_score, global_step)
+
+                for channel, val in ep_data["breakdown"].items():
+                    writer.add_scalar(f"rewards/{channel}", val, global_step)
+                if ep_data["total_track_length"] > 0:
+                    writer.add_scalar("metrics/total_track_length", ep_data["total_track_length"], global_step)
+
+                print(f"🗺️ [{map_name.upper()} | Env {idx:02d}] step={global_step} | Return={ep_r:.2f} | Score={ep_score} | Length={ep_l} steps", flush=True)
+
+                # Track all-time best model based on rolling average score
+                recent_scores.append(ep_score)
+                if len(recent_scores) >= 5:
+                    current_avg = float(np.mean(recent_scores))
+                    if current_avg > best_avg_score:
+                        best_avg_score = current_avg
+                        torch.save(raw_model.state_dict(), best_model_path)
+                        print(f"🌟 New all-time best model! Rolling Avg Score: {best_avg_score:.1f} (Latest: {ep_score}) -> Saved {best_model_path}", flush=True)
+                        writer.add_scalar("charts/best_rolling_score", best_avg_score, global_step)
+
+                    if args.curriculum and curriculum.update(best_avg_score, global_step):
+                        envs.call("set_map_pool", curriculum.get_maps(), curriculum.get_weights())
+                        writer.add_scalar("charts/curriculum_stage", curriculum.stage_num, global_step)
 
         with torch.no_grad():
             with torch.amp.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
                 next_value = raw_model.get_value(next_obs_tensor, lstm_state=next_lstm_state).reshape(1, -1).to(cpu_device)
-            advantages, returns = agent.compute_gae(rewards, values, next_value, dones, next_done)
             advantages, returns = agent.compute_gae(rewards, values, next_value, dones, next_done)
             
         b_obs = obs
@@ -276,15 +487,15 @@ def run_training():
         b_values = values
         b_masks = b_obs["action_mask"].bool()
 
-        # PHASE-1 fix PPO-1: normalize over FULL batch, not per-minibatch.
+        # Normalize advantages over full batch
         b_advantages = (b_advantages - b_advantages.mean()) / (b_advantages.std() + 1e-8)
 
-        # PHASE-1 fix PPO-4: linear LR decay toward 0 over training.
-        frac = 1.0 - (update - 1.0) / num_updates
+        # Linear LR decay toward 0 over training
+        frac = max(0.0, 1.0 - (update - 1.0) / num_updates)
         for param_group in agent.optimizer.param_groups:
-            param_group["lr"] = 3e-4 * frac
+            param_group["lr"] = base_lr * frac
             
-        # PHASE-3: Entropy Annealing
+        # Entropy Annealing
         agent.ent_coef = 0.05 * frac
         
         pg_loss, v_loss, ent_loss, clipfrac, approx_kl = agent.update(
@@ -297,14 +508,14 @@ def run_training():
         writer.add_scalar("losses/entropy", ent_loss, global_step)
         writer.add_scalar("losses/approx_kl", approx_kl, global_step)
         writer.add_scalar("losses/clipfrac", clipfrac, global_step)
-        writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
+        writer.add_scalar("charts/SPS", int(global_step / max(time.time() - start_time, 1e-6)), global_step)
         writer.add_scalar("charts/learning_rate", agent.optimizer.param_groups[0]["lr"], global_step)
 
-        # PHASE-1 diagnostic: monitor NoOp rate (high = agent learned passivity).
+        # Monitor NoOp rate
         noop_rate = (b_actions == 0).float().mean().item()
         writer.add_scalar("charts/noop_rate", noop_rate, global_step)
 
-        # P1-2: Track network expansion and station redundancy metrics
+        # Track network expansion and station redundancy metrics
         exp_metrics = compute_expansion_metrics(b_obs, b_actions)
         writer.add_scalar("charts/expansion_action_rate", exp_metrics.expansion_action_rate, global_step)
         writer.add_scalar("charts/expansion_ratio", exp_metrics.expansion_ratio, global_step)
@@ -316,8 +527,10 @@ def run_training():
         
     envs.close()
     writer.close()
-    torch.save(raw_model.state_dict(), "runs/minimetro_ppo/model_final.pt")
-    print("\n🎉 Training finished! Saved final model to runs/minimetro_ppo/model_final.pt", flush=True)
+    final_model_path = os.path.join(checkpoint_dir, "model_final.pt")
+    torch.save(raw_model.state_dict(), final_model_path)
+    print(f"\n🎉 Training finished! Saved final model to {final_model_path}", flush=True)
 
 if __name__ == "__main__":
     run_training()
+

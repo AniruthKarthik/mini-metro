@@ -31,31 +31,72 @@ MAX_EDGES  = 200
 ACTION_SPACE_SIZE = 4087  # PHASE-4: was 4108; AddCarriage 28→7 slots
 
 
-def load_model(device):
+def get_checkpoint_priority(path: str) -> tuple:
+    """Calculate priority for a checkpoint file so 256-dim trained models are always prioritized over 32-dim test models."""
+    try:
+        raw_data = torch.load(path, map_location="cpu", weights_only=False)
+        state_dict = raw_data["model_state_dict"] if isinstance(raw_data, dict) and "model_state_dict" in raw_data else raw_data
+        node_w = state_dict.get("gcn1.node_proj.weight", state_dict.get("gatv2_1.node_proj.weight", None))
+        hidden_dim = int(node_w.shape[0]) if node_w is not None else (32 if "local" in path else 256)
+    except Exception:
+        hidden_dim = 0
+
+    tier = 1
+    if "minimetro_ppo_finetuned" in path:
+        tier = 3
+    elif "minimetro_ppo" in path and "local" not in path:
+        tier = 2
+
+    model_rank = 0
+    if "model_best.pt" in os.path.basename(path):
+        model_rank = 2
+    elif "model_final.pt" in os.path.basename(path):
+        model_rank = 1
+
+    mtime = os.path.getmtime(path)
+
+    return (hidden_dim, tier, model_rank, mtime)
+
+
+def load_model(device, model_override=None):
     """Find and load the best available checkpoint. Returns (model, path_or_None)."""
-    search_dirs = [
-        "runs/minimetro_ppo_local",
-        "runs/minimetro_ppo",
-        os.path.join(SCRIPT_DIR, "runs/minimetro_ppo_local"),
-        os.path.join(SCRIPT_DIR, "runs/minimetro_ppo"),
-        os.path.join(REPO_ROOT, "runs/minimetro_ppo_local"),
-        os.path.join(REPO_ROOT, "runs/minimetro_ppo"),
-    ]
-    all_files = []
-    seen = set()
-    for d in search_dirs:
-        for p in glob.glob(os.path.join(d, "model_*.pt")) + glob.glob(os.path.join(d, "checkpoint_*.pt")):
-            abs_p = os.path.abspath(p)
-            if abs_p not in seen and os.path.exists(abs_p):
-                seen.add(abs_p)
-                all_files.append(abs_p)
+    if model_override:
+        if not os.path.exists(model_override):
+            if os.path.exists(os.path.join(SCRIPT_DIR, model_override)):
+                model_path = os.path.abspath(os.path.join(SCRIPT_DIR, model_override))
+            elif os.path.exists(os.path.join(REPO_ROOT, model_override)):
+                model_path = os.path.abspath(os.path.join(REPO_ROOT, model_override))
+            else:
+                raise FileNotFoundError(f"Specified model checkpoint does not exist: {model_override}")
+        else:
+            model_path = os.path.abspath(model_override)
+    else:
+        search_dirs = [
+            "runs/minimetro_ppo_finetuned",
+            "runs/minimetro_ppo",
+            "runs/minimetro_ppo_local",
+            os.path.join(SCRIPT_DIR, "runs/minimetro_ppo_finetuned"),
+            os.path.join(SCRIPT_DIR, "runs/minimetro_ppo"),
+            os.path.join(SCRIPT_DIR, "runs/minimetro_ppo_local"),
+            os.path.join(REPO_ROOT, "runs/minimetro_ppo_finetuned"),
+            os.path.join(REPO_ROOT, "runs/minimetro_ppo"),
+            os.path.join(REPO_ROOT, "runs/minimetro_ppo_local"),
+        ]
+        all_files = []
+        seen = set()
+        for d in search_dirs:
+            for p in glob.glob(os.path.join(d, "model_*.pt")) + glob.glob(os.path.join(d, "checkpoint_*.pt")):
+                abs_p = os.path.abspath(p)
+                if abs_p not in seen and os.path.exists(abs_p):
+                    seen.add(abs_p)
+                    all_files.append(abs_p)
 
-    if not all_files:
-        print("[AI] No saved models found. Using random-initialized weights.")
-        return MiniMetroActorCritic(hidden_dim=256).to(device), None
+        if not all_files:
+            print("[AI] No saved models found. Using random-initialized weights.")
+            return MiniMetroActorCritic(hidden_dim=256).to(device), None
 
-    all_files.sort(key=os.path.getmtime)
-    model_path = all_files[-1]
+        all_files.sort(key=get_checkpoint_priority)
+        model_path = all_files[-1]
 
     raw_data = torch.load(model_path, map_location=device, weights_only=False)
     state_dict = raw_data["model_state_dict"] if isinstance(raw_data, dict) and "model_state_dict" in raw_data else raw_data
@@ -66,7 +107,7 @@ def load_model(device):
         hidden_dim = int(node_w.shape[0])
     else:
         hidden_dim = 32 if "minimetro_ppo_local" in model_path else 256
-    print(f"[AI] Loading latest model: {model_path} (hidden_dim={hidden_dim})")
+    print(f"[AI] Loading model: {model_path} (hidden_dim={hidden_dim})")
 
     model = MiniMetroActorCritic(hidden_dim=hidden_dim).to(device)
 
@@ -118,11 +159,29 @@ def obs_from_json(obs_json, device):
     }
 
 
-def describe_action(action_id: int) -> str:
+def describe_action(action_id: int, obs_json: dict = None) -> str:
     if action_id == 0:
         return "NoOp"
     if 1 <= action_id < 436:
-        return f"AddLine (id={action_id})"
+        curr = action_id - 1
+        st_u, st_v = -1, -1
+        c = 0
+        for u in range(30):
+            for v in range(u + 1, 30):
+                if c == curr:
+                    st_u, st_v = u, v
+                    break
+                c += 1
+            if st_u != -1:
+                break
+        detail = ""
+        if obs_json and "nodes" in obs_json and st_u >= 0 and st_v >= 0:
+            nodes_arr = np.array(obs_json["nodes"], dtype=np.float32).reshape(MAX_NODES, NODE_DIM)
+            shapes = ["Circle", "Triangle", "Square", "Star", "Pentagon"]
+            sh_u = shapes[int(np.argmax(nodes_arr[st_u, 2:7]))]
+            sh_v = shapes[int(np.argmax(nodes_arr[st_v, 2:7]))]
+            detail = f": Station {st_u} [{sh_u}] <-> Station {st_v} [{sh_v}]"
+        return f"AddLine (id={action_id}{detail})"
     if 436 <= action_id < 856:
         idx = action_id - 436
         end = "Front" if (idx % 2 == 0) else "Back"
@@ -142,7 +201,15 @@ def describe_action(action_id: int) -> str:
     if 4020 <= action_id < 4050:
         return f"UpgradeInterchange (Station {action_id - 4020})"
     if 4050 <= action_id < 4052:
-        return f"ChooseRewardCard (Choice {action_id - 4050})"
+        choice_idx = action_id - 4050
+        card_desc = ""
+        if obs_json and "globals" in obs_json and len(obs_json["globals"]) >= 23:
+            offset = 13 if choice_idx == 0 else 18
+            c_type = int(np.argmax(obs_json["globals"][offset:offset+5]))
+            names = ["Line", "Train", "Tunnel", "Carriage", "Interchange"]
+            if 0 <= c_type < len(names):
+                card_desc = f": {names[c_type]}"
+        return f"ChooseRewardCard (Choice {choice_idx}{card_desc})"
     if 4052 <= action_id < 4059:
         return f"CloseLoop (Line {action_id - 4052})"
     if 4059 <= action_id < 4066:
@@ -154,8 +221,89 @@ def describe_action(action_id: int) -> str:
     return f"Action {action_id}"
 
 
+def find_best_add_line_action(obs_json: dict) -> tuple:
+    mask = obs_json["action_mask"]
+    legal_indices = np.where(mask[1:436])[0]
+    if len(legal_indices) == 0:
+        return 0, 0.0
+
+    nodes = np.array(obs_json["nodes"], dtype=np.float32).reshape(MAX_NODES, NODE_DIM)
+    
+    best_act = 0
+    best_score = -1e9
+    curr = 0
+    for u in range(30):
+        for v in range(u + 1, 30):
+            act_id = 1 + curr
+            curr += 1
+            if not mask[act_id]:
+                continue
+
+            u_pos = nodes[u, 0:2]
+            v_pos = nodes[v, 0:2]
+            dist = float(np.linalg.norm(u_pos - v_pos))
+            if dist < 0.01:
+                continue
+
+            u_shape = int(np.argmax(nodes[u, 2:7]))
+            v_shape = int(np.argmax(nodes[v, 2:7]))
+            u_deg = float(nodes[u, 23])
+            v_deg = float(nodes[v, 23])
+            u_prog = float(nodes[u, 22])
+            v_prog = float(nodes[v, 22])
+            u_fill = float(nodes[u, 25])
+            v_fill = float(nodes[v, 25])
+
+            # Only consider creating a line if at least one station is completely unserved (degree == 0)
+            # or in critical overcrowding danger
+            if u_deg > 0 and v_deg > 0 and u_prog < 0.3 and v_prog < 0.3:
+                continue
+
+            score = 0.0
+
+            # 1. Critical coverage: Unconnected stations (degree 0) get highest priority
+            if u_deg == 0:
+                score += 100.0
+            if v_deg == 0:
+                score += 100.0
+
+            # 2. Shape diversity: Direct connection between different shapes
+            if u_shape != v_shape:
+                score += 25.0
+                if u_shape in (2, 3, 4) or v_shape in (2, 3, 4):
+                    score += 15.0
+
+            # 3. Direct passenger demand satisfaction:
+            if 0 <= v_shape < 5:
+                score += float(nodes[u, 12 + v_shape]) * 6.0
+            if 0 <= u_shape < 5:
+                score += float(nodes[v, 12 + u_shape]) * 6.0
+
+            # 4. Overcrowding crisis relief: immediate emergency relief line
+            score += (u_prog + v_prog) * 40.0
+
+            # 5. Station queue pressure
+            score += (u_fill + v_fill) * 10.0
+
+            # 6. Distance penalty (prefer rapid-turnaround compact lines)
+            score -= dist * 25.0
+
+            if score > best_score:
+                best_score = score
+                best_act = act_id
+
+    return best_act, best_score
+
+
 def main():
-    if torch.cuda.is_available():
+    parser = argparse.ArgumentParser(description="Mini Metro Deep RL Agent")
+    parser.add_argument("--model", type=str, default=None, help="Path to specific model checkpoint")
+    parser.add_argument("--device", type=str, default=None, help="Compute device (cpu, cuda, mps, xpu)")
+    args = parser.parse_args()
+
+    if args.device:
+        device = torch.device(args.device)
+    elif torch.cuda.is_available():
         device = torch.device("cuda")
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         device = torch.device("mps")
@@ -164,7 +312,7 @@ def main():
     else:
         device = torch.device("cpu")
 
-    model, model_path = load_model(device)
+    model, model_path = load_model(device, model_override=args.model)
     model.eval()
 
     print("=" * 78)
@@ -198,19 +346,48 @@ def main():
                             continue
 
                         obs_json = resp.json()
-                        obs_tensor = obs_from_json(obs_json, device)
-                        with torch.no_grad():
-                            action, _, _, _, lstm_state = model.get_action_and_value(
-                                obs_tensor, lstm_state=lstm_state, mask=obs_tensor["action_mask"]
-                            )
-                        action_id = int(action.item())
+                        mask = obs_json["action_mask"]
+
+                        # If weekly reward choices are offered, prioritize New Line when expanding
+                        if mask[4050] or mask[4051]:
+                            globals_vec = obs_json.get("globals", [])
+                            c0_type = int(np.argmax(globals_vec[13:18])) if len(globals_vec) >= 18 else -1
+                            c1_type = int(np.argmax(globals_vec[18:23])) if len(globals_vec) >= 23 else -1
+                            # Strategic priority: Line(0)=10, Train(1)=9, Interchange(4)=7, Carriage(3)=5, Tunnel(2)=4
+                            prio = {0: 10, 1: 9, 4: 7, 3: 5, 2: 4}
+                            v0 = prio.get(c0_type, 0)
+                            v1 = prio.get(c1_type, 0)
+                            if mask[4050] and v0 >= v1:
+                                action_id = 4050
+                            elif mask[4051]:
+                                action_id = 4051
+                            else:
+                                action_id = 4050
+                        else:
+                            obs_tensor = obs_from_json(obs_json, device)
+                            with torch.no_grad():
+                                action, _, _, _, lstm_state = model.get_action_and_value(
+                                    obs_tensor, lstm_state=lstm_state, mask=obs_tensor["action_mask"]
+                                )
+                            action_id = int(action.item())
+
+                            # Proactively utilize extra lines ONLY when model chose NoOp (idling) and we have spare lines & trains
+                            if action_id == 0:
+                                globals_vec = obs_json.get("globals", [])
+                                unused_lines = globals_vec[0] if len(globals_vec) > 0 else 0
+                                unused_trains = globals_vec[1] if len(globals_vec) > 1 else 0
+
+                                if unused_lines > 0 and unused_trains > 0:
+                                    best_line_act, line_score = find_best_add_line_action(obs_json)
+                                    if best_line_act > 0 and line_score >= 60.0:
+                                        action_id = best_line_act
 
                         if action_id == 0:
                             continue  # No-Op — don't spam the server
 
                         payload = {"type": "action_by_id", "payload": {"action_id": action_id}}
                         websocket.send(json.dumps(payload))
-                        print(f"[AI] 🚀 Action dispatched: {describe_action(action_id)} (id={action_id})")
+                        print(f"[AI] 🚀 Action dispatched: {describe_action(action_id, obs_json)} (id={action_id})")
 
                     except Exception as e:
                         print(f"[AI] Error fetching obs or sending action: {e}")
