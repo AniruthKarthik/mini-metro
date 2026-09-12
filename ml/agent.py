@@ -31,34 +31,67 @@ MAX_EDGES  = 200
 ACTION_SPACE_SIZE = 4087  # PHASE-4: was 4108; AddCarriage 28→7 slots
 
 
-def load_model(device):
+def get_checkpoint_priority(path: str) -> tuple:
+    """Calculate priority for a checkpoint file so 256-dim trained models are always prioritized over 32-dim test models."""
+    try:
+        raw_data = torch.load(path, map_location="cpu", weights_only=False)
+        state_dict = raw_data["model_state_dict"] if isinstance(raw_data, dict) and "model_state_dict" in raw_data else raw_data
+        node_w = state_dict.get("gcn1.node_proj.weight", state_dict.get("gatv2_1.node_proj.weight", None))
+        hidden_dim = int(node_w.shape[0]) if node_w is not None else (32 if "local" in path else 256)
+    except Exception:
+        hidden_dim = 0
+
+    tier = 1
+    if "minimetro_ppo_finetuned" in path:
+        tier = 3
+    elif "minimetro_ppo" in path and "local" not in path:
+        tier = 2
+
+    is_final = 1 if "model_final.pt" in os.path.basename(path) else 0
+    mtime = os.path.getmtime(path)
+
+    return (hidden_dim, tier, is_final, mtime)
+
+
+def load_model(device, model_override=None):
     """Find and load the best available checkpoint. Returns (model, path_or_None)."""
-    search_dirs = [
-        "runs/minimetro_ppo_finetuned",
-        "runs/minimetro_ppo_local",
-        "runs/minimetro_ppo",
-        os.path.join(SCRIPT_DIR, "runs/minimetro_ppo_finetuned"),
-        os.path.join(SCRIPT_DIR, "runs/minimetro_ppo_local"),
-        os.path.join(SCRIPT_DIR, "runs/minimetro_ppo"),
-        os.path.join(REPO_ROOT, "runs/minimetro_ppo_finetuned"),
-        os.path.join(REPO_ROOT, "runs/minimetro_ppo_local"),
-        os.path.join(REPO_ROOT, "runs/minimetro_ppo"),
-    ]
-    all_files = []
-    seen = set()
-    for d in search_dirs:
-        for p in glob.glob(os.path.join(d, "model_*.pt")) + glob.glob(os.path.join(d, "checkpoint_*.pt")):
-            abs_p = os.path.abspath(p)
-            if abs_p not in seen and os.path.exists(abs_p):
-                seen.add(abs_p)
-                all_files.append(abs_p)
+    if model_override:
+        if not os.path.exists(model_override):
+            if os.path.exists(os.path.join(SCRIPT_DIR, model_override)):
+                model_path = os.path.abspath(os.path.join(SCRIPT_DIR, model_override))
+            elif os.path.exists(os.path.join(REPO_ROOT, model_override)):
+                model_path = os.path.abspath(os.path.join(REPO_ROOT, model_override))
+            else:
+                raise FileNotFoundError(f"Specified model checkpoint does not exist: {model_override}")
+        else:
+            model_path = os.path.abspath(model_override)
+    else:
+        search_dirs = [
+            "runs/minimetro_ppo_finetuned",
+            "runs/minimetro_ppo",
+            "runs/minimetro_ppo_local",
+            os.path.join(SCRIPT_DIR, "runs/minimetro_ppo_finetuned"),
+            os.path.join(SCRIPT_DIR, "runs/minimetro_ppo"),
+            os.path.join(SCRIPT_DIR, "runs/minimetro_ppo_local"),
+            os.path.join(REPO_ROOT, "runs/minimetro_ppo_finetuned"),
+            os.path.join(REPO_ROOT, "runs/minimetro_ppo"),
+            os.path.join(REPO_ROOT, "runs/minimetro_ppo_local"),
+        ]
+        all_files = []
+        seen = set()
+        for d in search_dirs:
+            for p in glob.glob(os.path.join(d, "model_*.pt")) + glob.glob(os.path.join(d, "checkpoint_*.pt")):
+                abs_p = os.path.abspath(p)
+                if abs_p not in seen and os.path.exists(abs_p):
+                    seen.add(abs_p)
+                    all_files.append(abs_p)
 
-    if not all_files:
-        print("[AI] No saved models found. Using random-initialized weights.")
-        return MiniMetroActorCritic(hidden_dim=256).to(device), None
+        if not all_files:
+            print("[AI] No saved models found. Using random-initialized weights.")
+            return MiniMetroActorCritic(hidden_dim=256).to(device), None
 
-    all_files.sort(key=os.path.getmtime)
-    model_path = all_files[-1]
+        all_files.sort(key=get_checkpoint_priority)
+        model_path = all_files[-1]
 
     raw_data = torch.load(model_path, map_location=device, weights_only=False)
     state_dict = raw_data["model_state_dict"] if isinstance(raw_data, dict) and "model_state_dict" in raw_data else raw_data
@@ -69,7 +102,7 @@ def load_model(device):
         hidden_dim = int(node_w.shape[0])
     else:
         hidden_dim = 32 if "minimetro_ppo_local" in model_path else 256
-    print(f"[AI] Loading latest model: {model_path} (hidden_dim={hidden_dim})")
+    print(f"[AI] Loading model: {model_path} (hidden_dim={hidden_dim})")
 
     model = MiniMetroActorCritic(hidden_dim=hidden_dim).to(device)
 
@@ -211,42 +244,44 @@ def find_best_add_line_action(obs_json: dict) -> tuple:
             v_shape = int(np.argmax(nodes[v, 2:7]))
             u_deg = float(nodes[u, 23])
             v_deg = float(nodes[v, 23])
-            u_pax = float(nodes[u, 24])
-            v_pax = float(nodes[v, 24])
             u_prog = float(nodes[u, 22])
             v_prog = float(nodes[v, 22])
+            u_fill = float(nodes[u, 25])
+            v_fill = float(nodes[v, 25])
+
+            # Only consider creating a line if at least one station is completely unserved (degree == 0)
+            # or in critical overcrowding danger
+            if u_deg > 0 and v_deg > 0 and u_prog < 0.3 and v_prog < 0.3:
+                continue
 
             score = 0.0
 
             # 1. Critical coverage: Unconnected stations (degree 0) get highest priority
             if u_deg == 0:
-                score += 90.0
+                score += 100.0
             if v_deg == 0:
-                score += 90.0
+                score += 100.0
 
             # 2. Shape diversity: Direct connection between different shapes
             if u_shape != v_shape:
                 score += 25.0
                 if u_shape in (2, 3, 4) or v_shape in (2, 3, 4):
-                    score += 20.0
+                    score += 15.0
 
             # 3. Direct passenger demand satisfaction:
             if 0 <= v_shape < 5:
-                score += float(nodes[u, 7 + v_shape]) * 8.0
+                score += float(nodes[u, 12 + v_shape]) * 6.0
             if 0 <= u_shape < 5:
-                score += float(nodes[v, 7 + u_shape]) * 8.0
+                score += float(nodes[v, 12 + u_shape]) * 6.0
 
             # 4. Overcrowding crisis relief: immediate emergency relief line
-            if u_prog > 0.1:
-                score += u_prog * 50.0
-            if v_prog > 0.1:
-                score += v_prog * 50.0
+            score += (u_prog + v_prog) * 40.0
 
             # 5. Station queue pressure
-            score += min(u_pax + v_pax, 12.0) * 2.5
+            score += (u_fill + v_fill) * 10.0
 
             # 6. Distance penalty (prefer rapid-turnaround compact lines)
-            score -= dist * 30.0
+            score -= dist * 25.0
 
             if score > best_score:
                 best_score = score
@@ -256,7 +291,14 @@ def find_best_add_line_action(obs_json: dict) -> tuple:
 
 
 def main():
-    if torch.cuda.is_available():
+    parser = argparse.ArgumentParser(description="Mini Metro Deep RL Agent")
+    parser.add_argument("--model", type=str, default=None, help="Path to specific model checkpoint")
+    parser.add_argument("--device", type=str, default=None, help="Compute device (cpu, cuda, mps, xpu)")
+    args = parser.parse_args()
+
+    if args.device:
+        device = torch.device(args.device)
+    elif torch.cuda.is_available():
         device = torch.device("cuda")
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         device = torch.device("mps")
@@ -265,7 +307,7 @@ def main():
     else:
         device = torch.device("cpu")
 
-    model, model_path = load_model(device)
+    model, model_path = load_model(device, model_override=args.model)
     model.eval()
 
     print("=" * 78)
@@ -324,16 +366,16 @@ def main():
                                 )
                             action_id = int(action.item())
 
-                            # Proactively utilize extra lines when available in inventory
-                            globals_vec = obs_json.get("globals", [])
-                            unused_lines = globals_vec[0] if len(globals_vec) > 0 else 0
-                            unused_trains = globals_vec[1] if len(globals_vec) > 1 else 0
+                            # Proactively utilize extra lines ONLY when model chose NoOp (idling) and we have spare lines & trains
+                            if action_id == 0:
+                                globals_vec = obs_json.get("globals", [])
+                                unused_lines = globals_vec[0] if len(globals_vec) > 0 else 0
+                                unused_trains = globals_vec[1] if len(globals_vec) > 1 else 0
 
-                            if unused_lines > 0 and unused_trains > 0:
-                                best_line_act, line_score = find_best_add_line_action(obs_json)
-                                # Deploy extra line if model chose NoOp, or if candidate provides high transit value
-                                if (action_id == 0 and best_line_act > 0) or (line_score >= 15.0 and best_line_act > 0):
-                                    action_id = best_line_act
+                                if unused_lines > 0 and unused_trains > 0:
+                                    best_line_act, line_score = find_best_add_line_action(obs_json)
+                                    if best_line_act > 0 and line_score >= 60.0:
+                                        action_id = best_line_act
 
                         if action_id == 0:
                             continue  # No-Op — don't spam the server

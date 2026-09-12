@@ -63,19 +63,30 @@ func TestCityMapPresets(t *testing.T) {
 	if len(simBerlin.State.Stations) != 3 {
 		t.Fatalf("expected 3 initial stations for Berlin, got %d", len(simBerlin.State.Stations))
 	}
-	if simBerlin.State.Stations[0].Kind != engine.Circle || simBerlin.State.Stations[0].Pos != (engine.Pos{X: 20, Y: 25}) {
-		t.Errorf("station 0 mismatch in Berlin: %+v", simBerlin.State.Stations[0])
+	// Verify that initial stations strictly preserve canonical kinds in order:
+	if simBerlin.State.Stations[0].Kind != engine.Circle {
+		t.Errorf("expected station 0 to be Circle, got %v", simBerlin.State.Stations[0].Kind)
 	}
-	if simBerlin.State.Stations[1].Kind != engine.Triangle || simBerlin.State.Stations[1].Pos != (engine.Pos{X: 50, Y: 60}) {
-		t.Errorf("station 1 mismatch in Berlin: %+v", simBerlin.State.Stations[1])
+	if simBerlin.State.Stations[1].Kind != engine.Triangle {
+		t.Errorf("expected station 1 to be Triangle, got %v", simBerlin.State.Stations[1].Kind)
 	}
-	if simBerlin.State.Stations[2].Kind != engine.Square || simBerlin.State.Stations[2].Pos != (engine.Pos{X: 80, Y: 25}) {
-		t.Errorf("station 2 mismatch in Berlin: %+v", simBerlin.State.Stations[2])
+	if simBerlin.State.Stations[2].Kind != engine.Square {
+		t.Errorf("expected station 2 to be Square, got %v", simBerlin.State.Stations[2].Kind)
+	}
+
+	// Verify that different seeds produce different randomized station positions
+	sim1 := engine.NewSimulatorWithMap(engine.BerlinMap(), 101)
+	sim2 := engine.NewSimulatorWithMap(engine.BerlinMap(), 202)
+	if sim1.State.Stations[0].Pos == sim2.State.Stations[0].Pos && sim1.State.Stations[1].Pos == sim2.State.Stations[1].Pos {
+		t.Errorf("expected different seeds to produce different randomized initial station positions")
 	}
 }
 
 func TestLondonMapThamesCrossing(t *testing.T) {
 	simLondon := engine.NewSimulatorWithMap(engine.LondonMap())
+	// Place stations 0 and 1 on opposite sides of Thames to test crossing tunnel consumption
+	simLondon.State.Stations[0].Pos = engine.Pos{X: 20, Y: 25}
+	simLondon.State.Stations[1].Pos = engine.Pos{X: 50, Y: 60}
 
 	// Add line connecting station 0 (20,25) to station 1 (50,60) which crosses Thames
 	err := simLondon.ApplyAction(engine.AddLine{Stations: []int{0, 1}})
@@ -89,6 +100,8 @@ func TestLondonMapThamesCrossing(t *testing.T) {
 
 func TestBerlinMapNoTunnelsRequired(t *testing.T) {
 	simBerlin := engine.NewSimulatorWithMap(engine.BerlinMap())
+	simBerlin.State.Stations[0].Pos = engine.Pos{X: 20, Y: 25}
+	simBerlin.State.Stations[1].Pos = engine.Pos{X: 50, Y: 60}
 
 	// In London, connecting station 0 (20,25) to station 1 (50,60) requires a tunnel.
 	// In Berlin, there is no water, so it must succeed with 0 tunnels in the resource pool.

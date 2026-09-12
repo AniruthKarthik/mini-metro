@@ -5,13 +5,14 @@ import (
 )
 
 type MapConfig struct {
-	Name             string
-	MaxLines         int
-	MaxTrainsPerLine int
-	InitialResources ResourcePool
-	Rivers           []RiverSegment
-	WaterPolygons    []WaterPolygon
-	InitialStations  []Station
+	Name                     string
+	MaxLines                 int
+	MaxTrainsPerLine         int
+	InitialResources         ResourcePool
+	Rivers                   []RiverSegment
+	WaterPolygons            []WaterPolygon
+	InitialStations          []Station
+	RandomizeInitialStations bool
 }
 
 // LondonMap returns a MapConfig for London with the River Thames.
@@ -37,6 +38,7 @@ func LondonMap() MapConfig {
 			{ID: 1, Kind: Triangle, Pos: Pos{X: 50, Y: 60}},
 			{ID: 2, Kind: Square, Pos: Pos{X: 80, Y: 25}},
 		},
+		RandomizeInitialStations: true,
 	}
 }
 
@@ -69,6 +71,7 @@ func NYCMap() MapConfig {
 			{ID: 1, Kind: Triangle, Pos: Pos{X: 48, Y: 50}}, // Manhattan
 			{ID: 2, Kind: Square, Pos: Pos{X: 80, Y: 50}},   // Brooklyn/Queens
 		},
+		RandomizeInitialStations: true,
 	}
 }
 
@@ -99,11 +102,12 @@ func TokyoMap() MapConfig {
 			{ID: 1, Kind: Triangle, Pos: Pos{X: 70, Y: 70}}, // Ueno/Asakusa
 			{ID: 2, Kind: Square, Pos: Pos{X: 40, Y: 20}},   // Shinagawa/Tokyo
 		},
+		RandomizeInitialStations: true,
 	}
 }
 
 // BerlinMap returns a MapConfig for Berlin with no water bodies and no tunnels.
-// Station positions and initial lines match London, but with an open plain layout.
+// Station positions are randomized across the open plain layout.
 func BerlinMap() MapConfig {
 	return MapConfig{
 		Name:             "Berlin",
@@ -120,7 +124,66 @@ func BerlinMap() MapConfig {
 			{ID: 1, Kind: Triangle, Pos: Pos{X: 50, Y: 60}},
 			{ID: 2, Kind: Square, Pos: Pos{X: 80, Y: 25}},
 		},
+		RandomizeInitialStations: true,
 	}
+}
+
+// RandomizeInitialStations randomizes the positions of the initial starter stations
+// while strictly preserving each station's original Kind and ID (Station 0: Circle,
+// Station 1: Triangle, Station 2: Square). Placed positions avoid water bodies and
+// maintain minimum spacing between each other.
+func (s *Simulator) RandomizeInitialStations() {
+	if len(s.State.Stations) == 0 {
+		// Fallback: create the canonical 3 starter stations
+		s.State.Stations = []Station{
+			{ID: 0, Kind: Circle, Capacity: defaultStationCapacity, Alive: true, OvercrowdingTimer: -1},
+			{ID: 1, Kind: Triangle, Capacity: defaultStationCapacity, Alive: true, OvercrowdingTimer: -1},
+			{ID: 2, Kind: Square, Capacity: defaultStationCapacity, Alive: true, OvercrowdingTimer: -1},
+		}
+	}
+
+	placed := make([]Pos, 0, len(s.State.Stations))
+	const minDist = 18.0
+
+	for i := range s.State.Stations {
+		var spawnPos Pos
+		found := false
+
+		for attempt := 0; attempt < 200; attempt++ {
+			cand := Pos{
+				X: 18.0 + s.RNG().Float64()*64.0,
+				Y: 18.0 + s.RNG().Float64()*64.0,
+			}
+
+			if PosInWater(cand, s.State.Rivers, s.State.WaterPolygons, 4.0) {
+				continue
+			}
+
+			tooClose := false
+			for _, pos := range placed {
+				if distance(cand, pos) < minDist {
+					tooClose = true
+					break
+				}
+			}
+
+			if !tooClose {
+				spawnPos = cand
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			// Fallback with fixed spacing if tight space
+			spawnPos = Pos{X: 20.0 + float64(i)*25.0, Y: 30.0 + float64(i%2)*30.0}
+		}
+
+		s.State.Stations[i].Pos = spawnPos
+		placed = append(placed, spawnPos)
+	}
+
+	s.rebuildGraphIfNeeded()
 }
 
 // NewSimulatorWithMap creates a Simulator configured for a specific MapConfig.
@@ -158,6 +221,11 @@ func NewSimulatorWithMap(cfg MapConfig, seed ...uint64) *Simulator {
 	if sim.State.MaxTrainsPerLine <= 0 {
 		sim.State.MaxTrainsPerLine = 4
 	}
+
+	if cfg.RandomizeInitialStations || len(cfg.InitialStations) == 0 {
+		sim.RandomizeInitialStations()
+	}
+
 	sim.State.Scheduler.Schedule(rewardInterval(), EventReward)
 	sim.State.Scheduler.Schedule(initialSpawnInterval(), EventSpawnStation)
 	return sim

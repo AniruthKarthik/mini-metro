@@ -337,12 +337,13 @@ func (s *Server) handleServerCommand(cmd string) {
 			cfg = engine.LondonMap()
 		}
 		// BUG-11 fix: store new sim atomically so gameLoop always sees a consistent pointer.
-		s.simPtr.Store(engine.NewSimulatorWithMap(cfg))
+		seed := uint64(time.Now().UnixNano())
+		s.simPtr.Store(engine.NewSimulatorWithMap(cfg, seed))
 		s.paused = false
 		for len(s.actionCh) > 0 {
 			<-s.actionCh
 		}
-		log.Printf("🔄 Simulation restarted cleanly with %s map", cfg.Name)
+		log.Printf("🔄 Simulation restarted cleanly with %s map (randomized initial stations)", cfg.Name)
 	case strings.HasPrefix(cmd, "select_map:"):
 		payload := strings.TrimPrefix(cmd, "select_map:")
 		var p struct {
@@ -364,12 +365,13 @@ func (s *Server) handleServerCommand(cmd string) {
 			cfg = engine.LondonMap()
 		}
 		// BUG-11 fix: atomic store.
-		s.simPtr.Store(engine.NewSimulatorWithMap(cfg))
+		seed := uint64(time.Now().UnixNano())
+		s.simPtr.Store(engine.NewSimulatorWithMap(cfg, seed))
 		s.paused = false
 		for len(s.actionCh) > 0 {
 			<-s.actionCh
 		}
-		log.Printf("🗺️ Simulation started with map: %s", cfg.Name)
+		log.Printf("🗺️ Simulation started with map: %s (randomized initial stations)", cfg.Name)
 	case strings.HasPrefix(cmd, "set_speed:"):
 		// payload is a raw JSON object {"tps":60}
 		payload := strings.TrimPrefix(cmd, "set_speed:")
