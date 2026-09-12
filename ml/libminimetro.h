@@ -90,9 +90,17 @@ extern "C" {
 
 extern uintptr_t CreateSimulator(int mapID, uint64_t seed);
 extern void FreeSimulator(uintptr_t handle);
+extern uintptr_t CloneSimulator(uintptr_t handle);
 extern void Step(uintptr_t handle, int actionID, float duration, float* outReward, uint8_t* outDone);
+extern void StepWithBreakdown(uintptr_t handle, int actionID, float duration, float* outReward, uint8_t* outDone, float* outBreakdown);
+extern void SetScoringConfig(uintptr_t handle, float alphaCrowd, float betaGameOver, float connectivityBonus, float trackEfficiency, uint8_t linearCrowd);
+extern float GetTotalTrackLength(uintptr_t handle);
 extern void GetObservation(uintptr_t handle, float* outNodes, int32_t* outEdges, float* outEdgeAttrs, float* outGlobals, int32_t* outNumNodes, int32_t* outNumEdges);
 extern void GetActionMask(uintptr_t handle, uint8_t* outMask);
+extern void SetPendingReward(uintptr_t handle, int c0, int c1);
+extern int ReverseLine(uintptr_t handle, int lineID);
+extern void SetStationSpawnWeights(uintptr_t handle, int circleW, int triangleW, int squareW, int starW, int pentagonW);
+extern void ResetStationSpawnWeights(uintptr_t handle);
 
 #ifdef __cplusplus
 }

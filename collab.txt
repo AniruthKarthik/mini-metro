@@ -1,12 +1,11 @@
-
-
-!git clone -b fixes https://github.com/AniruthKarthik/mini-metro.git && \
+!git clone -b collab https://github.com/AniruthKarthik/mini-metro.git && \
 cd mini-metro && \
-git checkout fixes && \
 wget -c https://go.dev/dl/go1.21.0.linux-amd64.tar.gz && \
 rm -rf /usr/local/go && tar -C /usr/local -xzf go1.21.0.linux-amd64.tar.gz && \
 export PATH=$PATH:/usr/local/go/bin && \
 cd ml && bash build_lib.sh && cd .. && \
 pip install -r ml/requirements.txt && \
 export PYTHONUNBUFFERED=1 && \
+export NUM_ENVS=32 && \
+export NUM_STEPS=128 && \
 python -u ml/train.py

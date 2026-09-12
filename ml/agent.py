@@ -1,3 +1,13 @@
+import sys
+import os
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
 import torch
 try:
     import intel_extension_for_pytorch as ipex
@@ -7,14 +17,15 @@ import json
 import requests
 import time
 import glob
-import os
+import argparse
+import numpy as np
 from websockets.sync.client import connect
 from model import MiniMetroActorCritic
 
 # Observation dims — must match simulator/engine/observation.go constants
 NODE_DIM   = 32   # PHASE-5: was 29
 EDGE_DIM   = 10
-GLOBAL_DIM = 13   # PHASE-2: was 8
+GLOBAL_DIM = 23   # was 13; +two 5-dim one-hot reward card encodings
 MAX_NODES  = 30
 MAX_EDGES  = 200
 ACTION_SPACE_SIZE = 4087  # PHASE-4: was 4108; AddCarriage 28→7 slots
@@ -22,11 +33,22 @@ ACTION_SPACE_SIZE = 4087  # PHASE-4: was 4108; AddCarriage 28→7 slots
 
 def load_model(device):
     """Find and load the best available checkpoint. Returns (model, path_or_None)."""
-    local_files   = glob.glob("runs/minimetro_ppo_local/model_*.pt") + \
-                    glob.glob("runs/minimetro_ppo_local/checkpoint_*.pt")
-    default_files = glob.glob("runs/minimetro_ppo/model_*.pt") + \
-                    glob.glob("runs/minimetro_ppo/checkpoint_*.pt")
-    all_files = local_files + default_files
+    search_dirs = [
+        "runs/minimetro_ppo_local",
+        "runs/minimetro_ppo",
+        os.path.join(SCRIPT_DIR, "runs/minimetro_ppo_local"),
+        os.path.join(SCRIPT_DIR, "runs/minimetro_ppo"),
+        os.path.join(REPO_ROOT, "runs/minimetro_ppo_local"),
+        os.path.join(REPO_ROOT, "runs/minimetro_ppo"),
+    ]
+    all_files = []
+    seen = set()
+    for d in search_dirs:
+        for p in glob.glob(os.path.join(d, "model_*.pt")) + glob.glob(os.path.join(d, "checkpoint_*.pt")):
+            abs_p = os.path.abspath(p)
+            if abs_p not in seen and os.path.exists(abs_p):
+                seen.add(abs_p)
+                all_files.append(abs_p)
 
     if not all_files:
         print("[AI] No saved models found. Using random-initialized weights.")
@@ -35,16 +57,20 @@ def load_model(device):
     all_files.sort(key=os.path.getmtime)
     model_path = all_files[-1]
 
-    # Infer hidden_dim from which training script produced the checkpoint.
-    hidden_dim = 32 if "minimetro_ppo_local" in model_path else 256
+    raw_data = torch.load(model_path, map_location=device, weights_only=False)
+    state_dict = raw_data["model_state_dict"] if isinstance(raw_data, dict) and "model_state_dict" in raw_data else raw_data
+
+    # Introspect hidden_dim directly from projection weight dimensions
+    node_w = state_dict.get("gcn1.node_proj.weight", state_dict.get("gatv2_1.node_proj.weight", None))
+    if node_w is not None:
+        hidden_dim = int(node_w.shape[0])
+    else:
+        hidden_dim = 32 if "minimetro_ppo_local" in model_path else 256
     print(f"[AI] Loading latest model: {model_path} (hidden_dim={hidden_dim})")
 
     model = MiniMetroActorCritic(hidden_dim=hidden_dim).to(device)
 
-    # PHASE-2/3 fix: gracefully handle incompatible checkpoints (wrong obs dims or
-    # missing layers from old architecture) so `make game` never hard-crashes.
-    # strict=False handles missing/extra keys; the try/except handles size mismatches.
-    state_dict = torch.load(model_path, map_location=device, weights_only=True)
+    # Gracefully handle missing/extra keys
     try:
         missing, unexpected = model.load_state_dict(state_dict, strict=False)
         if missing or unexpected:
@@ -92,6 +118,42 @@ def obs_from_json(obs_json, device):
     }
 
 
+def describe_action(action_id: int) -> str:
+    if action_id == 0:
+        return "NoOp"
+    if 1 <= action_id < 436:
+        return f"AddLine (id={action_id})"
+    if 436 <= action_id < 856:
+        idx = action_id - 436
+        end = "Front" if (idx % 2 == 0) else "Back"
+        st = (idx // 2) % 30
+        line = (idx // 2) // 30
+        return f"ExtendLine {end} (Line {line} -> Station {st})"
+    if 856 <= action_id < 4006:
+        idx = action_id - 856
+        seg = (idx % 15) + 1
+        st = (idx // 15) % 30
+        line = (idx // 15) // 30
+        return f"InsertStation (Line {line}, Station {st}, Segment {seg})"
+    if 4006 <= action_id < 4013:
+        return f"AddTrain (Line {action_id - 4006})"
+    if 4013 <= action_id < 4020:
+        return f"AddCarriage (Line {action_id - 4013})"
+    if 4020 <= action_id < 4050:
+        return f"UpgradeInterchange (Station {action_id - 4020})"
+    if 4050 <= action_id < 4052:
+        return f"ChooseRewardCard (Choice {action_id - 4050})"
+    if 4052 <= action_id < 4059:
+        return f"CloseLoop (Line {action_id - 4052})"
+    if 4059 <= action_id < 4066:
+        return f"OpenLoop (Line {action_id - 4059})"
+    if 4066 <= action_id < 4073:
+        return f"RemoveLine (Line {action_id - 4066})"
+    if 4073 <= action_id < 4087:
+        return f"ShortenLine (Action {action_id})"
+    return f"Action {action_id}"
+
+
 def main():
     if torch.cuda.is_available():
         device = torch.device("cuda")
@@ -101,10 +163,16 @@ def main():
         device = torch.device("xpu")
     else:
         device = torch.device("cpu")
-    print(f"[AI] Using device: {device}")
 
-    model, _ = load_model(device)
+    model, model_path = load_model(device)
     model.eval()
+
+    print("=" * 78)
+    print("🚇 MINI METRO: DEEP REINFORCEMENT LEARNING (RL) AGENT MODE")
+    print("🧠 Model Policy: Graph Attention Network (PPO Actor-Critic)")
+    print(f"📁 Checkpoint: {model_path}")
+    print(f"⚙️  Compute Engine: {device}")
+    print("=" * 78)
 
     print("[AI] Connecting to Mini Metro WebSocket server...")
     while True:
@@ -118,15 +186,9 @@ def main():
                     if not data.get("ai_enabled"):
                         continue
                     if data.get("paused") or not data.get("alive"):
-                        lstm_state = None # Reset state on game over
+                        lstm_state = None  # Reset state on game over
                         continue
 
-                    # Match training frequency: 1 action per in-game second (30 ticks)
-                    # wait, with dynamic frame skipping, training agent ticks every 4 seconds
-                    # but wait! env.step() ticks 4 times. 
-                    # For agent.py, we only get obs every 30 ticks (1 sec). 
-                    # If we tick every 4 seconds, we should change 30 to 120 ticks.
-                    # Let's use 120 ticks (4 seconds) to match training!
                     if data.get("tick", 0) % 120 != 0:
                         continue
 
@@ -135,19 +197,20 @@ def main():
                         if resp.status_code != 200:
                             continue
 
-                        obs_tensor = obs_from_json(resp.json(), device)
-
+                        obs_json = resp.json()
+                        obs_tensor = obs_from_json(obs_json, device)
                         with torch.no_grad():
                             action, _, _, _, lstm_state = model.get_action_and_value(
                                 obs_tensor, lstm_state=lstm_state, mask=obs_tensor["action_mask"]
                             )
+                        action_id = int(action.item())
 
-                        action_id = action.item()
                         if action_id == 0:
                             continue  # No-Op — don't spam the server
 
                         payload = {"type": "action_by_id", "payload": {"action_id": action_id}}
                         websocket.send(json.dumps(payload))
+                        print(f"[AI] 🚀 Action dispatched: {describe_action(action_id)} (id={action_id})")
 
                     except Exception as e:
                         print(f"[AI] Error fetching obs or sending action: {e}")

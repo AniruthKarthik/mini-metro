@@ -17,5 +17,6 @@ type GameState struct {
 	Tick                 uint64
 	GameTimeSeconds      float64
 	Alive                bool
-	MaxTrainsPerLine     int // max trains allowed per line (default 4)
+	MaxTrainsPerLine     int                 // max trains allowed per line (default 4)
+	StationWeights       map[StationKind]int // custom station spawn weights; if nil, uses default stationWeights
 }

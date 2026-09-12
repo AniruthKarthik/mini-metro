@@ -281,13 +281,16 @@ func FindOptimalRoute(g *NetworkGraph, state *GameState, fromID int, destKind St
 					dwell = dwellTime
 				}
 
-				// Wait penalty for embarking or transferring lines / directions
-				waitPenalty := 0.0
-				if cur.lineID == -1 || cur.lineID != lineID || cur.direction != dir {
-					waitPenalty = expectedTrainWaitTime(state, cur.stationID, lineID, dir)
+				// Transfer cost: in authentic Mini Metro, passenger routing prioritizes
+				// topological transfer depth first (0 transfers > 1 transfer > 2 transfers).
+				transferPenalty := 0.0
+				if cur.lineID != -1 && cur.lineID != lineID {
+					transferPenalty = 1000.0 // large penalty for changing lines
+				} else if cur.lineID != -1 && cur.lineID == lineID && cur.direction != dir {
+					transferPenalty = 500.0 // penalty for reversing direction on the same line
 				}
 
-				stepCost := rideTime + dwell + waitPenalty
+				stepCost := rideTime + dwell + transferPenalty
 				newG := cur.g + stepCost
 				nbKey := stateKey{nb, lineID, dir}
 
@@ -366,3 +369,153 @@ func FindRoute(g *NetworkGraph, state *GameState, fromID int, destKind StationKi
 func CanReach(g *NetworkGraph, state *GameState, fromID int, destKind StationKind) bool {
 	return FindOptimalRoute(g, state, fromID, destKind).Reachable
 }
+
+// CanTrainServeDestination checks whether boarding a train (on lineID moving in direction) at
+// stationID provides a direct or optimal-transfer route to destKind.
+// This prevents tie-breaker starvation at multi-line transfer hubs, where passengers previously
+// refused to board valid empty trains because another line was marginally shorter.
+func (s *Simulator) CanTrainServeDestination(stationID, lineID, direction int, destKind StationKind) bool {
+	if lineID < 0 || lineID >= len(s.State.Lines) || s.State.Lines[lineID].Removed {
+		return false
+	}
+	line := &s.State.Lines[lineID]
+	stIdx := lineStationIndex(line, stationID)
+	if stIdx < 0 {
+		return false
+	}
+
+	N := len(line.Stations)
+	if N < 2 {
+		return false
+	}
+
+	// 1. Direct hit check (0 transfers):
+	// If destKind is directly reachable on this line in the train's traveling direction,
+	// boarding this train is ALWAYS optimal (0 transfers).
+	if line.IsLoop {
+		for _, sid := range line.Stations {
+			if sid != stationID && sid >= 0 && sid < len(s.State.Stations) && s.State.Stations[sid].Alive {
+				if s.State.Stations[sid].Kind == destKind {
+					return true
+				}
+			}
+		}
+	} else {
+		effDir := direction
+		if stIdx == 0 {
+			effDir = 1
+		} else if stIdx == N-1 {
+			effDir = -1
+		}
+
+		if effDir >= 0 {
+			for i := stIdx + 1; i < N; i++ {
+				sid := line.Stations[i]
+				if sid >= 0 && sid < len(s.State.Stations) && s.State.Stations[sid].Alive {
+					if s.State.Stations[sid].Kind == destKind {
+						return true
+					}
+				}
+			}
+		}
+		if effDir <= 0 {
+			for i := stIdx - 1; i >= 0; i-- {
+				sid := line.Stations[i]
+				if sid >= 0 && sid < len(s.State.Stations) && s.State.Stations[sid].Alive {
+					if s.State.Stations[sid].Kind == destKind {
+						return true
+					}
+				}
+			}
+		}
+	}
+
+	// 2. Direct route priority:
+	// If destKind is directly reachable on ANY other active line passing through stationID,
+	// the passenger should wait for that direct 0-transfer line rather than boarding a transfer route.
+	for lID := range s.State.Lines {
+		otherLine := &s.State.Lines[lID]
+		if otherLine.Removed || lineStationIndex(otherLine, stationID) < 0 {
+			continue
+		}
+		for _, sid := range otherLine.Stations {
+			if sid != stationID && sid >= 0 && sid < len(s.State.Stations) && s.State.Stations[sid].Alive {
+				if s.State.Stations[sid].Kind == destKind {
+					return false
+				}
+			}
+		}
+	}
+
+	// 3. Optimal transfer check:
+	// Check if this train matches the primary optimal route or offers an equal minimal-transfer path.
+	route := FindOptimalRoute(&s.State.Graph, &s.State, stationID, destKind)
+	if !route.Reachable {
+		return false
+	}
+	if route.NextLineID == lineID && (route.NextDirection == 0 || route.NextDirection == direction) {
+		return true
+	}
+
+	// If the optimal route requires transfers, check if taking this train reaches a transfer hub
+	// where another line directly serves destKind (1-transfer route).
+	if route.Transfers >= 1 {
+		effDir := direction
+		if !line.IsLoop {
+			if stIdx == 0 {
+				effDir = 1
+			} else if stIdx == N-1 {
+				effDir = -1
+			}
+		}
+
+		checkStation := func(hubID int) bool {
+			if hubID == stationID || hubID < 0 || hubID >= len(s.State.Stations) || !s.State.Stations[hubID].Alive {
+				return false
+			}
+			for _, connectingLineID := range s.State.Graph.Neighbours(hubID) {
+				_ = connectingLineID
+			}
+			for lID := range s.State.Lines {
+				connLine := &s.State.Lines[lID]
+				if connLine.Removed || lID == lineID || lineStationIndex(connLine, hubID) < 0 {
+					continue
+				}
+				for _, targetID := range connLine.Stations {
+					if targetID >= 0 && targetID < len(s.State.Stations) && s.State.Stations[targetID].Alive {
+						if s.State.Stations[targetID].Kind == destKind {
+							return true
+						}
+					}
+				}
+			}
+			return false
+		}
+
+		if line.IsLoop {
+			for _, sid := range line.Stations {
+				if checkStation(sid) {
+					return true
+				}
+			}
+		} else {
+			if effDir >= 0 {
+				for i := stIdx + 1; i < N; i++ {
+					if checkStation(line.Stations[i]) {
+						return true
+					}
+				}
+			}
+			if effDir <= 0 {
+				for i := stIdx - 1; i >= 0; i-- {
+					if checkStation(line.Stations[i]) {
+						return true
+					}
+				}
+			}
+		}
+	}
+
+	return false
+}
+

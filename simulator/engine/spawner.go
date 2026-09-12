@@ -23,16 +23,37 @@ var stationWeights = map[StationKind]int{
 	Oval:     1,
 }
 
-// weightedRandomKind returns a StationKind sampled proportionally to stationWeights.
-func weightedRandomKind(rng *rand.Rand) StationKind {
+// SetStationSpawnWeights configures custom station spawn weights on the simulator instance.
+func (s *Simulator) SetStationSpawnWeights(weights map[StationKind]int) {
+	s.State.StationWeights = weights
+}
+
+// ResetStationSpawnWeights clears custom weights, reverting to default stationWeights.
+func (s *Simulator) ResetStationSpawnWeights() {
+	s.State.StationWeights = nil
+}
+
+// weightedRandomKind returns a StationKind sampled proportionally to stationWeights or custom weights.
+func (s *Simulator) weightedRandomKind(rng *rand.Rand) StationKind {
+	weights := s.State.StationWeights
+	if weights == nil {
+		weights = stationWeights
+	}
 	total := 0
-	for _, w := range stationWeights {
+	for _, w := range weights {
 		total += w
+	}
+	if total <= 0 {
+		return Circle
 	}
 	r := rng.Intn(total)
 	allKinds := []StationKind{Circle, Triangle, Square, Star, Pentagon, Gem, Sector, Cross, Drop, Oval}
 	for _, kind := range allKinds {
-		r -= stationWeights[kind]
+		w, ok := weights[kind]
+		if !ok {
+			continue
+		}
+		r -= w
 		if r < 0 {
 			return kind
 		}
@@ -79,7 +100,7 @@ func (s *Simulator) spawnStation() {
 
 	s.State.Stations = append(s.State.Stations, Station{
 		ID:                id,
-		Kind:              weightedRandomKind(s.RNG()),
+		Kind:              s.weightedRandomKind(s.RNG()),
 		Pos:               spawnPos,
 		Capacity:          defaultStationCapacity,
 		Alive:             true,

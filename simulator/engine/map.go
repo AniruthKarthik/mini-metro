@@ -131,7 +131,8 @@ func NewSimulatorWithMap(cfg MapConfig, seed ...uint64) *Simulator {
 			Alive:            true,
 			MaxTrainsPerLine: cfg.MaxTrainsPerLine,
 		},
-		rng: rand.New(rand.NewSource(int64(sSeed))),
+		rng:           rand.New(rand.NewSource(int64(sSeed))),
+		ScoringConfig: DefaultScoringConfig(),
 	}
 	if sim.State.MaxTrainsPerLine <= 0 {
 		sim.State.MaxTrainsPerLine = 4

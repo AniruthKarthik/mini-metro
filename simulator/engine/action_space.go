@@ -173,9 +173,6 @@ func (s *Simulator) GetActionMask(outMask []bool) []bool {
 		return outMask
 	}
 
-	// Action 0: NoOp is always valid
-	outMask[ActionNoOp] = true
-
 	// If pending reward choices exist, only ChooseReward actions are valid
 	if len(s.State.PendingRewardChoices) > 0 {
 		for cIdx := 0; cIdx < ChooseRewardCount; cIdx++ {
@@ -186,6 +183,9 @@ func (s *Simulator) GetActionMask(outMask []bool) []bool {
 		return outMask
 	}
 
+	// Action 0: NoOp is always valid
+	outMask[ActionNoOp] = true
+
 	N := len(s.State.Stations)
 
 	// 1. AddLine
@@ -194,10 +194,34 @@ func (s *Simulator) GetActionMask(outMask []bool) []bool {
 		for u := 0; u < MaxStations; u++ {
 			for v := u + 1; v < MaxStations; v++ {
 				if u < N && v < N && s.State.Stations[u].Alive && s.State.Stations[v].Alive {
+					// Check if any active line already directly connects station u and station v
+					alreadyDirect := false
+					for _, line := range s.State.Lines {
+						if line.Removed || len(line.Stations) < 2 {
+							continue
+						}
+						stList := line.Stations
+						for i := 0; i+1 < len(stList); i++ {
+							if (stList[i] == u && stList[i+1] == v) || (stList[i] == v && stList[i+1] == u) {
+								alreadyDirect = true
+								break
+							}
+						}
+						if !alreadyDirect && line.IsLoop && len(stList) >= 3 {
+							if (stList[0] == u && stList[len(stList)-1] == v) || (stList[0] == v && stList[len(stList)-1] == u) {
+								alreadyDirect = true
+								break
+							}
+						}
+						if alreadyDirect {
+							break
+						}
+					}
+
 					uPos := s.State.Stations[u].Pos
 					vPos := s.State.Stations[v].Pos
 					needsTunnel := CrossesWater(uPos, vPos, s.State.Rivers, s.State.WaterPolygons)
-					if !needsTunnel || s.State.Resources.CanSpend(RewardTunnel) {
+					if !alreadyDirect && (!needsTunnel || s.State.Resources.CanSpend(RewardTunnel)) {
 						outMask[AddLineOffset+currIdx] = true
 					}
 				}
@@ -207,7 +231,7 @@ func (s *Simulator) GetActionMask(outMask []bool) []bool {
 	}
 
 	// 2. ExtendLine
-	for lID := 0; lID < len(s.State.Lines); lID++ {
+	for lID := 0; lID < len(s.State.Lines) && lID < MaxLines; lID++ {
 		line := &s.State.Lines[lID]
 		if line.Removed || len(line.Stations) == 0 {
 			continue
@@ -253,7 +277,7 @@ func (s *Simulator) GetActionMask(outMask []bool) []bool {
 	}
 
 	// 2b. InsertStation
-	for lID := 0; lID < len(s.State.Lines); lID++ {
+	for lID := 0; lID < len(s.State.Lines) && lID < MaxLines; lID++ {
 		line := &s.State.Lines[lID]
 		if line.Removed || len(line.Stations) < 2 {
 			continue
@@ -300,7 +324,7 @@ func (s *Simulator) GetActionMask(outMask []bool) []bool {
 					netTunnels--
 				}
 
-				if netTunnels <= 0 || s.State.Resources.CanSpend(RewardTunnel) {
+				if netTunnels <= 0 || s.State.Resources.Tunnels >= netTunnels {
 					idx := (lID*MaxStations+stID)*15 + (segIdx - 1)
 					if idx < InsertStationCount {
 						outMask[InsertStationOffset+idx] = true
@@ -312,7 +336,7 @@ func (s *Simulator) GetActionMask(outMask []bool) []bool {
 
 	// 3. AddTrain
 	if s.State.Resources.CanSpend(RewardTrain) {
-		for lID := 0; lID < len(s.State.Lines); lID++ {
+		for lID := 0; lID < len(s.State.Lines) && lID < MaxLines; lID++ {
 			line := &s.State.Lines[lID]
 			if line.Removed || len(line.Stations) < 2 {
 				continue
@@ -361,36 +385,46 @@ func (s *Simulator) GetActionMask(outMask []bool) []bool {
 	}
 
 	// 6. CloseLoop / OpenLoop / RemoveLine / ShortenLine
-	for lID := 0; lID < len(s.State.Lines); lID++ {
+	const LoopToggleCooldownTicks = 900 // P1-4: 30 seconds at 30 Hz
+
+	for lID := 0; lID < len(s.State.Lines) && lID < MaxLines; lID++ {
 		line := &s.State.Lines[lID]
 		if line.Removed {
 			continue
 		}
 
-		// BUG-10 fix: closeLoop() in simulator.go rejects lines with fewer than 3 stations.
-		// The mask previously enabled CloseLoop for >= 2 stations, which would always
-		// produce an engine error — breaking the mask contract for RL agents / API callers.
-		if !line.IsLoop && len(line.Stations) >= 3 {
-			firstPos := s.State.Stations[line.Stations[0]].Pos
-			lastPos := s.State.Stations[line.Stations[len(line.Stations)-1]].Pos
-			needsTunnel := CrossesWater(lastPos, firstPos, s.State.Rivers, s.State.WaterPolygons)
-			if !needsTunnel || s.State.Resources.CanSpend(RewardTunnel) {
-				outMask[CloseLoopOffset+lID] = true
+		// P1-4: Loop Toggling Hysteresis & Cooldown
+		// Mask CloseLoop and OpenLoop for 900 ticks (30 seconds) following any loop toggle.
+		canToggleLoop := !line.HasBeenLoopToggled || (s.State.Tick >= line.LastLoopToggleTick+LoopToggleCooldownTicks)
+		if canToggleLoop {
+			// BUG-10 fix: closeLoop() in simulator.go rejects lines with fewer than 3 stations.
+			// The mask previously enabled CloseLoop for >= 2 stations, which would always
+			// produce an engine error — breaking the mask contract for RL agents / API callers.
+			if !line.IsLoop && len(line.Stations) >= 3 {
+				firstPos := s.State.Stations[line.Stations[0]].Pos
+				lastPos := s.State.Stations[line.Stations[len(line.Stations)-1]].Pos
+				needsTunnel := CrossesWater(lastPos, firstPos, s.State.Rivers, s.State.WaterPolygons)
+				if !needsTunnel || s.State.Resources.CanSpend(RewardTunnel) {
+					outMask[CloseLoopOffset+lID] = true
+				}
+			}
+
+			if line.IsLoop {
+				outMask[OpenLoopOffset+lID] = true
 			}
 		}
 
-		if line.IsLoop {
-			outMask[OpenLoopOffset+lID] = true
+		// P4-1: Safe Dynamic Line Re-Routing & Deletion
+		if !line.Removed && len(line.Stations) >= 2 {
+			outMask[RemoveLineOffset+lID] = true
 		}
 
-		// Action disabled per user request to prevent AI from messing up passenger progress:
-		// outMask[RemoveLineOffset+lID] = true
-		// 
-		// if len(line.Stations) > 2 && !line.IsLoop {
-		// 	outMask[ShortenLineOffset+lID*2+0] = true
-		// 	outMask[ShortenLineOffset+lID*2+1] = true
-		// }
+		if !line.Removed && len(line.Stations) > 2 && !line.IsLoop {
+			outMask[ShortenLineOffset+lID*2+0] = true
+			outMask[ShortenLineOffset+lID*2+1] = true
+		}
 	}
 
 	return outMask
 }
+

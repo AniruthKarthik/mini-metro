@@ -1,31 +1,41 @@
+import sys
 import os
+try:
+    import gymnasium as gym
+except ImportError:
+    venv_python = os.path.join(os.path.dirname(os.path.abspath(__file__)), "venv", "bin", "python")
+    if os.path.exists(venv_python) and os.path.realpath(sys.executable) != os.path.realpath(venv_python):
+        os.execv(venv_python, [venv_python] + sys.argv)
+
 import time
 import glob
 
 import numpy as np
 import torch
-import gymnasium as gym
 try:
     import intel_extension_for_pytorch as ipex
 except ImportError:
     pass
 from torch.utils.tensorboard import SummaryWriter
 
-from env import MiniMetroEnv
+from env import MiniMetroEnv, LineOrientationAugmentation
 from model import MiniMetroActorCritic
 from ppo import PPO
+from probing import compute_expansion_metrics
 
 
 # ============================================================
 # ENVIRONMENT
 # ============================================================
 
-def make_env(seed, map_id=0):
+def make_env(seed, map_id=0, flip_prob=0.5):
     def thunk():
         env = MiniMetroEnv(
             map_id=map_id,
             seed=seed
         )
+        if flip_prob > 0:
+            env = LineOrientationAugmentation(env, flip_prob=flip_prob)
 
         env = gym.wrappers.RecordEpisodeStatistics(env)
 
@@ -103,20 +113,23 @@ def find_latest_checkpoint(checkpoint_dir=CHECKPOINT_DIR):
     """
     Find the checkpoint with the highest update number.
     """
-
-    pattern = os.path.join(
-        checkpoint_dir,
-        "checkpoint_*.pt"
-    )
-
-    checkpoints = glob.glob(pattern)
-
-    if not checkpoints:
+    if not os.path.exists(checkpoint_dir):
         return None
 
-    checkpoints.sort()
+    valid_ckpts = []
+    for f in os.listdir(checkpoint_dir):
+        if f.startswith("checkpoint_") and f.endswith(".pt"):
+            if f in ("checkpoint_error.pt", "checkpoint_emergency.pt"):
+                continue
+            parts = f.replace("checkpoint_", "").replace(".pt", "")
+            if parts.isdigit():
+                valid_ckpts.append((int(parts), os.path.join(checkpoint_dir, f)))
 
-    return checkpoints[-1]
+    if not valid_ckpts:
+        return None
+
+    valid_ckpts.sort(key=lambda x: x[0])
+    return valid_ckpts[-1][1]
 
 
 def load_checkpoint(
@@ -144,36 +157,48 @@ def load_checkpoint(
         weights_only=False,
     )
 
-    model.load_state_dict(
-        checkpoint["model_state_dict"]
-    )
+    model_sd = checkpoint.get("model_state_dict", checkpoint.get("model"))
+    if model_sd is not None:
+        model.load_state_dict(model_sd)
 
-    if (
-        "optimizer_state_dict" in checkpoint
-        and hasattr(agent, "optimizer")
-    ):
-        agent.optimizer.load_state_dict(
-            checkpoint["optimizer_state_dict"]
-        )
+    if hasattr(agent, "optimizer"):
+        optim_sd = checkpoint.get("optimizer_state_dict", checkpoint.get("optimizer"))
+        if optim_sd is not None:
+            try:
+                agent.optimizer.load_state_dict(optim_sd)
+            except Exception as opt_err:
+                print(
+                    f"⚠️ Could not restore optimizer state ({opt_err}). "
+                    f"Architecture parameters changed — using reinitialized optimizer."
+                )
 
     # Restore RNG state when available.
     if "torch_rng_state" in checkpoint:
-        torch.set_rng_state(
-            checkpoint["torch_rng_state"]
-        )
+        try:
+            torch.set_rng_state(
+                checkpoint["torch_rng_state"]
+            )
+        except Exception:
+            pass
 
     if (
         torch.cuda.is_available()
         and "cuda_rng_state" in checkpoint
     ):
-        torch.cuda.set_rng_state_all(
-            checkpoint["cuda_rng_state"]
-        )
+        try:
+            torch.cuda.set_rng_state_all(
+                checkpoint["cuda_rng_state"]
+            )
+        except Exception:
+            pass
 
     if "numpy_rng_state" in checkpoint:
-        np.random.set_state(
-            checkpoint["numpy_rng_state"]
-        )
+        try:
+            np.random.set_state(
+                checkpoint["numpy_rng_state"]
+            )
+        except Exception:
+            pass
 
     update = int(
         checkpoint.get("update", 0)
@@ -221,18 +246,25 @@ def run_training():
     )
 
     # CPU configuration.
-    torch.set_num_threads(8)
-
     if torch.cuda.is_available():
         device = torch.device("cuda")
+        torch.set_float32_matmul_precision('high')
+        torch.backends.cudnn.benchmark = True
+        torch.set_num_threads(2)
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         # Apple Silicon integrated graphics
         device = torch.device("mps")
+        torch.set_num_threads(8)
     elif hasattr(torch, "xpu") and torch.xpu.is_available():
         # Intel integrated graphics
         device = torch.device("xpu")
+        torch.set_num_threads(8)
     else:
         device = torch.device("cpu")
+        torch.set_num_threads(8)
+
+    use_amp = (device.type == "cuda")
+    amp_dtype = torch.bfloat16 if (use_amp and torch.cuda.is_bf16_supported()) else torch.float16
 
     print("=" * 70)
     print("MiniMetro PPO Training")
@@ -278,8 +310,6 @@ def run_training():
     # DEVICE & MODEL
     # --------------------------------------------------------
 
-    device = torch.device("cpu")
-    
     model = MiniMetroActorCritic(hidden_dim=32).to(device)
     agent = PPO(
         model,
@@ -299,28 +329,17 @@ def run_training():
     start_update = 1
     global_step = 0
 
-    checkpoint_files = [
-        f for f in os.listdir("runs/minimetro_ppo_local")
-        if f.startswith("checkpoint_") and f.endswith(".pt")
-    ]
+    latest_ckpt = find_latest_checkpoint(CHECKPOINT_DIR)
 
-    if checkpoint_files:
-        latest_ckpt = sorted(checkpoint_files)[-1]
-        ckpt_path = os.path.join(
-            "runs/minimetro_ppo_local",
-            latest_ckpt
-        )
-        print(f"🔄 Loading checkpoint: {ckpt_path}")
-        
+    if latest_ckpt:
         try:
-            checkpoint = torch.load(
-                ckpt_path,
-                map_location=device
+            loaded_update, global_step = load_checkpoint(
+                latest_ckpt,
+                model,
+                agent,
+                device,
             )
-            model.load_state_dict(checkpoint["model"])
-            agent.optimizer.load_state_dict(checkpoint["optimizer"])
-            start_update = checkpoint["update"] + 1
-            global_step = checkpoint["global_step"]
+            start_update = loaded_update + 1
             print(f"✅ Resumed from update {start_update - 1} | global_step={global_step}")
         except Exception as e:
             print(f"⚠️ Could not load checkpoint:\n{e}\nStarting a new training run.")
@@ -453,13 +472,14 @@ def run_training():
                         ].bool()
                     )
 
-                    action, logprob, _, value, next_lstm_state = (
-                        model.get_action_and_value(
-                            next_obs_tensor,
-                            lstm_state=next_lstm_state,
-                            mask=mask,
+                    with torch.amp.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
+                        action, logprob, _, value, next_lstm_state = (
+                            model.get_action_and_value(
+                                next_obs_tensor,
+                                lstm_state=next_lstm_state,
+                                mask=mask,
+                            )
                         )
-                    )
 
                     values[step] = value.flatten()
 
@@ -551,6 +571,11 @@ def run_training():
 
                             writer.add_scalar("charts/episodic_return", episode_return, global_step)
                             writer.add_scalar("charts/episodic_length", episode_length, global_step)
+                            if "episode_reward_breakdown" in info:
+                                for channel, val in info["episode_reward_breakdown"].items():
+                                    writer.add_scalar(f"rewards/{channel}", val, global_step)
+                            if "total_track_length" in info:
+                                writer.add_scalar("metrics/total_track_length", info["total_track_length"], global_step)
 
             # ------------------------------------------------
             # GAE
@@ -732,6 +757,29 @@ def run_training():
             writer.add_scalar(
                 "charts/update_time",
                 update_time,
+                global_step,
+            )
+
+            # P1-2: Track network expansion and station redundancy metrics
+            exp_metrics = compute_expansion_metrics(b_obs, b_actions)
+            writer.add_scalar(
+                "charts/expansion_action_rate",
+                exp_metrics.expansion_action_rate,
+                global_step,
+            )
+            writer.add_scalar(
+                "charts/expansion_ratio",
+                exp_metrics.expansion_ratio,
+                global_step,
+            )
+            writer.add_scalar(
+                "charts/avg_lines_per_station",
+                exp_metrics.lines_per_station_mean,
+                global_step,
+            )
+            writer.add_scalar(
+                "charts/redundant_station_rate",
+                exp_metrics.redundant_station_rate,
                 global_step,
             )
 
