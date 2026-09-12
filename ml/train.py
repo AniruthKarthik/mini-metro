@@ -101,6 +101,10 @@ def parse_args():
                         help="Relative sampling weights for maps in 'mixed' mode (e.g., 1 1 1 2 to emphasize Berlin)")
     parser.add_argument("--curriculum", action=argparse.BooleanOptionalAction, default=True,
                         help="Enable procedural multi-map curriculum learning (Stage 1 Berlin -> Stage 2 London/Tokyo -> Stage 3 All Maps)")
+    parser.add_argument("--curriculum-thresholds", type=float, nargs=2, default=[120.0, 200.0],
+                        help="Rolling score promotion thresholds for Stage 1 -> 2 and Stage 2 -> 3 (default: 120 200)")
+    parser.add_argument("--curriculum-min-steps", type=int, nargs=2, default=[30000, 100000],
+                        help="Minimum steps required before promoting Stage 1 -> 2 and Stage 2 -> 3 (default: 30000 100000)")
     parser.add_argument("--pbrs", action=argparse.BooleanOptionalAction, default=True,
                         help="Enable Potential-Based Reward Shaping (Ng et al., 1999) for dense temporal credit assignment")
     parser.add_argument("--hierarchical", action=argparse.BooleanOptionalAction, default=True,
@@ -170,7 +174,12 @@ def run_training(args=None):
     writer = SummaryWriter(checkpoint_dir)
 
     # Construct multi-map environments
-    curriculum = CurriculumManager(enabled=args.curriculum, custom_maps=args.maps)
+    curriculum = CurriculumManager(
+        enabled=args.curriculum,
+        custom_maps=args.maps,
+        thresholds=tuple(args.curriculum_thresholds),
+        min_steps=tuple(args.curriculum_min_steps),
+    )
     maps = curriculum.get_maps()
     map_mode = "mixed" if args.curriculum else args.map_mode
     map_weights = curriculum.get_weights() if args.curriculum else args.map_weights
@@ -402,43 +411,68 @@ def run_training(args=None):
             next_obs_tensor = {k: torch.as_tensor(v).to(device, non_blocking=True) for k, v in next_obs.items()}
             next_done = torch.tensor(done, dtype=torch.float32, device=cpu_device)
             
-            if "final_info" in infos:
+            # Extract completed episode statistics (supports Gymnasium 1.0+ vectorized format and legacy final_info)
+            completed_episodes = []
+            if "_episode" in infos:
+                for idx, has_ep in enumerate(infos["_episode"]):
+                    if has_ep:
+                        completed_episodes.append({
+                            "idx": idx,
+                            "r": float(infos["episode"]["r"][idx]),
+                            "l": int(infos["episode"]["l"][idx]),
+                            "score": int(infos["score"][idx]) if "score" in infos else 0,
+                            "map_name": str(infos["map_name"][idx]) if "map_name" in infos else MAP_NAMES.get(maps[idx % len(maps)], f"Map_{idx}"),
+                            "breakdown": {k: float(v[idx]) for k, v in infos.get("episode_reward_breakdown", {}).items()} if "episode_reward_breakdown" in infos else {},
+                            "total_track_length": float(infos["total_track_length"][idx]) if "total_track_length" in infos else 0.0,
+                        })
+            elif "final_info" in infos:
                 for idx, info in enumerate(infos["final_info"]):
                     if info and "episode" in info:
-                        ep_r = float(info['episode']['r'])
-                        ep_l = int(info['episode']['l'])
-                        ep_score = int(info.get('score', 0))
-                        map_name = info.get('map_name', MAP_NAMES.get(maps[idx % len(maps)], f"Map {idx}"))
-                        map_key = map_name.lower().replace(" ", "_")
+                        completed_episodes.append({
+                            "idx": idx,
+                            "r": float(np.asarray(info["episode"]["r"]).reshape(-1)[0]),
+                            "l": int(np.asarray(info["episode"]["l"]).reshape(-1)[0]),
+                            "score": int(info.get("score", 0)),
+                            "map_name": str(info.get("map_name", MAP_NAMES.get(maps[idx % len(maps)], f"Map_{idx}"))),
+                            "breakdown": info.get("episode_reward_breakdown", {}),
+                            "total_track_length": float(info.get("total_track_length", 0.0)),
+                        })
 
-                        writer.add_scalar("charts/episodic_return", ep_r, global_step)
-                        writer.add_scalar("charts/episodic_length", ep_l, global_step)
-                        writer.add_scalar(f"charts/episodic_return_{map_key}", ep_r, global_step)
-                        writer.add_scalar(f"charts/episodic_length_{map_key}", ep_l, global_step)
-                        writer.add_scalar(f"charts/score_{map_key}", ep_score, global_step)
-                        writer.add_scalar("charts/score_all", ep_score, global_step)
+            for ep_data in completed_episodes:
+                idx = ep_data["idx"]
+                ep_r = ep_data["r"]
+                ep_l = ep_data["l"]
+                ep_score = ep_data["score"]
+                map_name = ep_data["map_name"]
+                map_key = map_name.lower().replace(" ", "_")
 
-                        if "episode_reward_breakdown" in info:
-                            for channel, val in info["episode_reward_breakdown"].items():
-                                writer.add_scalar(f"rewards/{channel}", val, global_step)
-                        if "total_track_length" in info:
-                            writer.add_scalar("metrics/total_track_length", info["total_track_length"], global_step)
+                writer.add_scalar("charts/episodic_return", ep_r, global_step)
+                writer.add_scalar("charts/episodic_length", ep_l, global_step)
+                writer.add_scalar(f"charts/episodic_return_{map_key}", ep_r, global_step)
+                writer.add_scalar(f"charts/episodic_length_{map_key}", ep_l, global_step)
+                writer.add_scalar(f"charts/score_{map_key}", ep_score, global_step)
+                writer.add_scalar("charts/score_all", ep_score, global_step)
 
-                        print(f"🗺️ [{map_name.upper()} | Env {idx:02d}] step={global_step} | Return={ep_r:.2f} | Score={ep_score} | Length={ep_l} steps", flush=True)
+                for channel, val in ep_data["breakdown"].items():
+                    writer.add_scalar(f"rewards/{channel}", val, global_step)
+                if ep_data["total_track_length"] > 0:
+                    writer.add_scalar("metrics/total_track_length", ep_data["total_track_length"], global_step)
 
-                        # Track all-time best model based on rolling average score
-                        recent_scores.append(ep_score)
-                        if len(recent_scores) >= 5:
-                            current_avg = float(np.mean(recent_scores))
-                            if current_avg > best_avg_score:
-                                best_avg_score = current_avg
-                                torch.save(raw_model.state_dict(), best_model_path)
-                                print(f"🌟 New all-time best model! Rolling Avg Score: {best_avg_score:.1f} (Latest: {ep_score}) -> Saved {best_model_path}", flush=True)
-                                writer.add_scalar("charts/best_rolling_score", best_avg_score, global_step)
+                print(f"🗺️ [{map_name.upper()} | Env {idx:02d}] step={global_step} | Return={ep_r:.2f} | Score={ep_score} | Length={ep_l} steps", flush=True)
 
-                            if args.curriculum and curriculum.update(best_avg_score, global_step):
-                                envs.call("set_map_pool", curriculum.get_maps(), curriculum.get_weights())
-                                writer.add_scalar("charts/curriculum_stage", curriculum.stage_num, global_step)
+                # Track all-time best model based on rolling average score
+                recent_scores.append(ep_score)
+                if len(recent_scores) >= 5:
+                    current_avg = float(np.mean(recent_scores))
+                    if current_avg > best_avg_score:
+                        best_avg_score = current_avg
+                        torch.save(raw_model.state_dict(), best_model_path)
+                        print(f"🌟 New all-time best model! Rolling Avg Score: {best_avg_score:.1f} (Latest: {ep_score}) -> Saved {best_model_path}", flush=True)
+                        writer.add_scalar("charts/best_rolling_score", best_avg_score, global_step)
+
+                    if args.curriculum and curriculum.update(best_avg_score, global_step):
+                        envs.call("set_map_pool", curriculum.get_maps(), curriculum.get_weights())
+                        writer.add_scalar("charts/curriculum_stage", curriculum.stage_num, global_step)
 
         with torch.no_grad():
             with torch.amp.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):

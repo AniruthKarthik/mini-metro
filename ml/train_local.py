@@ -262,6 +262,10 @@ def parse_args():
                         help="Total environment steps to train (default: 40,000)")
     parser.add_argument("--num-envs", type=int, default=16,
                         help="Number of parallel environments (default: 16)")
+    parser.add_argument("--curriculum-thresholds", type=float, nargs=2, default=[40.0, 70.0],
+                        help="Rolling score promotion thresholds for Stage 1 -> 2 and Stage 2 -> 3 (default: 40 70)")
+    parser.add_argument("--curriculum-min-steps", type=int, nargs=2, default=[8000, 18000],
+                        help="Minimum steps required before promoting Stage 1 -> 2 and Stage 2 -> 3 (default: 8000 18000)")
     parser.add_argument("--fine-tune", action="store_true",
                         help="Fine-tune from latest checkpoint")
     parser.add_argument("--pretrained", type=str, default=None,
@@ -282,7 +286,12 @@ def run_training(args=None):
     maps = args.maps
     map_mode = args.map_mode
 
-    curriculum = CurriculumManager(enabled=args.curriculum, custom_maps=args.maps)
+    curriculum = CurriculumManager(
+        enabled=args.curriculum,
+        custom_maps=args.maps,
+        thresholds=tuple(args.curriculum_thresholds),
+        min_steps=tuple(args.curriculum_min_steps),
+    )
     maps = curriculum.get_maps()
     map_mode = "mixed" if args.curriculum else args.map_mode
     map_weights = curriculum.get_weights() if args.curriculum else None
@@ -622,53 +631,66 @@ def run_training(args=None):
                 # LOGGING EPISODE STATS
                 # --------------------------------------------
 
-                if "final_info" in infos:
+                # Extract completed episode statistics (supports Gymnasium 1.0+ vectorized format and legacy final_info)
+                completed_episodes = []
+                if "_episode" in infos:
+                    for idx, has_ep in enumerate(infos["_episode"]):
+                        if has_ep:
+                            completed_episodes.append({
+                                "idx": idx,
+                                "r": float(infos["episode"]["r"][idx]),
+                                "l": int(infos["episode"]["l"][idx]),
+                                "score": int(infos["score"][idx]) if "score" in infos else 0,
+                                "map_name": str(infos["map_name"][idx]) if "map_name" in infos else MAP_NAMES.get(maps[idx % len(maps)], f"Map_{idx}"),
+                                "breakdown": {k: float(v[idx]) for k, v in infos.get("episode_reward_breakdown", {}).items()} if "episode_reward_breakdown" in infos else {},
+                                "total_track_length": float(infos["total_track_length"][idx]) if "total_track_length" in infos else 0.0,
+                            })
+                elif "final_info" in infos:
                     for idx, info in enumerate(infos["final_info"]):
                         if info and "episode" in info:
-                            episode_return = info["episode"]["r"]
-                            episode_length = info["episode"]["l"]
+                            completed_episodes.append({
+                                "idx": idx,
+                                "r": float(np.asarray(info["episode"]["r"]).reshape(-1)[0]),
+                                "l": int(np.asarray(info["episode"]["l"]).reshape(-1)[0]),
+                                "score": int(info.get("score", 0)),
+                                "map_name": str(info.get("map_name", MAP_NAMES.get(maps[idx % len(maps)], f"Map_{idx}"))),
+                                "breakdown": info.get("episode_reward_breakdown", {}),
+                                "total_track_length": float(info.get("total_track_length", 0.0)),
+                            })
 
-                            # Convert possible numpy scalars to Python values.
-                            try:
-                                episode_return = float(np.asarray(episode_return).reshape(-1)[0])
-                            except Exception:
-                                pass
+                for ep_data in completed_episodes:
+                    idx = ep_data["idx"]
+                    episode_return = ep_data["r"]
+                    episode_length = ep_data["l"]
+                    score = ep_data["score"]
+                    map_name = ep_data["map_name"]
+                    map_key = map_name.lower().replace(" ", "_")
 
-                            try:
-                                episode_length = int(np.asarray(episode_length).reshape(-1)[0])
-                            except Exception:
-                                pass
+                    print(f"🗺️ [{map_name.upper()} | Env {idx:02d}] step={global_step} | Return={episode_return:.2f} | Score={score} | Length={episode_length}", flush=True)
 
-                            score = int(info.get("score", 0))
-                            map_name = info.get("map_name", MAP_NAMES.get(maps[idx % len(maps)], f"Map {idx}"))
-                            map_key = map_name.lower().replace(" ", "_")
+                    writer.add_scalar("charts/episodic_return", episode_return, global_step)
+                    writer.add_scalar("charts/episodic_length", episode_length, global_step)
+                    writer.add_scalar(f"charts/episodic_return_{map_key}", episode_return, global_step)
+                    writer.add_scalar(f"charts/episodic_length_{map_key}", episode_length, global_step)
+                    writer.add_scalar(f"charts/score_{map_key}", score, global_step)
+                    for channel, val in ep_data["breakdown"].items():
+                        writer.add_scalar(f"rewards/{channel}", val, global_step)
+                    if ep_data["total_track_length"] > 0:
+                        writer.add_scalar("metrics/total_track_length", ep_data["total_track_length"], global_step)
 
-                            print(f"🗺️ [{map_name.upper()} | Env {idx:02d}] step={global_step} | Return={episode_return:.2f} | Score={score} | Length={episode_length}", flush=True)
+                    # Track all-time best model based on rolling average score
+                    recent_scores.append(score)
+                    if len(recent_scores) >= 5:
+                        current_avg = float(np.mean(recent_scores))
+                        if current_avg > best_avg_score:
+                            best_avg_score = current_avg
+                            torch.save(model.state_dict(), best_model_path)
+                            print(f"🌟 New all-time best model! Rolling Avg Score: {best_avg_score:.1f} (Latest: {score}) -> Saved {best_model_path}", flush=True)
+                            writer.add_scalar("charts/best_rolling_score", best_avg_score, global_step)
 
-                            writer.add_scalar("charts/episodic_return", episode_return, global_step)
-                            writer.add_scalar("charts/episodic_length", episode_length, global_step)
-                            writer.add_scalar(f"charts/episodic_return_{map_key}", episode_return, global_step)
-                            writer.add_scalar(f"charts/episodic_length_{map_key}", episode_length, global_step)
-                            writer.add_scalar(f"charts/score_{map_key}", score, global_step)
-                            if "episode_reward_breakdown" in info:
-                                for channel, val in info["episode_reward_breakdown"].items():
-                                    writer.add_scalar(f"rewards/{channel}", val, global_step)
-                            if "total_track_length" in info:
-                                writer.add_scalar("metrics/total_track_length", info["total_track_length"], global_step)
-
-                            # Track all-time best model based on rolling average score
-                            recent_scores.append(score)
-                            if len(recent_scores) >= 5:
-                                current_avg = float(np.mean(recent_scores))
-                                if current_avg > best_avg_score:
-                                    best_avg_score = current_avg
-                                    torch.save(model.state_dict(), best_model_path)
-                                    print(f"🌟 New all-time best model! Rolling Avg Score: {best_avg_score:.1f} (Latest: {score}) -> Saved {best_model_path}", flush=True)
-                                    writer.add_scalar("charts/best_rolling_score", best_avg_score, global_step)
-
-                                if args.curriculum and curriculum.update(best_avg_score, global_step):
-                                    envs.call("set_map_pool", curriculum.get_maps(), curriculum.get_weights())
-                                    writer.add_scalar("charts/curriculum_stage", curriculum.stage_num, global_step)
+                        if args.curriculum and curriculum.update(best_avg_score, global_step):
+                            envs.call("set_map_pool", curriculum.get_maps(), curriculum.get_weights())
+                            writer.add_scalar("charts/curriculum_stage", curriculum.stage_num, global_step)
 
             # ------------------------------------------------
             # GAE

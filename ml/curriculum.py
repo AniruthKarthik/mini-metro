@@ -52,20 +52,26 @@ class CurriculumManager:
         initial_stage: int = 1,
         custom_maps: Optional[List[int]] = None,
         thresholds: Optional[tuple] = None,
+        min_steps: Optional[tuple] = None,
     ):
         self.enabled = enabled
         self.custom_maps = list(custom_maps) if custom_maps is not None else [0, 1, 2, 3]
-        self.current_stage_idx = max(0, min(initial_stage - 1, len(self.STAGES) - 1))
+        self.stages = [dict(s) for s in self.STAGES]
+        self.current_stage_idx = max(0, min(initial_stage - 1, len(self.stages) - 1))
         self.stage_start_step = 0
         self.history = []
 
         if thresholds is not None and len(thresholds) >= 2:
-            self.STAGES[0]["promotion_score"] = float(thresholds[0])
-            self.STAGES[1]["promotion_score"] = float(thresholds[1])
+            self.stages[0]["promotion_score"] = float(thresholds[0])
+            self.stages[1]["promotion_score"] = float(thresholds[1])
+
+        if min_steps is not None and len(min_steps) >= 2:
+            self.stages[0]["min_steps"] = int(min_steps[0])
+            self.stages[1]["min_steps"] = int(min_steps[1])
 
     @property
     def current_stage(self) -> Dict[str, Any]:
-        return self.STAGES[self.current_stage_idx]
+        return self.stages[self.current_stage_idx]
 
     @property
     def stage_num(self) -> int:
@@ -91,7 +97,7 @@ class CurriculumManager:
         Evaluates promotion criteria for current stage.
         Returns True if promoted to a new stage, False otherwise.
         """
-        if not self.enabled or self.current_stage_idx >= len(self.STAGES) - 1:
+        if not self.enabled or self.current_stage_idx >= len(self.stages) - 1:
             return False
 
         stage = self.current_stage
