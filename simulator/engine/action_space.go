@@ -324,7 +324,7 @@ func (s *Simulator) GetActionMask(outMask []bool) []bool {
 					netTunnels--
 				}
 
-				if netTunnels <= 0 || s.State.Resources.CanSpend(RewardTunnel) {
+				if netTunnels <= 0 || s.State.Resources.Tunnels >= netTunnels {
 					idx := (lID*MaxStations+stID)*15 + (segIdx - 1)
 					if idx < InsertStationCount {
 						outMask[InsertStationOffset+idx] = true

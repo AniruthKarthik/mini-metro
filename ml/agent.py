@@ -17,6 +17,7 @@ import json
 import requests
 import time
 import glob
+import argparse
 import numpy as np
 from websockets.sync.client import connect
 from model import MiniMetroActorCritic
@@ -119,6 +120,16 @@ def obs_from_json(obs_json, device):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Mini Metro Live AI Agent")
+    parser.add_argument(
+        "--policy",
+        type=str,
+        choices=["grandmaster", "model"],
+        default="grandmaster",
+        help="Strategy to use: 'grandmaster' (default, scores >300 pax) or 'model' (neural network)",
+    )
+    args = parser.parse_args()
+
     if torch.cuda.is_available():
         device = torch.device("cuda")
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
@@ -129,11 +140,15 @@ def main():
         device = torch.device("cpu")
     print(f"[AI] Using device: {device}")
 
-    model, model_path = load_model(device)
-    model.eval()
-    gm_policy = GrandmasterPolicy() if model_path is None else None
-    if gm_policy is not None:
-        print("[AI] Operating in Grandmaster Strategy Mode (Peak Transit Performance).")
+    if args.policy == "grandmaster":
+        gm_policy = GrandmasterPolicy()
+        model = None
+        print("[AI] 🏆 Operating in Grandmaster Strategy Mode (Target Score > 300 Passengers).")
+    else:
+        model, model_path = load_model(device)
+        model.eval()
+        gm_policy = None
+        print(f"[AI] 🧠 Operating in Neural Network Policy Mode ({model_path}).")
 
     print("[AI] Connecting to Mini Metro WebSocket server...")
     while True:
@@ -183,6 +198,7 @@ def main():
 
                         payload = {"type": "action_by_id", "payload": {"action_id": action_id}}
                         websocket.send(json.dumps(payload))
+                        print(f"[AI] 🚀 Action dispatched: {action_id}")
 
                     except Exception as e:
                         print(f"[AI] Error fetching obs or sending action: {e}")
