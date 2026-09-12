@@ -130,7 +130,22 @@ func (s *Simulator) offerReward() {
 	}
 	// Weekly reward: always grant one locomotive, then offer choice of one upgrade.
 	s.State.Resources.Grant(RewardTrain)
-	pool := []RewardType{RewardLine, RewardCarriage, RewardTunnel, RewardTunnel, RewardInterchange}
+
+	activeLines := 0
+	for _, l := range s.State.Lines {
+		if !l.Removed {
+			activeLines++
+		}
+	}
+	unlockedLines := activeLines + s.State.Resources.Lines
+
+	var pool []RewardType
+	if unlockedLines < MaxLines {
+		pool = []RewardType{RewardLine, RewardCarriage, RewardTunnel, RewardTunnel, RewardInterchange}
+	} else {
+		pool = []RewardType{RewardCarriage, RewardTunnel, RewardTunnel, RewardInterchange}
+	}
+
 	s.RNG().Shuffle(len(pool), func(i, j int) { pool[i], pool[j] = pool[j], pool[i] })
 	s.State.PendingRewardChoices = pool[:2]
 	s.State.Scheduler.Schedule(s.State.Tick+rewardInterval(), EventReward)
@@ -706,6 +721,47 @@ func (s *Simulator) shortenLine(a ShortenLine) error {
 	s.disruptionPenalty += 0.10 // small local modification cost
 	line.LastModifiedTick = s.State.Tick
 	s.State.TopologyVersion++
+	s.rebuildGraphIfNeeded()
+
+	// Disembark passengers on this line who can no longer reach their destination
+	// on this line or whose route required the removed endpoint station.
+	for i := range s.State.Trains {
+		tr := &s.State.Trains[i]
+		if !tr.Active || tr.LineID != a.LineID || len(tr.Passengers) == 0 {
+			continue
+		}
+
+		curStationIndex := tr.Segment
+		if tr.Progress >= 0.5 {
+			nextSeg := tr.Segment + tr.Direction
+			if nextSeg >= 0 && nextSeg < len(line.Stations) {
+				curStationIndex = nextSeg
+			}
+		}
+		if curStationIndex < 0 {
+			curStationIndex = 0
+		} else if curStationIndex >= len(line.Stations) {
+			curStationIndex = len(line.Stations) - 1
+		}
+		curStationID := line.Stations[curStationIndex]
+
+		var retainedPassengers []Passenger
+		for _, p := range tr.Passengers {
+			route := FindOptimalRoute(&s.State.Graph, &s.State, curStationID, p.Destination)
+			if !route.Reachable || route.NextLineID != tr.LineID || (route.NextDirection != 0 && route.NextDirection != tr.Direction) {
+				if curStationID >= 0 && curStationID < len(s.State.Stations) {
+					st := &s.State.Stations[curStationID]
+					if st.Alive {
+						st.Queue = append(st.Queue, p)
+					}
+				}
+			} else {
+				retainedPassengers = append(retainedPassengers, p)
+			}
+		}
+		tr.Passengers = retainedPassengers
+	}
+
 	return nil
 }
 
@@ -983,8 +1039,9 @@ func (s *Simulator) insertStation(a InsertStation) error {
 
 
 type SimInfo struct {
-	EventTriggered string // "none", "reward_offered", "station_spawned", "game_over"
-	StepTicks      int
+	EventTriggered    string // "none", "reward_offered", "station_spawned", "game_over"
+	StepTicks         int
+	SimulationSeconds float64
 }
 
 // StepMacroBreakdown applies an action and advances physics for up to duration seconds (in fixed 30 Hz sub-ticks)
@@ -1034,7 +1091,8 @@ func (s *Simulator) StepMacroBreakdown(action Action, duration float64) (obs Obs
 		}
 	}
 
-	stepReward, breakdown := s.ComputeStepRewardBreakdown(s.State.Score - initialScore)
+	info.SimulationSeconds = float64(info.StepTicks) * dt
+	stepReward, breakdown := s.ComputeStepRewardBreakdown(s.State.Score-initialScore, info.SimulationSeconds)
 
 	return s.Observation(), stepReward, !s.State.Alive, info, breakdown
 }

@@ -244,7 +244,7 @@ class SpatialCrossAttentionScorer(nn.Module):
         self._init_geom_bias()
 
     def _init_geom_bias(self):
-        # Inductive bias: penalize large distance in attention logits and candidate scores
+        # Inductive geometric prior: penalize candidate distance in attention logits
         l1 = self.geom_bias_mlp[0]
         l2 = self.geom_bias_mlp[2]
         with torch.no_grad():
@@ -262,15 +262,11 @@ class SpatialCrossAttentionScorer(nn.Module):
             l1.weight[24:32, 2] = 1.0
             l2.weight[:, 24:32] = -0.5 / 8.0
 
-        o1 = self.out_proj[0]
-        o2 = self.out_proj[2]
-        with torch.no_grad():
-            o1.weight.zero_()
-            o1.bias.zero_()
-            o2.weight.zero_()
-            o2.bias.zero_()
-            nn.init.orthogonal_(o1.weight, gain=0.05)
-            nn.init.orthogonal_(o2.weight, gain=0.05)
+        for m in self.out_proj:
+            if isinstance(m, nn.Linear):
+                nn.init.orthogonal_(m.weight, gain=0.05)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
 
     def forward(self, q_input, k_input, geom_features, key_mask=None):
         """
@@ -365,6 +361,7 @@ class MiniMetroActorCritic(nn.Module):
         self.gnn_type = gnn_type
         self.use_transformer_scorer = use_transformer_scorer
         self.num_heads = num_heads
+        self.is_legacy_checkpoint = False
 
         # GNN passes: legacy GCN trunk for backward compatibility
         self.gcn1 = GNNLayer(node_dim, edge_dim, global_dim, hidden_dim)
@@ -498,112 +495,34 @@ class MiniMetroActorCritic(nn.Module):
         )
 
     def _init_add_line_geom_mlp(self):
-        # Inductive geometric bias: penalize candidate distance and coordinate span
-        linear1 = self.add_line_geom_mlp[0]
-        linear2 = self.add_line_geom_mlp[2]
-        with torch.no_grad():
-            linear1.weight.zero_()
-            linear1.bias.zero_()
-            # First 16 units for distance
-            linear1.weight[:16, 0] = 1.0
-            # Next 8 units for dx
-            linear1.weight[16:24, 1] = 1.0
-            # Next 8 units for dy
-            linear1.weight[24:32, 2] = 1.0
-
-            linear2.weight.zero_()
-            linear2.bias.zero_()
-            linear2.weight[0, :16] = -3.0 / 16.0
-            linear2.weight[0, 16:24] = -0.5 / 8.0
-            linear2.weight[0, 24:32] = -0.5 / 8.0
+        for m in self.add_line_geom_mlp:
+            if isinstance(m, nn.Linear):
+                nn.init.orthogonal_(m.weight, gain=0.5)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
 
     def _init_dispatch_mlps(self):
-        # Inductive bias: prioritize congested lines and long routes; penalize over-supplied lines
-        H = self.hidden_dim
         nn.init.orthogonal_(self.dispatch_line_ctx.weight, gain=0.1)
-        self.dispatch_line_ctx.bias.data.zero_()
+        if self.dispatch_line_ctx.bias is not None:
+            self.dispatch_line_ctx.bias.data.zero_()
 
         for mlp in (self.dispatch_train_mlp, self.dispatch_carriage_mlp):
-            lin1 = mlp[0]
-            lin2 = mlp[2]
-            with torch.no_grad():
-                lin1.weight.zero_()
-                lin1.bias.zero_()
-                lin2.weight.zero_()
-                lin2.bias.zero_()
-
-                # Inductive feature channels:
-                # Stat 2: total queue -> unit 0
-                lin1.weight[0, H + 2] = 2.0
-                # Stat 3: avg queue -> unit 1
-                lin1.weight[1, H + 3] = 2.0
-                # Stat 4: max overcrowding -> unit 2
-                lin1.weight[2, H + 4] = 2.0
-                # Stat 0: station count -> unit 3
-                lin1.weight[3, H + 0] = 1.0
-                # Stat 1: track len -> unit 4
-                lin1.weight[4, H + 1] = 1.0
-                # Stat 6: train load -> unit 5
-                lin1.weight[5, H + 6] = 1.0
-                # Stat 7: is active -> unit 6
-                lin1.weight[6, H + 7] = 1.0
-                # Stat 5: train count -> unit 7 (negative contribution)
-                lin1.weight[7, H + 5] = 1.0
-
-                # Linear 2 weights
-                lin2.weight[0, 0] = 1.5   # total queue
-                lin2.weight[0, 1] = 1.5   # avg queue
-                lin2.weight[0, 2] = 1.5   # max overcrowding
-                lin2.weight[0, 3] = 0.5   # station count
-                lin2.weight[0, 4] = 0.5   # track len
-                if mlp is self.dispatch_carriage_mlp:
-                    lin2.weight[0, 5] = 2.0  # carriage prioritizes packed trains
-                else:
-                    lin2.weight[0, 5] = 0.5  # train load
-                lin2.weight[0, 6] = 0.5   # is active
-                lin2.weight[0, 7] = -0.5  # train count penalty
-
-                # Small random orthogonal init for remaining units
-                if H > 8:
-                    nn.init.orthogonal_(lin1.weight[8:, :H], gain=0.05)
-                    nn.init.orthogonal_(lin1.weight[8:, H+8:], gain=0.05)
-                    nn.init.orthogonal_(lin2.weight[:, 8:], gain=0.05)
+            for m in mlp:
+                if isinstance(m, nn.Linear):
+                    nn.init.orthogonal_(m.weight, gain=0.1)
+                    if m.bias is not None:
+                        nn.init.zeros_(m.bias)
 
     def _init_reward_card_mlp(self):
-        H = self.hidden_dim
         nn.init.orthogonal_(self.reward_card_ctx.weight, gain=0.1)
-        self.reward_card_ctx.bias.data.zero_()
+        if self.reward_card_ctx.bias is not None:
+            self.reward_card_ctx.bias.data.zero_()
 
-        lin1 = self.reward_card_mlp[0]
-        lin2 = self.reward_card_mlp[2]
-        with torch.no_grad():
-            lin1.weight.zero_()
-            lin1.bias.zero_()
-            lin2.weight.zero_()
-            lin2.bias.zero_()
-
-            # Map the 5 card types to distinct internal representations:
-            # Line -> unit 0
-            lin1.weight[0, 0] = 1.0
-            # Train -> unit 1
-            lin1.weight[1, 1] = 1.0
-            # Tunnel -> unit 2
-            lin1.weight[2, 2] = 1.0
-            # Carriage -> unit 3
-            lin1.weight[3, 3] = 1.0
-            # Interchange -> unit 4
-            lin1.weight[4, 4] = 1.0
-
-            # Linear 2 weights reflect card value hierarchy
-            lin2.weight[0, 0] = 2.5  # Line
-            lin2.weight[0, 1] = 2.0  # Train
-            lin2.weight[0, 2] = 1.0  # Tunnel
-            lin2.weight[0, 3] = 1.2  # Carriage
-            lin2.weight[0, 4] = 0.5  # Interchange
-
-            if H > 5:
-                nn.init.orthogonal_(lin1.weight[5:, 5:], gain=0.05)
-                nn.init.orthogonal_(lin2.weight[:, 5:], gain=0.05)
+        for m in self.reward_card_mlp:
+            if isinstance(m, nn.Linear):
+                nn.init.orthogonal_(m.weight, gain=0.1)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
 
     def _init_intervention_mlps(self):
         """
@@ -784,6 +703,7 @@ class MiniMetroActorCritic(nn.Module):
 
         # P4-2: Dual architecture compatibility for GATv2 and Transformer Scorer
         is_legacy = (prefix + "gatv2_1.node_proj.weight") not in state_dict
+        self.is_legacy_checkpoint = is_legacy
         if is_legacy:
             self.gnn_type = "gcn"
             self.use_transformer_scorer = False
@@ -1075,6 +995,16 @@ class MiniMetroActorCritic(nn.Module):
     def get_action_and_value(self, obs, lstm_state=None, action=None, mask=None, deterministic=False):
         if mask is None and isinstance(obs, dict) and "action_mask" in obs:
             mask = obs["action_mask"].bool()
+
+        if mask is not None and getattr(self, "is_legacy_checkpoint", False):
+            # Legacy checkpoints were trained strictly under pure additive expansion (Phases 1-5).
+            # Mask out untrained dynamic demolition heads (RemoveLine, ShortenLine)
+            # to prevent untrained random logits from triggering infinite deletion loops.
+            mask = mask.clone()
+            mask[:, ACTION_TYPE_SLICES[10]] = False
+            mask[:, ACTION_TYPE_SLICES[11]] = False
+            if not mask.any(dim=-1).all():
+                mask[:, 0] = True
 
         logits, value, next_lstm_state = self.forward(obs, lstm_state=lstm_state, mask=mask)
 

@@ -295,3 +295,50 @@ func TestActionMask_RemoveAndShorten(t *testing.T) {
 		t.Errorf("expected RemoveLine for loop line to be valid")
 	}
 }
+
+func TestShortenLine_PassengerDisembarkation(t *testing.T) {
+	sim := NewSimulator([]Station{
+		{ID: 0, Kind: Circle, Pos: Pos{X: 0, Y: 0}, Alive: true, Capacity: 6},
+		{ID: 1, Kind: Triangle, Pos: Pos{X: 10, Y: 0}, Alive: true, Capacity: 6},
+		{ID: 2, Kind: Square, Pos: Pos{X: 20, Y: 0}, Alive: true, Capacity: 6},
+	})
+
+	_ = sim.ApplyAction(AddLine{Stations: []int{0, 1}})
+	_ = sim.ApplyAction(ExtendLine{LineID: 0, StationID: 2})
+
+	tr := &sim.State.Trains[0]
+	tr.Segment = 0
+	tr.Progress = 0.4
+	tr.Direction = 1
+
+	// Passenger 101 wants Circle (station 0).
+	// Passenger 102 wants Square (station 2).
+	tr.Passengers = []Passenger{
+		{ID: 101, Destination: Circle, SpawnTick: 1},
+		{ID: 102, Destination: Square, SpawnTick: 1},
+	}
+
+	// Shorten line from front: station 0 is removed.
+	err := sim.ApplyAction(ShortenLine{LineID: 0, FromFront: true})
+	if err != nil {
+		t.Fatalf("unexpected error shortening line: %v", err)
+	}
+
+	// Passenger 101 can no longer reach Circle on line [1, 2], so must disembark to station 1 queue.
+	// Passenger 102 wants Square, which is station 2 ahead on the line, so must be retained on the train.
+	if len(tr.Passengers) != 1 {
+		t.Fatalf("expected 1 passenger retained on train, got %d", len(tr.Passengers))
+	}
+	if tr.Passengers[0].ID != 102 {
+		t.Errorf("expected passenger 102 to be retained on train, got %d", tr.Passengers[0].ID)
+	}
+
+	st1 := &sim.State.Stations[1]
+	if len(st1.Queue) != 1 {
+		t.Fatalf("expected 1 passenger in station 1 queue, got %d", len(st1.Queue))
+	}
+	if st1.Queue[0].ID != 101 {
+		t.Errorf("expected passenger 101 in station 1 queue, got %d", st1.Queue[0].ID)
+	}
+}
+

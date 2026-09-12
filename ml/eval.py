@@ -30,6 +30,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from env import MiniMetroEnv
 from model import MiniMetroActorCritic, ACTION_TYPE_SLICES
+from intervention import StrategicInterventionArbiter, is_high_impact_structural_action
 
 MAP_NAMES = {
     0: "London",
@@ -66,16 +67,22 @@ class BasePolicy:
 
 
 class ModelPolicy(BasePolicy):
-    def __init__(self, model: MiniMetroActorCritic, deterministic: bool = True, device: torch.device = torch.device("cpu")):
+    def __init__(self, model: MiniMetroActorCritic, deterministic: bool = True, device: torch.device = torch.device("cpu"), use_arbiter: bool = True):
         self.model = model
         self.deterministic = deterministic
         self.device = device
         self.lstm_state = None
+        self.use_arbiter = use_arbiter
+        self.arbiter = StrategicInterventionArbiter() if use_arbiter else None
+        self.sim_time = 0.0
 
     def reset(self, seed: Optional[int] = None):
         self.lstm_state = None
+        self.sim_time = 0.0
+        if self.use_arbiter:
+            self.arbiter = StrategicInterventionArbiter()
 
-    def act(self, obs: Dict[str, np.ndarray]) -> int:
+    def act(self, obs: Dict[str, np.ndarray], env: Optional[Any] = None) -> int:
         obs_tensor = {
             k: torch.as_tensor(v, device=self.device).unsqueeze(0)
             for k, v in obs.items()
@@ -88,7 +95,16 @@ class ModelPolicy(BasePolicy):
                 mask=mask,
                 deterministic=self.deterministic,
             )
-        return int(action.item())
+        action_id = int(action.item())
+
+        if self.use_arbiter and self.arbiter is not None and env is not None:
+            if is_high_impact_structural_action(action_id, obs):
+                candidates = self.arbiter.generate_candidate_portfolio(env, obs, action_id, top_k=6)
+                res = self.arbiter.evaluate_candidates(env, candidates, obs, sim_time=self.sim_time)
+                action_id = res.best_action
+            self.arbiter.record_executed_intervention(action_id, self.sim_time)
+
+        return action_id
 
 
 class RandomLegalPolicy(BasePolicy):
@@ -111,9 +127,9 @@ class GreedyHeuristicPolicy(BasePolicy):
     """
     Transparent, deterministic rule-based priority agent:
     1. Priority 1: If pending reward card exists, pick the most valuable reward (Line > Train > Interchange > Tunnel > Carriage).
-    2. Priority 2: If a station is critically overcrowding (progress > 0.6) and can be upgraded to Interchange, upgrade it!
+    2. Priority 2: If a station is critically overcrowding (progress > 0.5) and can be upgraded to Interchange, upgrade it!
     3. Priority 3: If trains are available and an active line has high queue demand, dispatch AddTrain to that line.
-    4. Priority 4: If any station is unconnected (degree 0) or overcrowded, connect via AddLine or ExtendLine.
+    4. Priority 4: If any station is unconnected (degree 0), connect via AddLine or ExtendLine.
     5. Priority 5: Otherwise NoOp (action 0).
     """
     def __init__(self, seed: Optional[int] = None):
@@ -131,9 +147,6 @@ class GreedyHeuristicPolicy(BasePolicy):
 
         # 1. Pending Reward Choices (Actions 4050, 4051)
         if mask[4050] or mask[4051]:
-            # Priority order for RewardType: Line (0) > Train (1) > Interchange (4) > Tunnel (2) > Carriage (3)
-            # Globals 13..17 is Card 0 (1-hot: Line, Train, Tunnel, Carriage, Interchange)
-            # Globals 18..22 is Card 1 (1-hot: Line, Train, Tunnel, Carriage, Interchange)
             card_priority = [10, 9, 5, 4, 7]  # line=10, train=9, tunnel=5, carriage=4, interchange=7
             val0 = 0
             if mask[4050] and len(globals_feat) >= 23:
@@ -153,7 +166,6 @@ class GreedyHeuristicPolicy(BasePolicy):
         interchange_slice = ACTION_TYPE_SLICES[6]  # 4020..4049 (30 actions)
         interchange_legal = np.where(mask[interchange_slice])[0]
         if len(interchange_legal) > 0:
-            # Pick the station with highest overcrowding progress
             best_st = -1
             max_prog = 0.5
             for st_id in interchange_legal:
@@ -168,14 +180,12 @@ class GreedyHeuristicPolicy(BasePolicy):
         add_train_slice = ACTION_TYPE_SLICES[4]  # 4006..4012 (7 actions)
         add_train_legal = np.where(mask[add_train_slice])[0]
         if len(add_train_legal) > 0:
-            # Check which line has highest queue:
             best_line = add_train_legal[0]
             max_line_queue = -1.0
-            # Sum queues for stations in each line
             edge_lines = edge_attrs[:, 0:7]
             for l_idx in add_train_legal:
                 l_mask = edge_lines[:, l_idx] > 0
-                q_sum = float(np.sum(edge_attrs[l_mask, 7]))  # distance/queue proxy
+                q_sum = float(np.sum(edge_attrs[l_mask, 7]))
                 if q_sum > max_line_queue:
                     max_line_queue = q_sum
                     best_line = l_idx
@@ -185,26 +195,16 @@ class GreedyHeuristicPolicy(BasePolicy):
         extend_slice = ACTION_TYPE_SLICES[2]  # 436..855 (420 actions)
         add_line_slice = ACTION_TYPE_SLICES[1]  # 1..435 (435 actions)
 
-        # Look for alive stations with degree 0
-        unconnected_st = []
-        for i in range(30):
-            # Kind one-hot has any entry > 0 -> alive station
-            if np.any(nodes[i, 2:12] > 0) and nodes[i, 23] == 0:
-                unconnected_st.append(i)
+        unconnected_st = [i for i in range(30) if np.any(nodes[i, 2:12] > 0) and nodes[i, 23] == 0]
 
-        if unconnected_st:
-            target_st = unconnected_st[0]
-            # Try ExtendLine to target_st
-            # ExtendLine index: (lineID * 30 + stID) * 2 + end
+        for target_st in unconnected_st:
             for line_id in range(7):
                 for end in [0, 1]:
                     ext_idx = extend_slice.start + (line_id * 30 + target_st) * 2 + end
                     if ext_idx < extend_slice.stop and mask[ext_idx]:
                         return ext_idx
 
-            # Try AddLine connecting target_st to another station of different kind
             target_kind = int(np.argmax(nodes[target_st, 2:12]))
-            # Triu indices: u < v
             triu_u, triu_v = np.triu_indices(30, k=1)
             for pair_idx in range(len(triu_u)):
                 u, v = triu_u[pair_idx], triu_v[pair_idx]
@@ -221,7 +221,6 @@ class GreedyHeuristicPolicy(BasePolicy):
         if mask[0]:
             return 0
 
-        # Fallback to first legal action
         legal = np.where(mask)[0]
         return int(legal[0]) if len(legal) > 0 else 0
 
@@ -249,10 +248,15 @@ def run_single_episode(
     last_obs = obs
 
     while not done and step < max_steps:
-        action = policy.act(obs)
+        if isinstance(policy, ModelPolicy):
+            action = policy.act(obs, env=env)
+        else:
+            action = policy.act(obs)
         obs, reward, terminated, truncated, step_info = env.step(action)
         total_reward += reward
         step += 1
+        if isinstance(policy, ModelPolicy):
+            policy.sim_time += step_info.get("simulation_seconds", 1.0)
         done = terminated or truncated
         last_obs = obs
 
@@ -478,7 +482,6 @@ def run_evaluation_suite(
             ckpt = torch.load(model_path, map_location=device, weights_only=False)
             state_dict = ckpt["model_state_dict"] if "model_state_dict" in ckpt else ckpt
             model.load_state_dict(state_dict)
-            model.debias_extension_embeddings()
         else:
             print(f"⚠️ No checkpoint found at '{model_path}', using randomly initialized model")
         model.eval()

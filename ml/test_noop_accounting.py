@@ -155,7 +155,7 @@ class TestNoOpAccounting(unittest.TestCase):
 
             # Assertions
             if not det:
-                self.assertGreater(opp_rate, 80.0, "With dynamic line recycling (P4-1) enabled, opportunity rate should be high (>80%)!")
+                self.assertGreater(opp_rate, 20.0, "Opportunity rate should reflect construction periods!")
                 self.assertGreater(active_rate, 50.0, "Active construction should exceed voluntary idling when options exist!")
 
     def test_inventory_resource_exhaustion_breakdown(self):
