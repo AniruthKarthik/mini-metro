@@ -40,7 +40,7 @@ class TestPureRLAdvancements(unittest.TestCase):
         env.close()
 
     def test_curriculum_manager_transitions(self):
-        """Test curriculum manager progression: Berlin (1) -> London/Tokyo (2) -> All Maps (3)."""
+        """Test curriculum manager progression: Berlin (1) -> +London (2) -> +Tokyo (3) -> +NYC (4)."""
         cm = CurriculumManager(enabled=True)
         self.assertEqual(cm.stage_num, 1)
         self.assertEqual(cm.get_maps(), [3])
@@ -49,23 +49,29 @@ class TestPureRLAdvancements(unittest.TestCase):
         self.assertFalse(cm.update(rolling_avg_score=150.0, global_step=10_000))
         self.assertEqual(cm.stage_num, 1)
 
-        # Score & step criteria met -> Promote to Stage 2
-        promoted = cm.update(rolling_avg_score=130.0, global_step=35_000)
+        # Score & step criteria met -> Promote to Stage 2 (Berlin + London)
+        promoted = cm.update(rolling_avg_score=110.0, global_step=35_000)
         self.assertTrue(promoted)
         self.assertEqual(cm.stage_num, 2)
-        self.assertEqual(cm.get_maps(), [0, 2])
+        self.assertEqual(cm.get_maps(), [3, 0])
 
-        # Promote to Stage 3
-        promoted = cm.update(rolling_avg_score=210.0, global_step=150_000)
+        # Promote to Stage 3 (Berlin + London + Tokyo)
+        promoted = cm.update(rolling_avg_score=160.0, global_step=100_000)
         self.assertTrue(promoted)
         self.assertEqual(cm.stage_num, 3)
+        self.assertEqual(cm.get_maps(), [3, 0, 2])
+
+        # Promote to Stage 4 (All 4 Maps including NYC)
+        promoted = cm.update(rolling_avg_score=210.0, global_step=210_000)
+        self.assertTrue(promoted)
+        self.assertEqual(cm.stage_num, 4)
         self.assertEqual(cm.get_maps(), [0, 1, 2, 3])
 
         # Serialization test
         state = cm.state_dict()
         cm_loaded = CurriculumManager()
         cm_loaded.load_state_dict(state)
-        self.assertEqual(cm_loaded.stage_num, 3)
+        self.assertEqual(cm_loaded.stage_num, 4)
 
     def test_guided_lookahead_searcher(self):
         """Test GuidedLookaheadSearcher action selection and emergency triggering."""

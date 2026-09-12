@@ -22,27 +22,36 @@ class CurriculumManager:
             "name": "Berlin Fundamentals",
             "maps": [3],
             "weights": None,
-            "promotion_score": 120.0,
+            "promotion_score": 100.0,
             "min_steps": 30_000,
-            "description": "Open grid routing, zero water obstacles, basic passenger throughput",
+            "description": "Open grid routing, basic passenger line routing and throughput",
         },
         {
             "stage": 2,
-            "name": "London & Tokyo Chokepoints",
-            "maps": [0, 2],
+            "name": "River Crossing (Berlin + London)",
+            "maps": [3, 0],
             "weights": [0.5, 0.5],
-            "promotion_score": 200.0,
-            "min_steps": 100_000,
-            "description": "River bisecting and island bridges/tunnels chokepoints",
+            "promotion_score": 150.0,
+            "min_steps": 60_000,
+            "description": "Horizontal river crossing and tunnel budgeting while retaining open grid routing",
         },
         {
             "stage": 3,
-            "name": "All-Map Mastery",
+            "name": "Coastal Islands (Berlin + London + Tokyo)",
+            "maps": [3, 0, 2],
+            "weights": [0.33, 0.33, 0.34],
+            "promotion_score": 200.0,
+            "min_steps": 100_000,
+            "description": "Island hubs, rapid passenger surges, and high-speed train management",
+        },
+        {
+            "stage": 4,
+            "name": "All-Map Mastery (Full Multi-Map)",
             "maps": [0, 1, 2, 3],
             "weights": [0.25, 0.25, 0.25, 0.25],
             "promotion_score": float("inf"),
             "min_steps": float("inf"),
-            "description": "Full multi-map surge with NYC grid + late-game landmark rarity",
+            "description": "Full multi-map surge including Manhattan chokepoint and severe tunnel constraints",
         },
     ]
 
@@ -61,13 +70,15 @@ class CurriculumManager:
         self.stage_start_step = 0
         self.history = []
 
-        if thresholds is not None and len(thresholds) >= 2:
-            self.stages[0]["promotion_score"] = float(thresholds[0])
-            self.stages[1]["promotion_score"] = float(thresholds[1])
+        if thresholds is not None:
+            for idx, thresh in enumerate(thresholds):
+                if idx < len(self.stages) - 1:
+                    self.stages[idx]["promotion_score"] = float(thresh)
 
-        if min_steps is not None and len(min_steps) >= 2:
-            self.stages[0]["min_steps"] = int(min_steps[0])
-            self.stages[1]["min_steps"] = int(min_steps[1])
+        if min_steps is not None:
+            for idx, steps in enumerate(min_steps):
+                if idx < len(self.stages) - 1:
+                    self.stages[idx]["min_steps"] = int(steps)
 
     @property
     def current_stage(self) -> Dict[str, Any]:

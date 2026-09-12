@@ -262,10 +262,10 @@ def parse_args():
                         help="Total environment steps to train (default: 40,000)")
     parser.add_argument("--num-envs", type=int, default=16,
                         help="Number of parallel environments (default: 16)")
-    parser.add_argument("--curriculum-thresholds", type=float, nargs=2, default=[40.0, 70.0],
-                        help="Rolling score promotion thresholds for Stage 1 -> 2 and Stage 2 -> 3 (default: 40 70)")
-    parser.add_argument("--curriculum-min-steps", type=int, nargs=2, default=[8000, 18000],
-                        help="Minimum steps required before promoting Stage 1 -> 2 and Stage 2 -> 3 (default: 8000 18000)")
+    parser.add_argument("--curriculum-thresholds", type=float, nargs="+", default=[35.0, 55.0, 75.0],
+                        help="Rolling score promotion thresholds for 4 stages: Berlin -> +London -> +Tokyo -> +NYC (default: 35 55 75)")
+    parser.add_argument("--curriculum-min-steps", type=int, nargs="+", default=[8000, 16000, 26000],
+                        help="Minimum steps required before promoting each stage (default: 8000 16000 26000)")
     parser.add_argument("--fine-tune", action="store_true",
                         help="Fine-tune from latest checkpoint")
     parser.add_argument("--pretrained", type=str, default=None,

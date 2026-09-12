@@ -100,11 +100,11 @@ def parse_args():
     parser.add_argument("--map-weights", type=float, nargs="+", default=None,
                         help="Relative sampling weights for maps in 'mixed' mode (e.g., 1 1 1 2 to emphasize Berlin)")
     parser.add_argument("--curriculum", action=argparse.BooleanOptionalAction, default=True,
-                        help="Enable procedural multi-map curriculum learning (Stage 1 Berlin -> Stage 2 London/Tokyo -> Stage 3 All Maps)")
-    parser.add_argument("--curriculum-thresholds", type=float, nargs=2, default=[120.0, 200.0],
-                        help="Rolling score promotion thresholds for Stage 1 -> 2 and Stage 2 -> 3 (default: 120 200)")
-    parser.add_argument("--curriculum-min-steps", type=int, nargs=2, default=[30000, 100000],
-                        help="Minimum steps required before promoting Stage 1 -> 2 and Stage 2 -> 3 (default: 30000 100000)")
+                        help="Enable procedural multi-map curriculum learning (Stage 1 Berlin -> Stage 2 +London -> Stage 3 +Tokyo -> Stage 4 +NYC)")
+    parser.add_argument("--curriculum-thresholds", type=float, nargs="+", default=[100.0, 150.0, 200.0],
+                        help="Rolling score promotion thresholds for 4 stages: Berlin -> +London -> +Tokyo -> +NYC (default: 100 150 200)")
+    parser.add_argument("--curriculum-min-steps", type=int, nargs="+", default=[30000, 60000, 100000],
+                        help="Minimum steps required before promoting each stage (default: 30000 60000 100000)")
     parser.add_argument("--pbrs", action=argparse.BooleanOptionalAction, default=True,
                         help="Enable Potential-Based Reward Shaping (Ng et al., 1999) for dense temporal credit assignment")
     parser.add_argument("--hierarchical", action=argparse.BooleanOptionalAction, default=True,
