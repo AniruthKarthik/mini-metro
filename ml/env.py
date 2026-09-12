@@ -84,10 +84,13 @@ class MiniMetroEnv(gym.Env):
     """
     Gymnasium environment wrapper for the Mini Metro Go simulator.
     """
-    def __init__(self, map_id=-1, seed=None):
+    def __init__(self, map_id=-1, seed=None, map_pool=None, map_weights=None):
         super().__init__()
         
         self.map_id = map_id
+        self.map_pool = list(map_pool) if map_pool is not None else [0, 1, 2, 3]
+        self.map_weights = list(map_weights) if map_weights is not None else None
+        self.current_map = 0 if map_id == -1 else map_id
         self._seed_val = seed
             
         self.handle = None
@@ -158,7 +161,13 @@ class MiniMetroEnv(gym.Env):
         # Curriculum Learning: Random Map Selection
         current_map = self.map_id
         if current_map == -1:
-            current_map = int(np.random.choice([0, 1, 2])) # London, NYC, Tokyo
+            if self.map_weights is not None and len(self.map_weights) == len(self.map_pool):
+                p = np.array(self.map_weights, dtype=np.float64)
+                p = p / p.sum()
+                current_map = int(np.random.choice(self.map_pool, p=p))
+            else:
+                current_map = int(np.random.choice(self.map_pool))
+        self.current_map = current_map
             
         self.handle = lib.CreateSimulator(current_map, self._seed_val)
         self._apply_scoring_config()
@@ -496,6 +505,10 @@ class MiniMetroEnv(gym.Env):
             info["sub_steps"] = sub_steps
             info["simulation_seconds"] = float(sub_steps * duration)
             info["emergency_break"] = emergency_break
+            info["score"] = int(round(float(self._out_globals[6]) * 500.0))
+            info["map_id"] = self.current_map
+            map_names = ["London", "New York City", "Tokyo", "Berlin"]
+            info["map_name"] = map_names[self.current_map] if 0 <= self.current_map < len(map_names) else f"Map_{self.current_map}"
 
             return obs, total_reward, done, False, info
         except Exception:
@@ -506,6 +519,10 @@ class MiniMetroEnv(gym.Env):
             info["sub_steps"] = 0
             info["simulation_seconds"] = 0.0
             info["emergency_break"] = False
+            info["score"] = int(round(float(self._out_globals[6]) * 500.0))
+            info["map_id"] = self.current_map
+            map_names = ["London", "New York City", "Tokyo", "Berlin"]
+            info["map_name"] = map_names[self.current_map] if 0 <= self.current_map < len(map_names) else f"Map_{self.current_map}"
             return obs, 0.0, True, False, info
 
 

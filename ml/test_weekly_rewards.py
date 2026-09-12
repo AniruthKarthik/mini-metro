@@ -114,6 +114,8 @@ def test_legacy_checkpoint_compatibility():
     print("========================================================")
     
     ckpt_path = "runs/minimetro_ppo/model_final.pt"
+    if not os.path.exists(ckpt_path):
+        ckpt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs/minimetro_ppo/model_final.pt")
     assert os.path.exists(ckpt_path), f"Checkpoint not found: {ckpt_path}"
     
     ckpt = torch.load(ckpt_path, map_location="cpu")

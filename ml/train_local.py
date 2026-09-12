@@ -7,6 +7,7 @@ except ImportError:
     if os.path.exists(venv_python) and os.path.realpath(sys.executable) != os.path.realpath(venv_python):
         os.execv(venv_python, [venv_python] + sys.argv)
 
+import argparse
 import time
 import glob
 
@@ -28,11 +29,20 @@ from probing import compute_expansion_metrics
 # ENVIRONMENT
 # ============================================================
 
-def make_env(seed, map_id=0, flip_prob=0.5):
+MAP_NAMES = {
+    0: "London",
+    1: "New York City",
+    2: "Tokyo",
+    3: "Berlin",
+}
+
+def make_env(seed, map_id=0, map_pool=None, map_weights=None, flip_prob=0.5):
     def thunk():
         env = MiniMetroEnv(
             map_id=map_id,
-            seed=seed
+            seed=seed,
+            map_pool=map_pool,
+            map_weights=map_weights
         )
         if flip_prob > 0:
             env = LineOrientationAugmentation(env, flip_prob=flip_prob)
@@ -221,16 +231,35 @@ def load_checkpoint(
 # MAIN TRAINING
 # ============================================================
 
-def run_training():
+def parse_args():
+    parser = argparse.ArgumentParser(description="Mini Metro Local PPO Multi-Map Training")
+    parser.add_argument("--maps", type=int, nargs="+", default=[0, 1, 2, 3],
+                        help="List of map IDs to train on: 0=London, 1=NYC, 2=Tokyo, 3=Berlin")
+    parser.add_argument("--map-mode", type=str, choices=["stratified", "mixed"], default="stratified",
+                        help="Worker map allocation: 'stratified' or 'mixed'")
+    parser.add_argument("--total-timesteps", type=int, default=40_000,
+                        help="Total environment steps to train (default: 40,000)")
+    parser.add_argument("--num-envs", type=int, default=16,
+                        help="Number of parallel environments (default: 16)")
+    parser.add_argument("--fine-tune", action="store_true",
+                        help="Fine-tune from latest checkpoint")
+    parser.add_argument("--pretrained", type=str, default=None,
+                        help="Explicit pretrained model path")
+    return parser.parse_args()
+
+def run_training(args=None):
+    if args is None:
+        args = parse_args()
 
     # --------------------------------------------------------
     # TRAINING CONFIGURATION
     # --------------------------------------------------------
 
-    num_envs = 16
+    num_envs = args.num_envs
     num_steps = 128
-
-    total_timesteps = 40_000
+    total_timesteps = args.total_timesteps
+    maps = args.maps
+    map_mode = args.map_mode
 
     # Number of environment transitions per update.
     rollout_size = num_envs * num_steps
@@ -267,9 +296,11 @@ def run_training():
     amp_dtype = torch.bfloat16 if (use_amp and torch.cuda.is_bf16_supported()) else torch.float16
 
     print("=" * 70)
-    print("MiniMetro PPO Training")
+    print("🚇 MiniMetro Local Multi-Map PPO Training")
     print("=" * 70)
     print(f"Device          : {device}")
+    print(f"Maps            : {[MAP_NAMES.get(m, f'Map_{m}') for m in maps]} (IDs: {maps})")
+    print(f"Map Strategy    : {map_mode.upper()}")
     print(f"Num environments : {num_envs}")
     print(f"Steps/update    : {num_steps}")
     print(f"Rollout size    : {rollout_size}")
@@ -296,11 +327,19 @@ def run_training():
     # --------------------------------------------------------
 
     print("Creating vectorized environments...")
+    env_fns = []
+    if map_mode == "stratified":
+        for i in range(num_envs):
+            assigned_map = maps[i % len(maps)]
+            env_fns.append(make_env(seed=i, map_id=assigned_map, flip_prob=0.5))
+            print(f"  Worker {i:02d} -> {MAP_NAMES.get(assigned_map, f'Map_{assigned_map}')} (ID {assigned_map})")
+    else:
+        for i in range(num_envs):
+            env_fns.append(make_env(seed=i, map_id=-1, map_pool=maps, flip_prob=0.5))
+            print(f"  Worker {i:02d} -> Dynamic Curriculum over maps {maps}")
+
     envs = gym.vector.AsyncVectorEnv(
-        [
-            make_env(i)
-            for i in range(num_envs)
-        ],
+        env_fns,
         context='spawn'
     )
     
@@ -567,10 +606,17 @@ def run_training():
                             except Exception:
                                 pass
 
-                            print(f"global_step={global_step}, env={idx}, episodic_return={episode_return:.3f}, length={episode_length}", flush=True)
+                            score = int(info.get("score", 0))
+                            map_name = info.get("map_name", MAP_NAMES.get(maps[idx % len(maps)], f"Map {idx}"))
+                            map_key = map_name.lower().replace(" ", "_")
+
+                            print(f"🗺️ [{map_name.upper()} | Env {idx:02d}] step={global_step} | Return={episode_return:.2f} | Score={score} | Length={episode_length}", flush=True)
 
                             writer.add_scalar("charts/episodic_return", episode_return, global_step)
                             writer.add_scalar("charts/episodic_length", episode_length, global_step)
+                            writer.add_scalar(f"charts/episodic_return_{map_key}", episode_return, global_step)
+                            writer.add_scalar(f"charts/episodic_length_{map_key}", episode_length, global_step)
+                            writer.add_scalar(f"charts/score_{map_key}", score, global_step)
                             if "episode_reward_breakdown" in info:
                                 for channel, val in info["episode_reward_breakdown"].items():
                                     writer.add_scalar(f"rewards/{channel}", val, global_step)

@@ -47,6 +47,8 @@ func CreateSimulator(mapID C.int, seed C.uint64_t) C.uintptr_t {
 		cfg = engine.NYCMap()
 	case 2:
 		cfg = engine.TokyoMap()
+	case 3:
+		cfg = engine.BerlinMap()
 	default:
 		cfg = engine.LondonMap()
 	}

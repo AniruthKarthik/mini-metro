@@ -446,13 +446,13 @@ button {
 }
 
 .hud-modal-card.map-select {
-  width: min(720px, calc(100vw - 32px));
+  width: min(880px, calc(100vw - 32px));
   padding: 32px 24px;
 }
 
 .hud-map-options {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
   gap: 16px;
   margin-top: 18px;
 }
