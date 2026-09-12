@@ -120,7 +120,7 @@ def save_checkpoint(
     )
 
     print(
-        f"💾 Checkpoint saved: {checkpoint_path}",
+        f"Checkpoint saved: {checkpoint_path}",
         flush=True
     )
 
@@ -166,7 +166,7 @@ def load_checkpoint(
     """
 
     print(
-        f"🔄 Loading checkpoint: {checkpoint_path}",
+        f"Loading checkpoint: {checkpoint_path}",
         flush=True
     )
 
@@ -187,13 +187,13 @@ def load_checkpoint(
                 agent.optimizer.load_state_dict(optim_sd)
             except Exception as opt_err:
                 print(
-                    f"⚠️ Could not restore optimizer state ({opt_err}). "
+                    f"[WARNING] Could not restore optimizer state ({opt_err}). "
                     f"Architecture parameters changed — using reinitialized optimizer."
                 )
 
     if curriculum is not None and "curriculum_state_dict" in checkpoint:
         curriculum.load_state_dict(checkpoint["curriculum_state_dict"])
-        print(f"🎓 Restored Curriculum State -> {curriculum.get_stage_name()}", flush=True)
+        print(f"[CURRICULUM] Restored Curriculum State -> {curriculum.get_stage_name()}", flush=True)
 
     # Restore RNG state when available.
     if "torch_rng_state" in checkpoint:
@@ -232,7 +232,7 @@ def load_checkpoint(
     )
 
     print(
-        f"✅ Resumed from update {update} "
+        f"[OK] Resumed from update {update} "
         f"| global_step={global_step}",
         flush=True
     )
@@ -331,7 +331,7 @@ def run_training(args=None):
     amp_dtype = torch.bfloat16 if (use_amp and torch.cuda.is_bf16_supported()) else torch.float16
 
     print("=" * 70)
-    print("🚇 MiniMetro Local Multi-Map PPO Training")
+    print("MiniMetro Local Multi-Map PPO Training")
     print("=" * 70)
     print(f"Device           : {device}")
     print(f"Curriculum       : {curriculum.get_stage_name() if args.curriculum else 'Disabled'}")
@@ -381,7 +381,7 @@ def run_training(args=None):
         context='spawn'
     )
     
-    print("✅ Environments created.")
+    print("Environments created.")
 
     # --------------------------------------------------------
     # DEVICE & MODEL
@@ -419,13 +419,13 @@ def run_training(args=None):
                 curriculum=curriculum if args.curriculum else None,
             )
             start_update = loaded_update + 1
-            print(f"✅ Resumed from update {start_update - 1} | global_step={global_step}")
+            print(f"[OK] Resumed from update {start_update - 1} | global_step={global_step}")
         except Exception as e:
-            print(f"⚠️ Could not load checkpoint:\n{e}\nStarting a new training run.")
+            print(f"[WARNING] Could not load checkpoint:\n{e}\nStarting a new training run.")
             start_update = 1
             global_step = 0
     else:
-        print("🆕 No checkpoint found. Starting new training run.")
+        print("No checkpoint found. Starting new training run.")
 
     # --------------------------------------------------------
     # TENSORS
@@ -666,7 +666,7 @@ def run_training(args=None):
                     map_name = ep_data["map_name"]
                     map_key = map_name.lower().replace(" ", "_")
 
-                    print(f"🗺️ [{map_name.upper()} | Env {idx:02d}] step={global_step} | Return={episode_return:.2f} | Score={score} | Length={episode_length}", flush=True)
+                    print(f"[{map_name.upper()} | Env {idx:02d}] step={global_step} | Return={episode_return:.2f} | Score={score} | Length={episode_length}", flush=True)
 
                     writer.add_scalar("charts/episodic_return", episode_return, global_step)
                     writer.add_scalar("charts/episodic_length", episode_length, global_step)
@@ -685,7 +685,7 @@ def run_training(args=None):
                         if current_avg > best_avg_score:
                             best_avg_score = current_avg
                             torch.save(model.state_dict(), best_model_path)
-                            print(f"🌟 New all-time best model! Rolling Avg Score: {best_avg_score:.1f} (Latest: {score}) -> Saved {best_model_path}", flush=True)
+                            print(f"[BEST] New all-time best model! Rolling Avg Score: {best_avg_score:.1f} (Latest: {score}) -> Saved {best_model_path}", flush=True)
                             writer.add_scalar("charts/best_rolling_score", best_avg_score, global_step)
 
                         if args.curriculum and curriculum.update(best_avg_score, global_step):
@@ -810,7 +810,7 @@ def run_training(args=None):
             ):
 
                 print(
-                    "⚠️ WARNING: "
+                    "[WARNING] "
                     "Non-finite PPO metric detected!",
                     flush=True
                 )
@@ -905,7 +905,7 @@ def run_training(args=None):
             # ------------------------------------------------
 
             print(
-                f"✅ Completed "
+                f"Completed "
                 f"{update}/{num_updates} | "
                 f"steps={global_step} | "
                 f"SPS={sps} | "
@@ -941,7 +941,7 @@ def run_training(args=None):
     except KeyboardInterrupt:
 
         print(
-            "\n🛑 Training interrupted by user.",
+            "\nTraining interrupted by user.",
             flush=True
         )
 
@@ -988,7 +988,7 @@ def run_training(args=None):
             )
 
             print(
-                f"💾 Emergency checkpoint saved: "
+                f"Emergency checkpoint saved: "
                 f"{emergency_path}",
                 flush=True
             )
@@ -996,7 +996,7 @@ def run_training(args=None):
         except Exception as e:
 
             print(
-                f"⚠️ Could not save emergency "
+                f"[WARNING] Could not save emergency "
                 f"checkpoint: {e}",
                 flush=True
             )
@@ -1004,7 +1004,7 @@ def run_training(args=None):
     except Exception as e:
 
         print(
-            "\n❌ TRAINING FAILED",
+            "\nTRAINING FAILED",
             flush=True
         )
 
@@ -1055,7 +1055,7 @@ def run_training(args=None):
             )
 
             print(
-                f"💾 Emergency checkpoint saved: "
+                f"Emergency checkpoint saved: "
                 f"{emergency_path}",
                 flush=True
             )
@@ -1063,7 +1063,7 @@ def run_training(args=None):
         except Exception as save_error:
 
             print(
-                f"⚠️ Could not save emergency "
+                f"[WARNING] Could not save emergency "
                 f"checkpoint: {save_error}",
                 flush=True
             )
@@ -1090,7 +1090,7 @@ def run_training(args=None):
             )
 
             print(
-                f"💾 Final model saved: "
+                f"Final model saved: "
                 f"{final_model_path}",
                 flush=True
             )
@@ -1098,7 +1098,7 @@ def run_training(args=None):
         except Exception as e:
 
             print(
-                f"⚠️ Could not save final model: {e}",
+                f"[WARNING] Could not save final model: {e}",
                 flush=True
             )
 
@@ -1125,7 +1125,7 @@ def run_training(args=None):
     # --------------------------------------------------------
 
     print("\n" + "=" * 70)
-    print("✅ TRAINING FINISHED")
+    print("TRAINING FINISHED")
     print("=" * 70)
     print(
         f"Total environment steps: {global_step}"

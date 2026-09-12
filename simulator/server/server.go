@@ -268,7 +268,7 @@ func (s *Server) actionDispatcher() {
 		raw := msg.raw
 		action, cmd, err := ParseAction(raw)
 		if err != nil {
-			log.Printf("❌ Action parse error: %v (raw: %s)", err, raw)
+			log.Printf("[ERROR] Action parse error: %v (raw: %s)", err, raw)
 			errMsg, _ := json.Marshal(ErrorMessage{
 				Type:  "action_error",
 				Error: err.Error(),
@@ -283,14 +283,14 @@ func (s *Server) actionDispatcher() {
 		}
 		sim := s.simPtr.Load()
 		if err := sim.ApplyAction(action); err != nil {
-			log.Printf("❌ Action apply error: %v (raw: %s)", err, raw)
+			log.Printf("[ERROR] Action apply error: %v (raw: %s)", err, raw)
 			errMsg, _ := json.Marshal(ErrorMessage{
 				Type:  "action_error",
 				Error: err.Error(),
 			})
 			s.sendError(msg.client, errMsg)
 		} else {
-			log.Printf("✅ Action applied successfully: %s", string(raw))
+			log.Printf("[OK] Action applied successfully: %s", string(raw))
 		}
 	}
 }
@@ -343,7 +343,7 @@ func (s *Server) handleServerCommand(cmd string) {
 		for len(s.actionCh) > 0 {
 			<-s.actionCh
 		}
-		log.Printf("🔄 Simulation restarted cleanly with %s map (randomized initial stations)", cfg.Name)
+		log.Printf("[SERVER] Simulation restarted cleanly with %s map (randomized initial stations)", cfg.Name)
 	case strings.HasPrefix(cmd, "select_map:"):
 		payload := strings.TrimPrefix(cmd, "select_map:")
 		var p struct {
@@ -371,7 +371,7 @@ func (s *Server) handleServerCommand(cmd string) {
 		for len(s.actionCh) > 0 {
 			<-s.actionCh
 		}
-		log.Printf("🗺️ Simulation started with map: %s (randomized initial stations)", cfg.Name)
+		log.Printf("[SERVER] Simulation started with map: %s (randomized initial stations)", cfg.Name)
 	case strings.HasPrefix(cmd, "set_speed:"):
 		// payload is a raw JSON object {"tps":60}
 		payload := strings.TrimPrefix(cmd, "set_speed:")

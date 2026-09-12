@@ -49,10 +49,12 @@ pnpm-debug.log*
 *.zip
 
 # ML Checkpoints
-runs/
-ml/runs/
+runs/**/*.pt
+ml/runs/**/*.pt
 !runs/**/model_final.pt
 !ml/runs/**/model_final.pt
+!runs/**/model_best.pt
+!ml/runs/**/model_best.pt
 events.out.tfevents.*
 
 # Profiling

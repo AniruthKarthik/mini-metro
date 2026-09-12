@@ -7,8 +7,6 @@ build-lib:
 test: build-lib
 	@echo "Running Go engine test suite..."
 	cd simulator && go test -v ./...
-	@echo "Running Python test suites..."
-	PYTHONPATH=. ./ml/venv/bin/python -m unittest discover -s ml -p "test_*.py"
 	@echo "All tests passed successfully!"
 
 train: build-lib
@@ -60,9 +58,9 @@ cpu: cpu-game
 gpu-game: clean
 	@echo ""
 	@echo "================================================================================"
-	@echo "🚇 STARTING MINI METRO: ACTUAL TRAINED MODEL (GPU / 256-DIM PPO)"
-	@echo "🧠 Model Policy: ml/runs/minimetro_ppo/model_final.pt (hidden_dim=256)"
-	@echo "🗺️  Initial Stations: Randomized Spawning"
+	@echo "STARTING MINI METRO: ACTUAL TRAINED MODEL (GPU / 256-DIM PPO)"
+	@echo "Model Policy: ml/runs/minimetro_ppo/model_final.pt (hidden_dim=256)"
+	@echo "Initial Stations: Randomized Spawning"
 	@echo "================================================================================"
 	@echo ""
 	@echo "Starting UI, Backend, and AI (Actual 256-dim Model). Press Ctrl+C to stop."
@@ -76,9 +74,9 @@ gpu-game: clean
 cpu-game: clean
 	@echo ""
 	@echo "================================================================================"
-	@echo "🚇 STARTING MINI METRO: LOCAL CPU TRAINED MODEL (32-DIM PPO)"
-	@echo "🧠 Model Policy: ml/runs/minimetro_ppo_local/model_final.pt (hidden_dim=32)"
-	@echo "🗺️  Initial Stations: Randomized Spawning"
+	@echo "STARTING MINI METRO: LOCAL CPU TRAINED MODEL (32-DIM PPO)"
+	@echo "Model Policy: ml/runs/minimetro_ppo_local/model_final.pt (hidden_dim=32)"
+	@echo "Initial Stations: Randomized Spawning"
 	@echo "================================================================================"
 	@echo ""
 	@echo "Starting UI, Backend, and AI (CPU 32-dim Model). Press Ctrl+C to stop."

@@ -39,7 +39,7 @@ def load_agent(checkpoint_path: str, device: torch.device) -> MiniMetroActorCrit
         ckpt = torch.load(checkpoint_path, map_location=device)
         state_dict = ckpt["model_state_dict"] if "model_state_dict" in ckpt else ckpt
         model.load_state_dict(state_dict)
-        print(f"✓ Successfully loaded model checkpoint from {checkpoint_path}")
+        print(f"[OK] Successfully loaded model checkpoint from {checkpoint_path}")
     else:
         print(f"! Checkpoint {checkpoint_path} not found; running with initialized model")
     model.eval()

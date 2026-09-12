@@ -516,12 +516,12 @@ def run_evaluation_suite(
                 model_path = model_files[-1]
 
         if model_path and os.path.exists(model_path):
-            print(f"✓ Loaded model checkpoint: {model_path}")
+            print(f"[OK] Loaded model checkpoint: {model_path}")
             ckpt = torch.load(model_path, map_location=device, weights_only=False)
             state_dict = ckpt["model_state_dict"] if "model_state_dict" in ckpt else ckpt
             model.load_state_dict(state_dict)
         else:
-            print(f"⚠️ No checkpoint found at '{model_path}', using randomly initialized model")
+            print(f"[WARNING] No checkpoint found at '{model_path}', using randomly initialized model")
         model.eval()
 
     benchmark_results: Dict[int, Dict[str, Any]] = {}
@@ -590,7 +590,7 @@ def run_evaluation_suite(
     if output_md:
         with open(output_md, "w", encoding="utf-8") as f:
             f.write(report_md)
-        print(f"✓ Saved markdown report to: {output_md}")
+        print(f"[OK] Saved markdown report to: {output_md}")
 
     return benchmark_results
 

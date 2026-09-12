@@ -38,7 +38,7 @@ func ServeWs(hub *Hub, actionCh chan<- actionMsg, w http.ResponseWriter, r *http
 		log.Printf("ws upgrade error: %v", err)
 		return
 	}
-	log.Printf("🔌 WebSocket client connected from %s", r.RemoteAddr)
+	log.Printf("[WS] WebSocket client connected from %s", r.RemoteAddr)
 
 	client := &Client{
 		hub:      hub,
@@ -56,7 +56,7 @@ func ServeWs(hub *Hub, actionCh chan<- actionMsg, w http.ResponseWriter, r *http
 // readPump pumps incoming WebSocket messages (JSON action payloads) into actionCh.
 func (c *Client) readPump() {
 	defer func() {
-		log.Println("🔌 WebSocket client disconnected")
+		log.Println("[WS] WebSocket client disconnected")
 		c.hub.unregister <- c
 		c.conn.Close()
 	}()
@@ -81,7 +81,7 @@ func (c *Client) readPump() {
 		// can route error responses back to the originator only.
 		select {
 		case c.actionCh <- actionMsg{raw: msg, client: c}:
-			log.Printf("📥 Action received from client: %s", string(msg))
+			log.Printf("[WS] Action received from client: %s", string(msg))
 		default:
 			log.Println("action channel full, dropping message")
 		}

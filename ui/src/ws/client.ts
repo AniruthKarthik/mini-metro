@@ -27,7 +27,7 @@ export class GameWSClient {
       this.ws = new WebSocket(this.url);
 
       this.ws.onopen = () => {
-        console.log('🚇 Connected to Mini Metro WebSocket server');
+        console.log('[WS] Connected to Mini Metro WebSocket server');
         this.isConnected = true;
         this.notifyConnection(true);
         if (this.reconnectTimer !== null) {

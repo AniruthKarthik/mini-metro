@@ -110,8 +110,8 @@ export class HUD {
               <polygon points="13 3 23 12 13 21 13 3" />
             </svg>
           </button>
-          <button id="hud-ai-toggle-btn" class="hud-speed-btn" title="Toggle AI Auto-Play" style="font-size: 14px;">
-            🤖
+          <button id="hud-ai-toggle-btn" class="hud-speed-btn" title="Toggle AI Auto-Play" style="font-size: 14px; font-weight: bold;">
+            AI
           </button>
         </div>
 
@@ -454,7 +454,7 @@ export class HUD {
       token.title = `Click to delete Line ${line.id + 1} (${line.stations.length} stations)`;
 
       token.addEventListener('click', () => {
-        console.log(`🗑️ [FRONTEND] Removing Line ${line.id}`);
+        console.log(`[FRONTEND] Removing Line ${line.id}`);
         this.wsClient.sendAction({
           type: 'remove_line',
           payload: { line_id: line.id },

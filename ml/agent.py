@@ -115,11 +115,11 @@ def load_model(device, model_override=None):
     try:
         missing, unexpected = model.load_state_dict(state_dict, strict=False)
         if missing or unexpected:
-            print(f"[AI] ⚠️  Checkpoint has {len(missing)} missing / {len(unexpected)} unexpected "
+            print(f"[AI] [WARNING] Checkpoint has {len(missing)} missing / {len(unexpected)} unexpected "
                   f"keys. Using partial weights — retrain with train.py for full compatibility.")
             print(f"[AI]    First missing: {missing[:3]}")
     except RuntimeError as e:
-        print(f"[AI] ⚠️  Checkpoint architecture incompatible (Phase 2/3 obs dims changed).")
+        print(f"[AI] [WARNING] Checkpoint architecture incompatible (Phase 2/3 obs dims changed).")
         print(f"[AI]    Reason: {str(e)[:120]}...")
         print(f"[AI]    Falling back to random-initialized weights. Retrain with train.py.")
         model = MiniMetroActorCritic(hidden_dim=hidden_dim).to(device)  # fresh weights
@@ -316,10 +316,10 @@ def main():
     model.eval()
 
     print("=" * 78)
-    print("🚇 MINI METRO: DEEP REINFORCEMENT LEARNING (RL) AGENT MODE")
-    print("🧠 Model Policy: Graph Attention Network (PPO Actor-Critic)")
-    print(f"📁 Checkpoint: {model_path}")
-    print(f"⚙️  Compute Engine: {device}")
+    print("MINI METRO: DEEP REINFORCEMENT LEARNING (RL) AGENT MODE")
+    print("Model Policy: Graph Attention Network (PPO Actor-Critic)")
+    print(f"Checkpoint: {model_path}")
+    print(f"Compute Engine: {device}")
     print("=" * 78)
 
     print("[AI] Connecting to Mini Metro WebSocket server...")
@@ -387,7 +387,7 @@ def main():
 
                         payload = {"type": "action_by_id", "payload": {"action_id": action_id}}
                         websocket.send(json.dumps(payload))
-                        print(f"[AI] 🚀 Action dispatched: {describe_action(action_id, obs_json)} (id={action_id})")
+                        print(f"[AI] Action dispatched: {describe_action(action_id, obs_json)} (id={action_id})")
 
                     except Exception as e:
                         print(f"[AI] Error fetching obs or sending action: {e}")

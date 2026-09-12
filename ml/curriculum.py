@@ -129,12 +129,12 @@ class CurriculumManager:
                 "qualifying_score": float(rolling_avg_score),
             })
 
-            print("\n" + "🎓" * 35, flush=True)
-            print(f"🎓 CURRICULUM PROMOTION -> {self.get_stage_name()}!", flush=True)
+            print("\n" + "=" * 70, flush=True)
+            print(f"[CURRICULUM] PROMOTION -> {self.get_stage_name()}!", flush=True)
             print(f"   Reason: Rolling Avg Score {rolling_avg_score:.1f} >= {score_target:.1f} (after {steps_in_stage} steps)", flush=True)
             print(f"   Active Maps: {new_stage['maps']} | Weights: {new_stage['weights']}", flush=True)
             print(f"   Focus: {new_stage['description']}", flush=True)
-            print("🎓" * 35 + "\n", flush=True)
+            print("=" * 70 + "\n", flush=True)
             return True
 
         return False

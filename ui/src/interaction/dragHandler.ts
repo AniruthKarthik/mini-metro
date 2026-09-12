@@ -45,7 +45,7 @@ export class DragHandler {
       // Right-click terminal handle -> Remove Line
       const terminalHit = this.findTerminalToExtend(pos, lines, stations);
       if (terminalHit) {
-        console.log(`🗑️ [FRONTEND] Right-click removing Line ${terminalHit.lineId}`);
+        console.log(`[FRONTEND] Right-click removing Line ${terminalHit.lineId}`);
         this.wsClient.sendAction({
           type: 'remove_line',
           payload: { line_id: terminalHit.lineId },
@@ -56,7 +56,7 @@ export class DragHandler {
       // Right-click track segment -> Remove Line
       const segHit = this.findSegmentToInsert(pos, lines, stations);
       if (segHit) {
-        console.log(`🗑️ [FRONTEND] Right-click removing Line ${segHit.lineId}`);
+        console.log(`[FRONTEND] Right-click removing Line ${segHit.lineId}`);
         this.wsClient.sendAction({
           type: 'remove_line',
           payload: { line_id: segHit.lineId },
@@ -607,7 +607,7 @@ export class DragHandler {
           targetStationId: null,
         };
       } else {
-        console.warn('⚠️ [FRONTEND] No available line tokens in resource pool');
+        console.warn('[FRONTEND] No available line tokens in resource pool');
       }
       this.selectedStationId = null;
       return;
@@ -668,7 +668,7 @@ export class DragHandler {
       if ((source as any).type === 'insert_station') {
         const src = source as any;
         if (targetStId !== null && targetStId !== src.fromStationAId && targetStId !== src.toStationBId) {
-          console.log(`📤 [FRONTEND] Dispatching insert_station: Line ${src.lineId} Station ${targetStId} at index ${src.insertIndex}`);
+          console.log(`[FRONTEND] Dispatching insert_station: Line ${src.lineId} Station ${targetStId} at index ${src.insertIndex}`);
           this.wsClient.sendAction({
             type: 'insert_station',
             payload: { line_id: src.lineId, station_id: targetStId, index: src.insertIndex, use_tunnel: false },
@@ -692,7 +692,7 @@ export class DragHandler {
         if (line) {
           // 1. Dragged endpoint into empty space -> CANCEL DRAG (Do not remove line!)
           if (targetStId === null) {
-            console.log(`❌ [FRONTEND] Dragged endpoint released in empty space -> canceling extend for line ${line.id}`);
+            console.log(`[FRONTEND] Dragged endpoint released in empty space -> canceling extend for line ${line.id}`);
             this.selectedStationId = null;
             this.dragState = null;
             return;
@@ -705,7 +705,7 @@ export class DragHandler {
 
             // 2a. Shortening 2-station line back onto origin -> Remove Line
             if (line.stations.length === 2 && (targetStId === firstStId || targetStId === lastStId)) {
-              console.log(`🗑️ [FRONTEND] Shortening 2-station line to origin -> Removing Line ${line.id}`);
+              console.log(`[FRONTEND] Shortening 2-station line to origin -> Removing Line ${line.id}`);
               this.wsClient.sendAction({
                 type: 'remove_line',
                 payload: { line_id: line.id },
@@ -723,7 +723,7 @@ export class DragHandler {
               (!source.fromFront && targetStId === secondLastStId);
 
             if (isShortening) {
-              console.log(`✂️ [FRONTEND] Shortening Line ${line.id} from ${source.fromFront ? 'front' : 'back'}`);
+              console.log(`[FRONTEND] Shortening Line ${line.id} from ${source.fromFront ? 'front' : 'back'}`);
               this.wsClient.sendAction({
                 type: 'shorten_line',
                 payload: { line_id: line.id, from_front: source.fromFront },
@@ -739,7 +739,7 @@ export class DragHandler {
               (source.fromStationId === lastStId && targetStId === firstStId);
 
             if (isOppositeTerminal) {
-              console.log(`🔄 [FRONTEND] Closing loop for line ${line.id}`);
+              console.log(`[FRONTEND] Closing loop for line ${line.id}`);
               this.wsClient.sendAction({
                 type: 'close_loop',
                 payload: { line_id: line.id, use_tunnel: false },
@@ -766,7 +766,7 @@ export class DragHandler {
           : (targetStId !== null ? lines.find((l) => !l.removed && l.stations.includes(targetStId)) || null : null);
 
         if (targetLine) {
-          console.log(`🚂 [FRONTEND] Adding locomotive to Line ${targetLine.id}`);
+          console.log(`[FRONTEND] Adding locomotive to Line ${targetLine.id}`);
           this.wsClient.sendAction({
             type: 'add_train',
             payload: { line_id: targetLine.id },
@@ -790,7 +790,7 @@ export class DragHandler {
         }
 
         if (targetLine) {
-          console.log(`🚂 [FRONTEND] Moving Train ${src.trainId} (from Line ${src.fromLineId}) to Line ${targetLine.id} at segment ${segIdx}`);
+          console.log(`[FRONTEND] Moving Train ${src.trainId} (from Line ${src.fromLineId}) to Line ${targetLine.id} at segment ${segIdx}`);
           this.wsClient.sendAction({
             type: 'reposition_train',
             payload: { train_id: src.trainId, line_id: targetLine.id, segment: segIdx, direction: 1 },
@@ -824,7 +824,7 @@ export class DragHandler {
         }
 
         if (targetTrain && targetTrain.id !== src.trainId) {
-          console.log(`🚃 [FRONTEND] Transferring carriage from Train ${src.trainId} to Train ${targetTrain.id}`);
+          console.log(`[FRONTEND] Transferring carriage from Train ${src.trainId} to Train ${targetTrain.id}`);
           this.wsClient.sendAction({
             type: 'remove_carriage',
             payload: { train_id: src.trainId },
@@ -834,7 +834,7 @@ export class DragHandler {
             payload: { train_id: targetTrain.id },
           });
         } else if (!targetLine && targetStId === null) {
-          console.log(`🚃 [FRONTEND] Removing carriage from Train ${src.trainId} back to inventory`);
+          console.log(`[FRONTEND] Removing carriage from Train ${src.trainId} back to inventory`);
           this.wsClient.sendAction({
             type: 'remove_carriage',
             payload: { train_id: src.trainId },
@@ -866,7 +866,7 @@ export class DragHandler {
           }
         }
         if (train) {
-          console.log(`🚃 [FRONTEND] Adding carriage to Train ${train.id} on Line ${targetLine!.id}`);
+          console.log(`[FRONTEND] Adding carriage to Train ${train.id} on Line ${targetLine!.id}`);
           this.wsClient.sendAction({
             type: 'add_carriage',
             payload: { train_id: train.id },
@@ -874,7 +874,7 @@ export class DragHandler {
         }
       } else if ((source as any).type === 'upgrade_interchange') {
         if (targetStId !== null) {
-          console.log(`🌟 [FRONTEND] Dispatching upgrade_interchange for Station ${targetStId}`);
+          console.log(`[FRONTEND] Dispatching upgrade_interchange for Station ${targetStId}`);
           this.wsClient.sendAction({
             type: 'upgrade_interchange',
             payload: { station_id: targetStId },

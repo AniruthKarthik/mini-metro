@@ -382,7 +382,7 @@ An exhaustive forensic audit of the repository—focusing on recent commits (`0b
 - **Files**: [`ml/agent.py`](file:///home/leomarshall/mm/ml/agent.py)
 - **Doable Task**:
   - Standardize `agent.py` on the trained neural network model.
-  - Add explicit action dispatch logging (`🚀 Action dispatched: {action_id}`).
+  - Add explicit action dispatch logging (`Action dispatched: {action_id}`).
 - **Verification**:
   `python agent.py` runs ML model inference cleanly.
 

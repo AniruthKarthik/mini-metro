@@ -87,7 +87,7 @@ def cleanup_old_checkpoints(checkpoint_dir="runs/minimetro_ppo", keep_last=5):
             old_path = os.path.join(checkpoint_dir, old_file)
             try:
                 os.remove(old_path)
-                print(f"🗑️ Cleaned up old checkpoint: {old_file}", flush=True)
+                print(f"Cleaned up old checkpoint: {old_file}", flush=True)
             except Exception:
                 pass
 
@@ -185,7 +185,7 @@ def run_training(args=None):
     map_weights = curriculum.get_weights() if args.curriculum else args.map_weights
 
     print("=" * 70)
-    print("🚇 MiniMetro Multi-Map PPO Training & Fine-Tuning")
+    print("MiniMetro Multi-Map PPO Training & Fine-Tuning")
     print("=" * 70)
     print(f"Mode            : {'Fine-Tuning' if (args.fine_tune or args.pretrained) else 'Standard Training'}")
     print(f"Curriculum      : {curriculum.get_stage_name() if args.curriculum else 'Disabled'}")
@@ -225,10 +225,10 @@ def run_training(args=None):
                 torch.set_num_threads(2)
             else:
                 torch.set_num_threads(min(4, max(1, cpu_cores)))
-                print(f"⚠️ Warning: GPU {torch.cuda.get_device_name(0)} capability sm_{major}{minor} not supported. Using CPU.", flush=True)
+                print(f"[WARNING] GPU {torch.cuda.get_device_name(0)} capability sm_{major}{minor} not supported. Using CPU.", flush=True)
         except Exception as e:
             torch.set_num_threads(min(4, max(1, cpu_cores)))
-            print(f"⚠️ GPU check error: {e}. Defaulting to CPU.", flush=True)
+            print(f"[WARNING] GPU check error: {e}. Defaulting to CPU.", flush=True)
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         device = torch.device("mps")
         torch.set_num_threads(min(4, max(1, cpu_cores)))
@@ -275,16 +275,16 @@ def run_training(args=None):
     checkpoint_data = None
     if ckpt_to_load and os.path.exists(ckpt_to_load):
         try:
-            print(f"🔄 Inspecting checkpoint: {ckpt_to_load}", flush=True)
+            print(f"Inspecting checkpoint: {ckpt_to_load}", flush=True)
             checkpoint_data = torch.load(ckpt_to_load, map_location=device, weights_only=False)
             state_dict = checkpoint_data.get("model_state_dict", checkpoint_data) if isinstance(checkpoint_data, dict) else checkpoint_data
             
             node_w = state_dict.get("gcn1.node_proj.weight", state_dict.get("gatv2_1.node_proj.weight", None))
             if node_w is not None and hidden_dim <= 0:
                 hidden_dim = int(node_w.shape[0])
-                print(f"🔍 Introspected hidden_dim={hidden_dim} from checkpoint weights.")
+                print(f"Introspected hidden_dim={hidden_dim} from checkpoint weights.")
         except Exception as e:
-            print(f"⚠️ Error reading checkpoint {ckpt_to_load}: {e}")
+            print(f"[WARNING] Error reading checkpoint {ckpt_to_load}: {e}")
 
     if hidden_dim <= 0:
         hidden_dim = 256
@@ -292,7 +292,7 @@ def run_training(args=None):
 
     base_model = MiniMetroActorCritic(hidden_dim=hidden_dim, use_hierarchical=args.hierarchical).to(device)
     if device.type == "cuda" and torch.cuda.device_count() > 1:
-        print(f"🔥 Enabling DataParallel across {torch.cuda.device_count()} GPUs!", flush=True)
+        print(f"Enabling DataParallel across {torch.cuda.device_count()} GPUs!", flush=True)
         model = torch.nn.DataParallel(base_model)
     else:
         model = base_model
@@ -307,28 +307,28 @@ def run_training(args=None):
         try:
             state_dict = checkpoint_data.get("model_state_dict", checkpoint_data) if isinstance(checkpoint_data, dict) else checkpoint_data
             raw_model.load_state_dict(state_dict, strict=False)
-            print(f"✅ Loaded model weights from {ckpt_to_load}", flush=True)
+            print(f"[OK] Loaded model weights from {ckpt_to_load}", flush=True)
 
             if args.fine_tune or args.pretrained:
                 # Fine-tuning: fresh start on updates/optimizer for clean adaptation
                 start_update = 1
                 global_step = 0
-                print(f"🎯 Fine-Tuning Active: Reinitialized optimizer with lr={base_lr} for multi-map adaptation", flush=True)
+                print(f"Fine-Tuning Active: Reinitialized optimizer with lr={base_lr} for multi-map adaptation", flush=True)
             else:
                 # Resume normal training
                 if isinstance(checkpoint_data, dict) and "optimizer_state_dict" in checkpoint_data:
                     try:
                         agent.optimizer.load_state_dict(checkpoint_data["optimizer_state_dict"])
                     except Exception as opt_err:
-                        print(f"⚠️ Could not restore optimizer state ({opt_err}). Using reinitialized optimizer.", flush=True)
+                        print(f"[WARNING] Could not restore optimizer state ({opt_err}). Using reinitialized optimizer.", flush=True)
                 start_update = checkpoint_data.get("update", 0) + 1 if isinstance(checkpoint_data, dict) else 1
                 global_step = checkpoint_data.get("global_step", (start_update - 1) * batch_size) if isinstance(checkpoint_data, dict) else 0
                 if isinstance(checkpoint_data, dict) and "curriculum_state_dict" in checkpoint_data and args.curriculum:
                     curriculum.load_state_dict(checkpoint_data["curriculum_state_dict"])
-                    print(f"🎓 Restored Curriculum State -> {curriculum.get_stage_name()}", flush=True)
-                print(f"✅ Resuming training from update {start_update}/{num_updates} | global_step={global_step}", flush=True)
+                    print(f"[CURRICULUM] Restored Curriculum State -> {curriculum.get_stage_name()}", flush=True)
+                print(f"[OK] Resuming training from update {start_update}/{num_updates} | global_step={global_step}", flush=True)
         except Exception as e:
-            print(f"⚠️ Could not apply checkpoint: {e}. Starting fresh.", flush=True)
+            print(f"[WARNING] Could not apply checkpoint: {e}. Starting fresh.", flush=True)
             start_update = 1
             global_step = 0
 
@@ -458,7 +458,7 @@ def run_training(args=None):
                 if ep_data["total_track_length"] > 0:
                     writer.add_scalar("metrics/total_track_length", ep_data["total_track_length"], global_step)
 
-                print(f"🗺️ [{map_name.upper()} | Env {idx:02d}] step={global_step} | Return={ep_r:.2f} | Score={ep_score} | Length={ep_l} steps", flush=True)
+                print(f"[{map_name.upper()} | Env {idx:02d}] step={global_step} | Return={ep_r:.2f} | Score={ep_score} | Length={ep_l} steps", flush=True)
 
                 # Track all-time best model based on rolling average score
                 recent_scores.append(ep_score)
@@ -467,7 +467,7 @@ def run_training(args=None):
                     if current_avg > best_avg_score:
                         best_avg_score = current_avg
                         torch.save(raw_model.state_dict(), best_model_path)
-                        print(f"🌟 New all-time best model! Rolling Avg Score: {best_avg_score:.1f} (Latest: {ep_score}) -> Saved {best_model_path}", flush=True)
+                        print(f"[BEST] New all-time best model! Rolling Avg Score: {best_avg_score:.1f} (Latest: {ep_score}) -> Saved {best_model_path}", flush=True)
                         writer.add_scalar("charts/best_rolling_score", best_avg_score, global_step)
 
                     if args.curriculum and curriculum.update(best_avg_score, global_step):
@@ -523,13 +523,13 @@ def run_training(args=None):
         writer.add_scalar("charts/redundant_station_rate", exp_metrics.redundant_station_rate, global_step)
         
         update_time = time.time() - update_start_time
-        print(f"✅ Completed {update}/{num_updates} | steps={global_step} | SPS={int(global_step / max(time.time() - start_time, 1e-6))} | v_loss={v_loss:.4f} | pg_loss={pg_loss:.4f} | entropy={ent_loss:.4f} | KL={approx_kl:.6f} | time={update_time:.2f}s", flush=True)
+        print(f"Completed {update}/{num_updates} | steps={global_step} | SPS={int(global_step / max(time.time() - start_time, 1e-6))} | v_loss={v_loss:.4f} | pg_loss={pg_loss:.4f} | entropy={ent_loss:.4f} | KL={approx_kl:.6f} | time={update_time:.2f}s", flush=True)
         
     envs.close()
     writer.close()
     final_model_path = os.path.join(checkpoint_dir, "model_final.pt")
     torch.save(raw_model.state_dict(), final_model_path)
-    print(f"\n🎉 Training finished! Saved final model to {final_model_path}", flush=True)
+    print(f"\nTraining finished! Saved final model to {final_model_path}", flush=True)
 
 if __name__ == "__main__":
     run_training()

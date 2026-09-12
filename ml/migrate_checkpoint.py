@@ -51,7 +51,7 @@ def migrate_checkpoint(input_path: str, output_path: str = None) -> str:
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     torch.save(migrated_ckpt, output_path)
-    print(f"✓ Saved migrated checkpoint to: {output_path}")
+    print(f"[OK] Saved migrated checkpoint to: {output_path}")
     return output_path
 
 

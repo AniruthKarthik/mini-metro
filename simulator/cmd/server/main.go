@@ -23,7 +23,7 @@ func main() {
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	fmt.Printf("🚇 Mini Metro WebSocket server  map=%s  addr=%s\n", *mapName, *addr)
+	fmt.Printf("[SERVER] Mini Metro WebSocket server  map=%s  addr=%s\n", *mapName, *addr)
 	go srv.Run()
 
 	log.Fatal(http.ListenAndServe(*addr, withCORS(mux)))
