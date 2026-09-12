@@ -331,6 +331,8 @@ func (s *Server) handleServerCommand(cmd string) {
 			cfg = engine.NYCMap()
 		case "tokyo":
 			cfg = engine.TokyoMap()
+		case "berlin":
+			cfg = engine.BerlinMap()
 		default:
 			cfg = engine.LondonMap()
 		}
@@ -353,6 +355,8 @@ func (s *Server) handleServerCommand(cmd string) {
 				cfg = engine.NYCMap()
 			case "tokyo":
 				cfg = engine.TokyoMap()
+			case "berlin":
+				cfg = engine.BerlinMap()
 			default:
 				cfg = engine.LondonMap()
 			}

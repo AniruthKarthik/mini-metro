@@ -122,7 +122,25 @@ def describe_action(action_id: int, obs_json: dict = None) -> str:
     if action_id == 0:
         return "NoOp"
     if 1 <= action_id < 436:
-        return f"AddLine (id={action_id})"
+        curr = action_id - 1
+        st_u, st_v = -1, -1
+        c = 0
+        for u in range(30):
+            for v in range(u + 1, 30):
+                if c == curr:
+                    st_u, st_v = u, v
+                    break
+                c += 1
+            if st_u != -1:
+                break
+        detail = ""
+        if obs_json and "nodes" in obs_json and st_u >= 0 and st_v >= 0:
+            nodes_arr = np.array(obs_json["nodes"], dtype=np.float32).reshape(MAX_NODES, NODE_DIM)
+            shapes = ["Circle", "Triangle", "Square", "Star", "Pentagon"]
+            sh_u = shapes[int(np.argmax(nodes_arr[st_u, 2:7]))]
+            sh_v = shapes[int(np.argmax(nodes_arr[st_v, 2:7]))]
+            detail = f": Station {st_u} [{sh_u}] <-> Station {st_v} [{sh_v}]"
+        return f"AddLine (id={action_id}{detail})"
     if 436 <= action_id < 856:
         idx = action_id - 436
         end = "Front" if (idx % 2 == 0) else "Back"
@@ -160,6 +178,78 @@ def describe_action(action_id: int, obs_json: dict = None) -> str:
     if 4073 <= action_id < 4087:
         return f"ShortenLine (Action {action_id})"
     return f"Action {action_id}"
+
+
+def find_best_add_line_action(obs_json: dict) -> tuple:
+    mask = obs_json["action_mask"]
+    legal_indices = np.where(mask[1:436])[0]
+    if len(legal_indices) == 0:
+        return 0, 0.0
+
+    nodes = np.array(obs_json["nodes"], dtype=np.float32).reshape(MAX_NODES, NODE_DIM)
+    
+    best_act = 0
+    best_score = -1e9
+    curr = 0
+    for u in range(30):
+        for v in range(u + 1, 30):
+            act_id = 1 + curr
+            curr += 1
+            if not mask[act_id]:
+                continue
+
+            u_pos = nodes[u, 0:2]
+            v_pos = nodes[v, 0:2]
+            dist = float(np.linalg.norm(u_pos - v_pos))
+            if dist < 0.01:
+                continue
+
+            u_shape = int(np.argmax(nodes[u, 2:7]))
+            v_shape = int(np.argmax(nodes[v, 2:7]))
+            u_deg = float(nodes[u, 23])
+            v_deg = float(nodes[v, 23])
+            u_pax = float(nodes[u, 24])
+            v_pax = float(nodes[v, 24])
+            u_prog = float(nodes[u, 22])
+            v_prog = float(nodes[v, 22])
+
+            score = 0.0
+
+            # 1. Critical coverage: Unconnected stations (degree 0) get highest priority
+            if u_deg == 0:
+                score += 90.0
+            if v_deg == 0:
+                score += 90.0
+
+            # 2. Shape diversity: Direct connection between different shapes
+            if u_shape != v_shape:
+                score += 25.0
+                if u_shape in (2, 3, 4) or v_shape in (2, 3, 4):
+                    score += 20.0
+
+            # 3. Direct passenger demand satisfaction:
+            if 0 <= v_shape < 5:
+                score += float(nodes[u, 7 + v_shape]) * 8.0
+            if 0 <= u_shape < 5:
+                score += float(nodes[v, 7 + u_shape]) * 8.0
+
+            # 4. Overcrowding crisis relief: immediate emergency relief line
+            if u_prog > 0.1:
+                score += u_prog * 50.0
+            if v_prog > 0.1:
+                score += v_prog * 50.0
+
+            # 5. Station queue pressure
+            score += min(u_pax + v_pax, 12.0) * 2.5
+
+            # 6. Distance penalty (prefer rapid-turnaround compact lines)
+            score -= dist * 30.0
+
+            if score > best_score:
+                best_score = score
+                best_act = act_id
+
+    return best_act, best_score
 
 
 def main():
@@ -230,6 +320,17 @@ def main():
                                     obs_tensor, lstm_state=lstm_state, mask=obs_tensor["action_mask"]
                                 )
                             action_id = int(action.item())
+
+                            # Proactively utilize extra lines when available in inventory
+                            globals_vec = obs_json.get("globals", [])
+                            unused_lines = globals_vec[0] if len(globals_vec) > 0 else 0
+                            unused_trains = globals_vec[1] if len(globals_vec) > 1 else 0
+
+                            if unused_lines > 0 and unused_trains > 0:
+                                best_line_act, line_score = find_best_add_line_action(obs_json)
+                                # Deploy extra line if model chose NoOp, or if candidate provides high transit value
+                                if (action_id == 0 and best_line_act > 0) or (line_score >= 15.0 and best_line_act > 0):
+                                    action_id = best_line_act
 
                         if action_id == 0:
                             continue  # No-Op — don't spam the server

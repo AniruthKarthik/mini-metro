@@ -102,6 +102,27 @@ func TokyoMap() MapConfig {
 	}
 }
 
+// BerlinMap returns a MapConfig for Berlin with no water bodies and no tunnels.
+// Station positions and initial lines match London, but with an open plain layout.
+func BerlinMap() MapConfig {
+	return MapConfig{
+		Name:             "Berlin",
+		MaxLines:         7,
+		MaxTrainsPerLine: 4,
+		InitialResources: ResourcePool{
+			Lines:     3,
+			Trains:    3,
+			Tunnels:   0,
+			Carriages: 0,
+		},
+		InitialStations: []Station{
+			{ID: 0, Kind: Circle, Pos: Pos{X: 20, Y: 25}},
+			{ID: 1, Kind: Triangle, Pos: Pos{X: 50, Y: 60}},
+			{ID: 2, Kind: Square, Pos: Pos{X: 80, Y: 25}},
+		},
+	}
+}
+
 // NewSimulatorWithMap creates a Simulator configured for a specific MapConfig.
 func NewSimulatorWithMap(cfg MapConfig, seed ...uint64) *Simulator {
 	stations := make([]Station, len(cfg.InitialStations))

@@ -12,7 +12,7 @@ import (
 
 func main() {
 	addr := flag.String("addr", ":6969", "HTTP address to listen on")
-	mapName := flag.String("map", "london", "Map to load: london | nyc | tokyo")
+	mapName := flag.String("map", "london", "Map to load: london | nyc | tokyo | berlin")
 	flag.Parse()
 
 	sim := buildSimulator(*mapName)
@@ -35,6 +35,8 @@ func buildSimulator(name string) *engine.Simulator {
 		return engine.NewSimulatorWithMap(engine.NYCMap())
 	case "tokyo":
 		return engine.NewSimulatorWithMap(engine.TokyoMap())
+	case "berlin":
+		return engine.NewSimulatorWithMap(engine.BerlinMap())
 	default:
 		return engine.NewSimulatorWithMap(engine.LondonMap())
 	}

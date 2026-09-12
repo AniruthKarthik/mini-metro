@@ -36,6 +36,7 @@ MAP_NAMES = {
     0: "London",
     1: "New York City",
     2: "Tokyo",
+    3: "Berlin",
 }
 
 STATION_KINDS = [
@@ -556,7 +557,7 @@ def run_evaluation_suite(
 def main():
     parser = argparse.ArgumentParser(description="Rigorous Multi-Seed & Cross-Map Evaluation Suite (P3-1)")
     parser.add_argument("--seeds", type=int, nargs="+", default=DEFAULT_SEEDS, help="List of random seeds to evaluate")
-    parser.add_argument("--maps", type=int, nargs="+", default=[0, 1, 2], help="List of map IDs: 0=London, 1=NYC, 2=Tokyo")
+    parser.add_argument("--maps", type=int, nargs="+", default=[0, 1, 2, 3], help="List of map IDs: 0=London, 1=NYC, 2=Tokyo, 3=Berlin")
     parser.add_argument("--policies", type=str, nargs="+", default=["deterministic", "stochastic", "greedy", "random"],
                         help="List of policies: deterministic, stochastic, greedy, random")
     parser.add_argument("--model_path", type=str, default=None, help="Path to checkpoint model file")

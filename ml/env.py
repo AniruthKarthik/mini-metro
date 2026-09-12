@@ -158,7 +158,7 @@ class MiniMetroEnv(gym.Env):
         # Curriculum Learning: Random Map Selection
         current_map = self.map_id
         if current_map == -1:
-            current_map = int(np.random.choice([0, 1, 2])) # London, NYC, Tokyo
+            current_map = int(np.random.choice([0, 1, 2, 3])) # London, NYC, Tokyo, Berlin
             
         self.handle = lib.CreateSimulator(current_map, self._seed_val)
         self._apply_scoring_config()
