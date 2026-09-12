@@ -1,4 +1,4 @@
-.PHONY: back front clean fnlist game build-lib test
+.PHONY: back front clean fnlist game build-lib test train train-local finetune finetune-berlin
 
 build-lib:
 	@echo "Building Mini Metro C-shared library for Python bindings..."
@@ -10,6 +10,22 @@ test: build-lib
 	@echo "Running Python test suites..."
 	PYTHONPATH=. ./ml/venv/bin/python -m unittest discover -s ml -p "test_*.py"
 	@echo "All tests passed successfully!"
+
+train: build-lib
+	@echo "Starting multi-map PPO training across London, NYC, Tokyo, and Berlin..."
+	cd ml && ./venv/bin/python train.py --maps 0 1 2 3 --map-mode stratified
+
+train-local: build-lib
+	@echo "Starting fast local CPU multi-map training across all 4 maps..."
+	cd ml && ./venv/bin/python train_local.py --maps 0 1 2 3 --map-mode stratified
+
+finetune: build-lib
+	@echo "Fine-tuning existing model across all 4 maps (London, NYC, Tokyo, Berlin)..."
+	cd ml && ./venv/bin/python train.py --fine-tune --maps 0 1 2 3 --map-mode stratified
+
+finetune-berlin: build-lib
+	@echo "Fine-tuning existing model with emphasis on the new Berlin map..."
+	cd ml && ./venv/bin/python train.py --fine-tune --maps 0 1 2 3 --map-mode mixed --map-weights 1 1 1 3
 
 back:
 	@echo "Starting Mini Metro Go backend server on port 6969..."

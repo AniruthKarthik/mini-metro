@@ -34,10 +34,13 @@ ACTION_SPACE_SIZE = 4087  # PHASE-4: was 4108; AddCarriage 28→7 slots
 def load_model(device):
     """Find and load the best available checkpoint. Returns (model, path_or_None)."""
     search_dirs = [
+        "runs/minimetro_ppo_finetuned",
         "runs/minimetro_ppo_local",
         "runs/minimetro_ppo",
+        os.path.join(SCRIPT_DIR, "runs/minimetro_ppo_finetuned"),
         os.path.join(SCRIPT_DIR, "runs/minimetro_ppo_local"),
         os.path.join(SCRIPT_DIR, "runs/minimetro_ppo"),
+        os.path.join(REPO_ROOT, "runs/minimetro_ppo_finetuned"),
         os.path.join(REPO_ROOT, "runs/minimetro_ppo_local"),
         os.path.join(REPO_ROOT, "runs/minimetro_ppo"),
     ]

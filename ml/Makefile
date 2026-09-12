@@ -12,8 +12,8 @@ setup:
 	@echo "Dependencies installed."
 
 train: setup
-	@echo "Starting training using train.py..."
-	$(PYTHON) train.py 2>&1 | tee train.log
+	@echo "Starting multi-map training across London, NYC, Tokyo, and Berlin..."
+	$(PYTHON) train.py --maps 0 1 2 3 --map-mode stratified 2>&1 | tee train.log
 
 clean:
 	@echo "Cleaning up..."
