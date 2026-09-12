@@ -44,3 +44,23 @@ pnpm-debug.log*
 *.sln
 *.sw?
 .gemini/
+
+
+*.zip
+
+# ML Checkpoints
+runs/
+ml/runs/
+!runs/**/model_final.pt
+!ml/runs/**/model_final.pt
+events.out.tfevents.*
+
+# Profiling
+ml/profile.txt
+
+# Python
+**/__pycache__/
+*.pyc
+ml/venv/
+
+resrc/

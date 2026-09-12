@@ -35,7 +35,7 @@ func ParseAction(raw []byte) (engine.Action, string, error) {
 
 	switch env.Type {
 	// ── server-side controls ─────────────────────────────────────
-	case "pause", "resume", "restart":
+	case "pause", "resume", "restart", "toggle_ai":
 		return nil, env.Type, nil
 
 	case "select_map":
@@ -105,13 +105,14 @@ func ParseAction(raw []byte) (engine.Action, string, error) {
 		return engine.ChooseReward{Choice: engine.RewardType(p.Choice)}, "", nil
 
 	case "add_carriage":
+		// PHASE-4: add_carriage now targets line_id (not train_id)
 		var p struct {
-			TrainID int `json:"train_id"`
+			LineID int `json:"line_id"`
 		}
 		if err := json.Unmarshal(env.Payload, &p); err != nil {
 			return nil, "", err
 		}
-		return engine.AddCarriage{TrainID: p.TrainID}, "", nil
+		return engine.AddCarriage{LineID: p.LineID}, "", nil
 
 	case "remove_carriage":
 		var p struct {
@@ -176,6 +177,16 @@ func ParseAction(raw []byte) (engine.Action, string, error) {
 			Segment:   p.Segment,
 			Direction: p.Direction,
 		}, "", nil
+
+	case "action_by_id":
+		var p struct {
+			ActionID int `json:"action_id"`
+		}
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return nil, "", err
+		}
+		action, _ := engine.ActionFromIndex(p.ActionID)
+		return action, "", nil
 
 	default:
 		return nil, "", fmt.Errorf("unknown action type: %q", env.Type)

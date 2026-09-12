@@ -104,6 +104,7 @@ export interface StateSnapshot {
   map_name: string;
   paused: boolean;
   tps: number;
+  ai_enabled?: boolean;
   stations: StationDTO[];
   lines: LineDTO[];
   trains: TrainDTO[];

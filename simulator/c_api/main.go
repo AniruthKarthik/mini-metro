@@ -47,6 +47,8 @@ func CreateSimulator(mapID C.int, seed C.uint64_t) C.uintptr_t {
 		cfg = engine.NYCMap()
 	case 2:
 		cfg = engine.TokyoMap()
+	case 3:
+		cfg = engine.BerlinMap()
 	default:
 		cfg = engine.LondonMap()
 	}
@@ -59,6 +61,17 @@ func CreateSimulator(mapID C.int, seed C.uint64_t) C.uintptr_t {
 //export FreeSimulator
 func FreeSimulator(handle C.uintptr_t) {
 	unregisterSim(uintptr(handle))
+}
+
+//export CloneSimulator
+func CloneSimulator(handle C.uintptr_t) C.uintptr_t {
+	sim := getSim(uintptr(handle))
+	if sim == nil {
+		return 0
+	}
+	cloned := sim.Clone()
+	h := registerSim(cloned)
+	return C.uintptr_t(h)
 }
 
 //export Step
@@ -86,8 +99,70 @@ func Step(handle C.uintptr_t, actionID C.int, duration C.float, outReward *C.flo
 	}
 }
 
+//export StepWithBreakdown
+func StepWithBreakdown(handle C.uintptr_t, actionID C.int, duration C.float, outReward *C.float, outDone *C.uint8_t, outBreakdown *C.float) {
+	sim := getSim(uintptr(handle))
+	if sim == nil {
+		if outDone != nil {
+			*outDone = 1
+		}
+		return
+	}
+
+	action, _ := engine.ActionFromIndex(int(actionID))
+	_, reward, done, _, rb := sim.StepMacroBreakdown(action, float64(duration))
+
+	if outReward != nil {
+		*outReward = C.float(reward)
+	}
+	if outDone != nil {
+		if done {
+			*outDone = 1
+		} else {
+			*outDone = 0
+		}
+	}
+	if outBreakdown != nil {
+		slice := unsafe.Slice((*float32)(unsafe.Pointer(outBreakdown)), 8)
+		slice[0] = float32(rb.Delivery)
+		slice[1] = float32(rb.Connectivity)
+		slice[2] = float32(rb.CrowdPenalty)
+		slice[3] = float32(rb.GameOver)
+		slice[4] = float32(rb.Redundancy)
+		slice[5] = float32(rb.LoopReversal)
+		slice[6] = float32(rb.TrackEfficiency)
+		slice[7] = float32(rb.Disruption)
+	}
+}
+
+
+//export SetScoringConfig
+func SetScoringConfig(handle C.uintptr_t, alphaCrowd C.float, betaGameOver C.float, connectivityBonus C.float, trackEfficiency C.float, linearCrowd C.uint8_t) {
+	sim := getSim(uintptr(handle))
+	if sim == nil {
+		return
+	}
+	sim.ScoringConfig = engine.ScoringConfig{
+		AlphaCrowdPenalty:     float64(alphaCrowd),
+		BetaGameOverPenalty:   float64(betaGameOver),
+		ConnectivityBonus:     float64(connectivityBonus),
+		TrackEfficiencyWeight: float64(trackEfficiency),
+		LinearCrowdPenalty:    linearCrowd != 0,
+		Initialized:           true,
+	}
+}
+
+//export GetTotalTrackLength
+func GetTotalTrackLength(handle C.uintptr_t) C.float {
+	sim := getSim(uintptr(handle))
+	if sim == nil {
+		return 0.0
+	}
+	return C.float(sim.TotalTrackLength())
+}
+
 //export GetObservation
-func GetObservation(handle C.uintptr_t, outNodes *C.float, outEdges *C.int32_t, outEdgeAttrs *C.float, outGlobals *C.float) {
+func GetObservation(handle C.uintptr_t, outNodes *C.float, outEdges *C.int32_t, outEdgeAttrs *C.float, outGlobals *C.float, outNumNodes *C.int32_t, outNumEdges *C.int32_t) {
 	sim := getSim(uintptr(handle))
 	if sim == nil {
 		return
@@ -116,7 +191,15 @@ func GetObservation(handle C.uintptr_t, outNodes *C.float, outEdges *C.int32_t, 
 		globalsBuf = unsafe.Slice((*float32)(unsafe.Pointer(outGlobals)), engine.GlobalFeatureDim)
 	}
 
-	sim.WriteVectorizedObservation(nodesBuf, edgesBuf, edgeAttrsBuf, globalsBuf)
+	numNodes, numEdges := sim.WriteVectorizedObservation(nodesBuf, edgesBuf, edgeAttrsBuf, globalsBuf)
+
+	// PHASE-2: return exact counts so Python can avoid fragile heuristic detection.
+	if outNumNodes != nil {
+		*outNumNodes = C.int32_t(numNodes)
+	}
+	if outNumEdges != nil {
+		*outNumEdges = C.int32_t(numEdges)
+	}
 }
 
 var (
@@ -149,6 +232,58 @@ func GetActionMask(handle C.uintptr_t, outMask *C.uint8_t) {
 		}
 	}
 	boolMaskMu.Unlock()
+}
+
+//export SetPendingReward
+func SetPendingReward(handle C.uintptr_t, c0 C.int, c1 C.int) {
+	sim := getSim(uintptr(handle))
+	if sim == nil {
+		return
+	}
+	if c0 < 0 {
+		sim.State.PendingRewardChoices = nil
+	} else if c1 < 0 {
+		sim.State.PendingRewardChoices = []engine.RewardType{engine.RewardType(c0)}
+	} else {
+		sim.State.PendingRewardChoices = []engine.RewardType{engine.RewardType(c0), engine.RewardType(c1)}
+	}
+}
+
+//export ReverseLine
+func ReverseLine(handle C.uintptr_t, lineID C.int) C.int {
+	sim := getSim(uintptr(handle))
+	if sim == nil {
+		return -1
+	}
+	if err := sim.ReverseLine(int(lineID)); err != nil {
+		return -1
+	}
+	return 0
+}
+
+//export SetStationSpawnWeights
+func SetStationSpawnWeights(handle C.uintptr_t, circleW C.int, triangleW C.int, squareW C.int, starW C.int, pentagonW C.int) {
+	sim := getSim(uintptr(handle))
+	if sim == nil {
+		return
+	}
+	weights := map[engine.StationKind]int{
+		engine.Circle:   int(circleW),
+		engine.Triangle: int(triangleW),
+		engine.Square:   int(squareW),
+		engine.Star:     int(starW),
+		engine.Pentagon: int(pentagonW),
+	}
+	sim.SetStationSpawnWeights(weights)
+}
+
+//export ResetStationSpawnWeights
+func ResetStationSpawnWeights(handle C.uintptr_t) {
+	sim := getSim(uintptr(handle))
+	if sim == nil {
+		return
+	}
+	sim.ResetStationSpawnWeights()
 }
 
 func main() {}

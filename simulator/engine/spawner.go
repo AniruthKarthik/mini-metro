@@ -23,16 +23,85 @@ var stationWeights = map[StationKind]int{
 	Oval:     1,
 }
 
-// weightedRandomKind returns a StationKind sampled proportionally to stationWeights.
-func weightedRandomKind(rng *rand.Rand) StationKind {
+// SetStationSpawnWeights configures custom station spawn weights on the simulator instance.
+func (s *Simulator) SetStationSpawnWeights(weights map[StationKind]int) {
+	s.State.StationWeights = weights
+}
+
+// ResetStationSpawnWeights clears custom weights, reverting to default stationWeights.
+func (s *Simulator) ResetStationSpawnWeights() {
+	s.State.StationWeights = nil
+}
+
+// progressiveStationWeights computes station spawn weights based on game progression.
+// Early game (< 7 stations): strictly base shapes (Circle, Triangle, Square).
+// Mid game (7-9 stations): uncommon shapes (Star, Pentagon) unlock as unique landmarks.
+// Late game (>= 10 stations): rare unique shapes (Cross/plus, Gem, Sector, Drop, Oval) unlock.
+// Uncommon and rare shapes only spawn if not already present on the active map.
+func (s *Simulator) progressiveStationWeights() map[StationKind]int {
+	numStations := len(s.State.Stations)
+	existingKinds := make(map[StationKind]int)
+	for i := range s.State.Stations {
+		if s.State.Stations[i].Alive {
+			existingKinds[s.State.Stations[i].Kind]++
+		}
+	}
+
+	w := map[StationKind]int{
+		Circle:   10,
+		Triangle: 8,
+		Square:   6,
+	}
+
+	// Early game (< 7 stations): strictly base shapes (Circle, Triangle, Square)
+	if numStations < 7 {
+		return w
+	}
+
+	// Mid game (7-9 stations): Star and Pentagon unlock as unique landmarks
+	if existingKinds[Star] == 0 {
+		w[Star] = 2
+	}
+	if existingKinds[Pentagon] == 0 {
+		w[Pentagon] = 2
+	}
+
+	// Late game (>= 10 stations): Cross (plus), Gem, Sector, Drop, Oval unlock as unique landmarks
+	if numStations >= 10 {
+		rareKinds := []StationKind{Cross, Gem, Sector, Drop, Oval}
+		for _, k := range rareKinds {
+			if existingKinds[k] == 0 {
+				w[k] = 1
+			}
+		}
+	}
+
+	return w
+}
+
+// weightedRandomKind returns a StationKind sampled proportionally to progressive weights or custom weights.
+func (s *Simulator) weightedRandomKind(rng *rand.Rand) StationKind {
+	weights := s.State.StationWeights
+	if weights == nil {
+		weights = s.progressiveStationWeights()
+	}
 	total := 0
-	for _, w := range stationWeights {
-		total += w
+	for _, w := range weights {
+		if w > 0 {
+			total += w
+		}
+	}
+	if total <= 0 {
+		return Circle
 	}
 	r := rng.Intn(total)
 	allKinds := []StationKind{Circle, Triangle, Square, Star, Pentagon, Gem, Sector, Cross, Drop, Oval}
 	for _, kind := range allKinds {
-		r -= stationWeights[kind]
+		w, ok := weights[kind]
+		if !ok || w <= 0 {
+			continue
+		}
+		r -= w
 		if r < 0 {
 			return kind
 		}
@@ -79,7 +148,7 @@ func (s *Simulator) spawnStation() {
 
 	s.State.Stations = append(s.State.Stations, Station{
 		ID:                id,
-		Kind:              weightedRandomKind(s.RNG()),
+		Kind:              s.weightedRandomKind(s.RNG()),
 		Pos:               spawnPos,
 		Capacity:          defaultStationCapacity,
 		Alive:             true,

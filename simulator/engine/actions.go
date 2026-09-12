@@ -45,8 +45,10 @@ type ChooseReward struct{ Choice RewardType }
 
 func (ChooseReward) isAction() {}
 
+// PHASE-4: AddCarriage now targets a lineID, not a trainID.
+// The simulator picks any active train on that line internally.
 type AddCarriage struct {
-	TrainID int
+	LineID int
 }
 
 func (AddCarriage) isAction() {}

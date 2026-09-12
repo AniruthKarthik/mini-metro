@@ -6,10 +6,14 @@ import (
 )
 
 type Simulator struct {
-	State        GameState
-	graphVersion uint64 // tracks which TopologyVersion the cached Graph was built for
-	rng          *rand.Rand
+	State             GameState
+	graphVersion      uint64 // tracks which TopologyVersion the cached Graph was built for
+	rng               *rand.Rand
+	loopTogglePenalty float64 // P1-4: penalty on rapid loop reversals (<60s)
+	disruptionPenalty float64 // operational disruption penalty on structural edits
+	ScoringConfig     ScoringConfig // P2-1: configurable reward coefficients and modes
 }
+
 
 func (s *Simulator) RNG() *rand.Rand {
 	if s.rng == nil {
@@ -47,7 +51,8 @@ func NewSimulatorWithWater(stations []Station, rivers []RiverSegment, polygons [
 			Alive:            true,
 			MaxTrainsPerLine: 4,
 		},
-		rng: rand.New(rand.NewSource(int64(sSeed))),
+		rng:           rand.New(rand.NewSource(int64(sSeed))),
+		ScoringConfig: DefaultScoringConfig(),
 	}
 	sim.State.Scheduler.Schedule(rewardInterval(), EventReward)
 	sim.State.Scheduler.Schedule(initialSpawnInterval(), EventSpawnStation)
@@ -92,7 +97,21 @@ func (s *Simulator) Step(dt float64) {
 	s.State.GameTimeSeconds += dt
 	s.State.Tick++
 
+	// Update smoothed queue growth rates every 30 ticks (1 simulation second)
+	if s.State.Tick%30 == 0 {
+		for i := range s.State.Stations {
+			st := &s.State.Stations[i]
+			if st.Alive {
+				curLen := len(st.Queue)
+				delta := float64(curLen - st.PrevQueueLen)
+				st.QueueGrowthRate = 0.7*st.QueueGrowthRate + 0.3*delta
+				st.PrevQueueLen = curLen
+			}
+		}
+	}
+
 	for _, ev := range s.State.Scheduler.Poll(s.State.Tick) {
+
 		switch ev.Kind {
 		case EventReward:
 			s.offerReward()
@@ -111,9 +130,49 @@ func (s *Simulator) offerReward() {
 	}
 	// Weekly reward: always grant one locomotive, then offer choice of one upgrade.
 	s.State.Resources.Grant(RewardTrain)
-	pool := []RewardType{RewardLine, RewardCarriage, RewardTunnel, RewardTunnel, RewardInterchange}
-	s.RNG().Shuffle(len(pool), func(i, j int) { pool[i], pool[j] = pool[j], pool[i] })
-	s.State.PendingRewardChoices = pool[:2]
+
+	activeLines := 0
+	for _, l := range s.State.Lines {
+		if !l.Removed {
+			activeLines++
+		}
+	}
+	unlockedLines := activeLines + s.State.Resources.Lines
+
+	// Gather available distinct upgrade candidates (never allow duplicate card choices)
+	var candidates []RewardType
+	if unlockedLines < MaxLines {
+		candidates = append(candidates, RewardLine)
+	}
+	candidates = append(candidates, RewardCarriage, RewardInterchange)
+	if len(s.State.Rivers) > 0 || len(s.State.WaterPolygons) > 0 {
+		candidates = append(candidates, RewardTunnel)
+	}
+
+	var c0, c1 RewardType
+	// In early weeks (unlockedLines < 4), guarantee that a New Line is one of the options
+	// so that expanding cities are not starved of basic network connectivity.
+	if unlockedLines < 4 && unlockedLines < MaxLines {
+		c0 = RewardLine
+		var others []RewardType
+		for _, c := range candidates {
+			if c != RewardLine {
+				others = append(others, c)
+			}
+		}
+		c1 = others[s.RNG().Intn(len(others))]
+		// Randomize slot position so Line isn't always fixed to slot 0
+		if s.RNG().Intn(2) == 1 {
+			c0, c1 = c1, c0
+		}
+	} else {
+		// Sample two distinct choices without replacement
+		s.RNG().Shuffle(len(candidates), func(i, j int) { candidates[i], candidates[j] = candidates[j], candidates[i] })
+		c0 = candidates[0]
+		c1 = candidates[1]
+	}
+
+	s.State.PendingRewardChoices = []RewardType{c0, c1}
 	s.State.Scheduler.Schedule(s.State.Tick+rewardInterval(), EventReward)
 }
 
@@ -156,6 +215,9 @@ func (s *Simulator) ApplyAction(a Action) error {
 func (s *Simulator) addLine(a AddLine) error {
 	if len(a.Stations) < 2 {
 		return errors.New("insufficient stations to add a new line")
+	}
+	if !s.State.Resources.CanSpend(RewardTrain) {
+		return errors.New("cannot create a line without an available train")
 	}
 
 	// BUG-2: full uniqueness check — detect duplicate stations anywhere in the slice,
@@ -209,19 +271,22 @@ func (s *Simulator) addLine(a AddLine) error {
 	if id == -1 {
 		id = len(s.State.Lines)
 		s.State.Lines = append(s.State.Lines, Line{
-			ID:       id,
-			Stations: append([]int(nil), a.Stations...),
-			TunnelAt: tunnelAt,
-			Removed:  false,
+			ID:               id,
+			Stations:         append([]int(nil), a.Stations...),
+			TunnelAt:         tunnelAt,
+			Removed:          false,
+			LastModifiedTick: s.State.Tick,
 		})
 	} else {
 		s.State.Lines[id] = Line{
-			ID:       id,
-			Stations: append([]int(nil), a.Stations...),
-			TunnelAt: tunnelAt,
-			Removed:  false,
+			ID:               id,
+			Stations:         append([]int(nil), a.Stations...),
+			TunnelAt:         tunnelAt,
+			Removed:          false,
+			LastModifiedTick: s.State.Tick,
 		}
 	}
+
 
 	// Auto-spawn initial train if train resource pool has available trains
 	if s.State.Resources.CanSpend(RewardTrain) {
@@ -295,8 +360,10 @@ func (s *Simulator) extendLine(a ExtendLine) error {
 		line.TunnelAt = append(line.TunnelAt, a.UseTunnel)
 	}
 
+	line.LastModifiedTick = s.State.Tick
 	s.State.TopologyVersion++
 	return nil
+
 }
 
 func (s *Simulator) spawnOrCreateTrain(lineID int) {
@@ -370,20 +437,30 @@ func (s *Simulator) addTrain(a AddTrain) error {
 }
 
 func (s *Simulator) addCarriage(a AddCarriage) error {
-	if a.TrainID < 0 || a.TrainID >= len(s.State.Trains) {
-		return errors.New("invalid train ID")
+	if a.LineID < 0 || a.LineID >= len(s.State.Lines) {
+		return errors.New("invalid line ID for AddCarriage")
+	}
+	if s.State.Lines[a.LineID].Removed {
+		return errors.New("line is removed")
 	}
 
-	tr := &s.State.Trains[a.TrainID]
-	if !tr.Active {
-		return errors.New("train is inactive")
+	// PHASE-4: find any active train on the given line (agent targets line, not slot)
+	trID := -1
+	for i := range s.State.Trains {
+		if s.State.Trains[i].Active && s.State.Trains[i].LineID == a.LineID {
+			trID = i
+			break
+		}
+	}
+	if trID < 0 {
+		return errors.New("no active train on line for AddCarriage")
 	}
 
 	if !s.State.Resources.Spend(RewardCarriage) {
 		return errors.New("no carriages available")
 	}
 
-	tr.Carriages++
+	s.State.Trains[trID].Carriages++
 	return nil
 }
 
@@ -412,63 +489,140 @@ func (s *Simulator) removeLine(a RemoveLine) error {
 	}
 
 	line := &s.State.Lines[a.LineID]
-	if line.Removed {
-		return errors.New("line is already removed")
+	if line.Removed || len(line.Stations) < 2 {
+		return errors.New("line is already removed or invalid")
 	}
 
-	line.Removed = true
-	s.State.Resources.Grant(RewardLine)
-	s.State.TopologyVersion++
+	// Assess calibrated operational disruption penalty before clearing line state
+	dumpedPax := 0
+	activeTrainsCount := 0
+	for i := range s.State.Trains {
+		tr := &s.State.Trains[i]
+		if tr.Active && tr.LineID == a.LineID {
+			activeTrainsCount++
+			dumpedPax += len(tr.Passengers)
+		}
+	}
 
-	// refund tunnels used by this line
+	N := len(s.State.Stations)
+	linesPerStation := make([]int, N)
+	for _, l := range s.State.Lines {
+		if l.Removed {
+			continue
+		}
+		seen := make(map[int]bool)
+		for _, stID := range l.Stations {
+			if stID >= 0 && stID < N && !seen[stID] {
+				linesPerStation[stID]++
+				seen[stID] = true
+			}
+		}
+	}
+	severedStations := 0
+	for _, stID := range line.Stations {
+		if stID >= 0 && stID < N && linesPerStation[stID] <= 1 {
+			severedStations++
+		}
+	}
+
+	disruption := 1.0 + 0.20*float64(dumpedPax) + 0.50*float64(activeTrainsCount) + 1.50*float64(severedStations)
+	s.disruptionPenalty += disruption
+
+	// 1. Refund tunnel tokens used by the line segments
 	for _, isTunnel := range line.TunnelAt {
 		if isTunnel {
 			s.State.Resources.Grant(RewardTunnel)
 		}
 	}
+
 	if line.IsLoop && line.LoopTunnel {
 		s.State.Resources.Grant(RewardTunnel)
 	}
 
-	// deactivate trains in this line and refund train and carriage resources
+	// 2. Refund the line token
+	s.State.Resources.Grant(RewardLine)
+
+	// 3. Process active trains on this line
 	for i := range s.State.Trains {
 		tr := &s.State.Trains[i]
-		if tr.LineID == a.LineID && tr.Active {
-			tr.Active = false
+		if tr.Active && tr.LineID == a.LineID {
+			// Refund extra carriages
+			for c := 1; c < tr.Carriages; c++ {
+				s.State.Resources.Grant(RewardCarriage)
+			}
+			// Refund the train asset
 			s.State.Resources.Grant(RewardTrain)
-			if tr.Carriages > 1 {
-				extra := tr.Carriages - 1
-				for k := 0; k < extra; k++ {
-					s.State.Resources.Grant(RewardCarriage)
-				}
-				tr.Carriages = 1
-			}
-			// BUG-4 fix: offload passengers to the nearest station endpoint rather
-			// than always using the departure station. When progress >= 0.5 the train
-			// is closer to the next station (segment+1); otherwise use the departure
-			// station (segment). This avoids unfairly spiking the departure station's
-			// overcrowding counter when the train was near the opposite end.
+
+			// Disembark passengers to nearest station
 			if len(tr.Passengers) > 0 {
-				// Determine nearest station index along the line.
-				stIdx := tr.Segment
-				if tr.Progress >= 0.5 && stIdx+1 < len(line.Stations) {
-					stIdx = tr.Segment + 1
+				nearestStID := -1
+				n := len(line.Stations)
+				if n == 1 {
+					nearestStID = line.Stations[0]
+				} else if n >= 2 {
+					seg := tr.Segment
+					var nextSeg int
+					if line.IsLoop {
+						seg = ((seg % n) + n) % n
+						nextSeg = (seg + 1) % n
+					} else {
+						if seg < 0 {
+							seg = 0
+						}
+						if seg >= n-1 {
+							seg = n - 2
+						}
+						nextSeg = seg + 1
+					}
+
+					if tr.Progress < 0.5 {
+						nearestStID = line.Stations[seg]
+					} else {
+						nearestStID = line.Stations[nextSeg]
+					}
 				}
-				if stIdx < 0 || stIdx >= len(line.Stations) {
-					stIdx = 0
+
+				if nearestStID >= 0 && nearestStID < len(s.State.Stations) {
+					st := &s.State.Stations[nearestStID]
+					for _, p := range tr.Passengers {
+						if st.Alive {
+							st.Queue = append(st.Queue, p)
+						}
+					}
 				}
-				stID := line.Stations[stIdx]
-				if stID >= 0 && stID < len(s.State.Stations) {
-					st := &s.State.Stations[stID]
-					st.Queue = append(st.Queue, tr.Passengers...)
-				}
-				tr.Passengers = nil
 			}
+
+			// Deactivate and reset train
+			tr.Active = false
+			tr.LineID = -1
+			tr.Segment = 0
+			tr.Progress = 0
+			tr.Direction = 1
+			tr.Capacity = 6
+			tr.Carriages = 1
+			tr.Passengers = nil
+			tr.JustArrived = false
+			tr.JustDeparted = false
+			tr.DwellRemaining = 0
+			tr.ServiceElapsed = 0
 		}
 	}
 
+	// 4. Mark line removed and clear its properties
+	line.Removed = true
+	line.Stations = nil
+	line.TunnelAt = nil
+	line.IsLoop = false
+	line.LoopTunnel = false
+	line.LastLoopToggleTick = 0
+	line.HasBeenLoopToggled = false
+	line.LastModifiedTick = s.State.Tick
+
+	// 5. Invalidate network topology
+	s.State.TopologyVersion++
 	return nil
 }
+
 
 func (s *Simulator) chooseReward(a ChooseReward) error {
 	if len(s.State.PendingRewardChoices) == 0 {
@@ -521,70 +675,121 @@ func (s *Simulator) shortenLine(a ShortenLine) error {
 	if a.LineID < 0 || a.LineID >= len(s.State.Lines) {
 		return errors.New("invalid line ID")
 	}
+
 	line := &s.State.Lines[a.LineID]
 	if line.Removed {
 		return errors.New("line is removed")
 	}
-	if len(line.Stations) <= 2 {
-		return errors.New("line must keep at least 2 stations")
-	}
 	if line.IsLoop {
-		return errors.New("open the loop before shortening")
+		return errors.New("cannot shorten a loop line; open loop first")
+	}
+	if len(line.Stations) <= 2 {
+		return errors.New("cannot shorten line with 2 or fewer stations; use removeLine instead")
 	}
 
 	if a.FromFront {
-		// refund tunnel token if the first segment (stations[0]→stations[1]) was a tunnel
+		// Remove front station (line.Stations[0])
 		if len(line.TunnelAt) > 0 && line.TunnelAt[0] {
 			s.State.Resources.Grant(RewardTunnel)
 		}
-		line.Stations = line.Stations[1:]
 		if len(line.TunnelAt) > 0 {
 			line.TunnelAt = line.TunnelAt[1:]
 		}
-		// all train segments shift down by 1 since every station index decreased by 1
+		line.Stations = line.Stations[1:]
+
+		// Update trains on this line
 		for i := range s.State.Trains {
 			tr := &s.State.Trains[i]
-			if !tr.Active || tr.LineID != a.LineID {
-				continue
-			}
-			tr.Segment--
-			// BUG-3 fix: use < 0 (not <= 0) so trains legitimately at segment 1
-			// (now segment 0) keep their existing direction. Only truly out-of-bounds
-			// trains (segment < 0) need clamping and a direction reset.
-			if tr.Segment < 0 {
-				tr.Segment = 0
-				tr.Direction = 1 // was heading toward the now-removed first station; reset forward
-				tr.Progress = 0
+			if tr.Active && tr.LineID == a.LineID {
+				if tr.Segment == 0 {
+					// Train was on the removed front segment; place at new front station
+					tr.Segment = 0
+					tr.Progress = 0.0
+					tr.Direction = 1
+					tr.JustArrived = true
+					tr.JustDeparted = true
+					tr.DwellRemaining = dwellTime
+				} else {
+					tr.Segment--
+				}
 			}
 		}
 	} else {
-		// refund tunnel token if the last segment (stations[n-2]→stations[n-1]) was a tunnel
-		lastSeg := len(line.TunnelAt) - 1
-		if lastSeg >= 0 && line.TunnelAt[lastSeg] {
+		// Remove tail station (line.Stations[len(line.Stations)-1])
+		lastTunnelIdx := len(line.TunnelAt) - 1
+		if lastTunnelIdx >= 0 && line.TunnelAt[lastTunnelIdx] {
 			s.State.Resources.Grant(RewardTunnel)
 		}
-		line.Stations = line.Stations[:len(line.Stations)-1]
-		if len(line.TunnelAt) > 0 {
-			line.TunnelAt = line.TunnelAt[:len(line.TunnelAt)-1]
+		if lastTunnelIdx >= 0 {
+			line.TunnelAt = line.TunnelAt[:lastTunnelIdx]
 		}
-		// clamp trains that were at or past the now-removed last station
-		newLast := len(line.Stations) - 1
+		line.Stations = line.Stations[:len(line.Stations)-1]
+
+		newTail := len(line.Stations) - 1
+		// Update trains on this line
 		for i := range s.State.Trains {
 			tr := &s.State.Trains[i]
-			if !tr.Active || tr.LineID != a.LineID {
-				continue
-			}
-			if tr.Segment > newLast {
-				tr.Segment = newLast
-				tr.Progress = 0
-				tr.Direction = -1 // bounce back from the new end
+			if tr.Active && tr.LineID == a.LineID {
+				if tr.Segment >= newTail {
+					// Train was on the removed tail segment; place at new tail station
+					tr.Segment = newTail
+					tr.Progress = 0.0
+					tr.Direction = -1
+					tr.JustArrived = true
+					tr.JustDeparted = true
+					tr.DwellRemaining = dwellTime
+				}
 			}
 		}
 	}
 
+	s.disruptionPenalty += 0.10 // small local modification cost
+	line.LastModifiedTick = s.State.Tick
 	s.State.TopologyVersion++
+	s.rebuildGraphIfNeeded()
+
+	// Disembark passengers on this line who can no longer reach their destination
+	// on this line or whose route required the removed endpoint station.
+	for i := range s.State.Trains {
+		tr := &s.State.Trains[i]
+		if !tr.Active || tr.LineID != a.LineID || len(tr.Passengers) == 0 {
+			continue
+		}
+
+		curStationIndex := tr.Segment
+		if tr.Progress >= 0.5 {
+			nextSeg := tr.Segment + tr.Direction
+			if nextSeg >= 0 && nextSeg < len(line.Stations) {
+				curStationIndex = nextSeg
+			}
+		}
+		if curStationIndex < 0 {
+			curStationIndex = 0
+		} else if curStationIndex >= len(line.Stations) {
+			curStationIndex = len(line.Stations) - 1
+		}
+		curStationID := line.Stations[curStationIndex]
+
+		var retainedPassengers []Passenger
+		for _, p := range tr.Passengers {
+			route := FindOptimalRoute(&s.State.Graph, &s.State, curStationID, p.Destination)
+			if !route.Reachable || route.NextLineID != tr.LineID || (route.NextDirection != 0 && route.NextDirection != tr.Direction) {
+				if curStationID >= 0 && curStationID < len(s.State.Stations) {
+					st := &s.State.Stations[curStationID]
+					if st.Alive {
+						st.Queue = append(st.Queue, p)
+					}
+				}
+			} else {
+				retainedPassengers = append(retainedPassengers, p)
+			}
+		}
+		tr.Passengers = retainedPassengers
+	}
+
 	return nil
 }
+
 
 // closeLoop connects the last station back to the first, making the line a one-way loop.
 func (s *Simulator) closeLoop(a CloseLoop) error {
@@ -617,8 +822,14 @@ func (s *Simulator) closeLoop(a CloseLoop) error {
 		}
 	}
 
+	// P1-4: Apply penalty (-0.50) if loop status is toggled back within 60 seconds (1800 ticks)
+	if line.HasBeenLoopToggled && s.State.Tick < line.LastLoopToggleTick+1800 {
+		s.loopTogglePenalty += 0.50
+	}
 	line.IsLoop = true
 	line.LoopTunnel = a.UseTunnel
+	line.HasBeenLoopToggled = true
+	line.LastLoopToggleTick = s.State.Tick
 	s.State.TopologyVersion++
 	return nil
 }
@@ -635,11 +846,17 @@ func (s *Simulator) openLoop(a OpenLoop) error {
 	if !line.IsLoop {
 		return errors.New("line is not a loop")
 	}
+	// P1-4: Apply penalty (-0.50) if loop status is toggled back within 60 seconds (1800 ticks)
+	if line.HasBeenLoopToggled && s.State.Tick < line.LastLoopToggleTick+1800 {
+		s.loopTogglePenalty += 0.50
+	}
 	if line.LoopTunnel {
 		s.State.Resources.Grant(RewardTunnel)
 	}
 	line.IsLoop = false
 	line.LoopTunnel = false
+	line.HasBeenLoopToggled = true
+	line.LastLoopToggleTick = s.State.Tick
 	// trains that were heading "through" the wrap-around now need a valid direction
 	for i := range s.State.Trains {
 		tr := &s.State.Trains[i]
@@ -656,6 +873,49 @@ func (s *Simulator) openLoop(a OpenLoop) error {
 			tr.Direction = 1
 		}
 	}
+	s.State.TopologyVersion++
+	return nil
+}
+
+// ReverseLine reverses the station sequence of an active non-loop line,
+// preserving identical physical connectivity and updating active trains.
+func (s *Simulator) ReverseLine(lineID int) error {
+	if lineID < 0 || lineID >= len(s.State.Lines) {
+		return errors.New("invalid line ID")
+	}
+	line := &s.State.Lines[lineID]
+	if line.Removed || len(line.Stations) < 2 || line.IsLoop {
+		return nil
+	}
+
+	n := len(line.Stations)
+	// 1. Reverse Stations slice
+	for i, j := 0, n-1; i < j; i, j = i+1, j-1 {
+		line.Stations[i], line.Stations[j] = line.Stations[j], line.Stations[i]
+	}
+
+	// 2. Reverse TunnelAt slice (length is n-1)
+	nTunnels := len(line.TunnelAt)
+	for i, j := 0, nTunnels-1; i < j; i, j = i+1, j-1 {
+		line.TunnelAt[i], line.TunnelAt[j] = line.TunnelAt[j], line.TunnelAt[i]
+	}
+
+	// 3. Update active trains on this line
+	for i := range s.State.Trains {
+		tr := &s.State.Trains[i]
+		if !tr.Active || tr.LineID != lineID {
+			continue
+		}
+		// Segment k in original line corresponds to (n - 1) - k in reversed line
+		tr.Segment = (n - 1) - tr.Segment
+		if tr.Segment < 0 {
+			tr.Segment = 0
+		} else if tr.Segment >= n {
+			tr.Segment = n - 1
+		}
+		tr.Direction = -tr.Direction
+	}
+
 	s.State.TopologyVersion++
 	return nil
 }
@@ -797,18 +1057,21 @@ func (s *Simulator) insertStation(a InsertStation) error {
 		}
 	}
 
+	line.LastModifiedTick = s.State.Tick
 	s.State.TopologyVersion++
 	return nil
 }
 
+
 type SimInfo struct {
-	EventTriggered string // "none", "reward_offered", "station_spawned", "game_over"
-	StepTicks      int
+	EventTriggered    string // "none", "reward_offered", "station_spawned", "game_over"
+	StepTicks         int
+	SimulationSeconds float64
 }
 
-// StepMacro applies an action and advances physics for up to duration seconds (in fixed 30 Hz sub-ticks)
-// or until an asynchronous event (station spawn, reward choice, game over) triggers.
-func (s *Simulator) StepMacro(action Action, duration float64) (obs Observation, reward float64, done bool, info SimInfo) {
+// StepMacroBreakdown applies an action and advances physics for up to duration seconds (in fixed 30 Hz sub-ticks)
+// or until an asynchronous event (station spawn, reward choice, game over) triggers, returning the decomposed reward breakdown (P2-1).
+func (s *Simulator) StepMacroBreakdown(action Action, duration float64) (obs Observation, reward float64, done bool, info SimInfo, rb RewardBreakdown) {
 	info.EventTriggered = "none"
 	if action != nil {
 		_ = s.ApplyAction(action)
@@ -853,7 +1116,119 @@ func (s *Simulator) StepMacro(action Action, duration float64) (obs Observation,
 		}
 	}
 
-	stepReward := s.ComputeStepReward(s.State.Score - initialScore)
+	info.SimulationSeconds = float64(info.StepTicks) * dt
+	stepReward, breakdown := s.ComputeStepRewardBreakdown(s.State.Score-initialScore, info.SimulationSeconds)
 
-	return s.Observation(), stepReward, !s.State.Alive, info
+	return s.Observation(), stepReward, !s.State.Alive, info, breakdown
 }
+
+// StepMacro applies an action and advances physics for up to duration seconds (in fixed 30 Hz sub-ticks)
+// or until an asynchronous event (station spawn, reward choice, game over) triggers.
+func (s *Simulator) StepMacro(action Action, duration float64) (obs Observation, reward float64, done bool, info SimInfo) {
+	obs, reward, done, info, _ = s.StepMacroBreakdown(action, duration)
+	return obs, reward, done, info
+}
+
+// Clone produces an independent deep copy of the Simulator, preserving complete state
+// (stations with queues, lines with stations/tunnels, trains with passengers, scheduler events,
+// resources, topology graph, and RNG) for fast counterfactual rollouts without mutating the original.
+func (s *Simulator) Clone() *Simulator {
+	stationsCopy := make([]Station, len(s.State.Stations))
+	for i := range s.State.Stations {
+		stationsCopy[i] = s.State.Stations[i]
+		if len(s.State.Stations[i].Queue) > 0 {
+			stationsCopy[i].Queue = make([]Passenger, len(s.State.Stations[i].Queue))
+			copy(stationsCopy[i].Queue, s.State.Stations[i].Queue)
+		} else {
+			stationsCopy[i].Queue = nil
+		}
+	}
+
+	linesCopy := make([]Line, len(s.State.Lines))
+	for i := range s.State.Lines {
+		linesCopy[i] = s.State.Lines[i]
+		if len(s.State.Lines[i].Stations) > 0 {
+			linesCopy[i].Stations = make([]int, len(s.State.Lines[i].Stations))
+			copy(linesCopy[i].Stations, s.State.Lines[i].Stations)
+		}
+		if len(s.State.Lines[i].TunnelAt) > 0 {
+			linesCopy[i].TunnelAt = make([]bool, len(s.State.Lines[i].TunnelAt))
+			copy(linesCopy[i].TunnelAt, s.State.Lines[i].TunnelAt)
+		}
+	}
+
+	trainsCopy := make([]Train, len(s.State.Trains))
+	for i := range s.State.Trains {
+		trainsCopy[i] = s.State.Trains[i]
+		if len(s.State.Trains[i].Passengers) > 0 {
+			trainsCopy[i].Passengers = make([]Passenger, len(s.State.Trains[i].Passengers))
+			copy(trainsCopy[i].Passengers, s.State.Trains[i].Passengers)
+		} else {
+			trainsCopy[i].Passengers = nil
+		}
+	}
+
+	riversCopy := append([]RiverSegment(nil), s.State.Rivers...)
+
+	waterPolysCopy := make([]WaterPolygon, len(s.State.WaterPolygons))
+	for i := range s.State.WaterPolygons {
+		waterPolysCopy[i].Vertices = append([]Pos(nil), s.State.WaterPolygons[i].Vertices...)
+	}
+
+
+	schedulerCopy := EventScheduler{
+		Events: append([]ScheduledEvent(nil), s.State.Scheduler.Events...),
+	}
+
+	rewardsCopy := append([]RewardType(nil), s.State.PendingRewardChoices...)
+
+	var weightsCopy map[StationKind]int
+	if s.State.StationWeights != nil {
+		weightsCopy = make(map[StationKind]int, len(s.State.StationWeights))
+		for k, v := range s.State.StationWeights {
+			weightsCopy[k] = v
+		}
+	}
+
+	graphCopy := NetworkGraph{
+		Adj:       make(map[int][]int, len(s.State.Graph.Adj)),
+		EdgeLines: make(map[[2]int][]int, len(s.State.Graph.EdgeLines)),
+	}
+	for k, v := range s.State.Graph.Adj {
+		graphCopy.Adj[k] = append([]int(nil), v...)
+	}
+	for k, v := range s.State.Graph.EdgeLines {
+		graphCopy.EdgeLines[k] = append([]int(nil), v...)
+	}
+
+	rngCopy := rand.New(rand.NewSource(int64(s.State.Tick)*10007 + int64(s.State.Score) + 42))
+
+	return &Simulator{
+		State: GameState{
+			MapName:              s.State.MapName,
+			Stations:             stationsCopy,
+			Lines:                linesCopy,
+			Trains:               trainsCopy,
+			Rivers:               riversCopy,
+			WaterPolygons:        waterPolysCopy,
+			Resources:            s.State.Resources,
+			Graph:                graphCopy,
+			Scheduler:            schedulerCopy,
+			PendingRewardChoices: rewardsCopy,
+			TopologyVersion:      s.State.TopologyVersion,
+			NextPassengerID:      s.State.NextPassengerID,
+			Score:                s.State.Score,
+			Tick:                 s.State.Tick,
+			GameTimeSeconds:      s.State.GameTimeSeconds,
+			Alive:                s.State.Alive,
+			MaxTrainsPerLine:     s.State.MaxTrainsPerLine,
+			StationWeights:       weightsCopy,
+		},
+		graphVersion:      s.graphVersion,
+		rng:               rngCopy,
+		loopTogglePenalty: s.loopTogglePenalty,
+		disruptionPenalty: s.disruptionPenalty,
+		ScoringConfig:     s.ScoringConfig,
+	}
+}
+

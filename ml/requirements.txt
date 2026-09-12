@@ -1,0 +1,6 @@
+torch
+numpy
+gymnasium
+tensorboard
+websockets
+requests

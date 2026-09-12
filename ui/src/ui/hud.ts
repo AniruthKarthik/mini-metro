@@ -26,6 +26,7 @@ export class HUD {
   private pauseBtn!: HTMLButtonElement;
   private playBtn!: HTMLButtonElement;
   private fastBtn!: HTMLButtonElement;
+  private aiToggleBtn!: HTMLButtonElement;
 
   private linesStack!: HTMLElement;
   private lineTokenBtn!: HTMLElement;
@@ -108,6 +109,9 @@ export class HUD {
               <polygon points="3 3 13 12 3 21 3 3" />
               <polygon points="13 3 23 12 13 21 13 3" />
             </svg>
+          </button>
+          <button id="hud-ai-toggle-btn" class="hud-speed-btn" title="Toggle AI Auto-Play" style="font-size: 14px;">
+            🤖
           </button>
         </div>
 
@@ -197,6 +201,17 @@ export class HUD {
               <p class="map-desc">High-capacity metropolitan network around Tokyo Bay.</p>
               <button class="map-select-btn">SELECT TOKYO</button>
             </div>
+
+            <div class="hud-map-card" data-map="berlin">
+              <div class="map-card-header">
+                <div class="city-title-box">
+                  <h3>Berlin</h3>
+                  <span class="river-name">Plains (No Water)</span>
+                </div>
+              </div>
+              <p class="map-desc">Open plain metropolitan network with no water bodies or tunnels.</p>
+              <button class="map-select-btn">SELECT BERLIN</button>
+            </div>
           </div>
         </div>
       </div>
@@ -238,6 +253,7 @@ export class HUD {
     this.pauseBtn = document.getElementById('hud-pause-btn') as HTMLButtonElement;
     this.playBtn = document.getElementById('hud-play-btn') as HTMLButtonElement;
     this.fastBtn = document.getElementById('hud-fast-btn') as HTMLButtonElement;
+    this.aiToggleBtn = document.getElementById('hud-ai-toggle-btn') as HTMLButtonElement;
 
     this.linesStack = document.getElementById('hud-lines-stack')!;
     this.lineTokenBtn = document.getElementById('hud-line-token-btn')!;
@@ -271,8 +287,12 @@ export class HUD {
 
     this.fastBtn.addEventListener('click', () => {
       this.wsClient.sendAction({ type: 'resume' });
-      this.wsClient.sendAction({ type: 'set_speed', payload: { tps: 75 } });
+      this.wsClient.sendAction({ type: 'set_speed', payload: { tps: 300 } });
       this.updateSpeedButtons('fast');
+    });
+
+    this.aiToggleBtn.addEventListener('click', () => {
+      this.wsClient.sendAction({ type: 'toggle_ai' });
     });
 
     this.lineTokenBtn.addEventListener('mousedown', (event) => {
@@ -365,6 +385,12 @@ export class HUD {
       this.updateSpeedButtons('fast');
     } else {
       this.updateSpeedButtons('play');
+    }
+
+    if (snap.ai_enabled) {
+      this.aiToggleBtn.classList.add('active');
+    } else {
+      this.aiToggleBtn.classList.remove('active');
     }
 
     // 4. Resources Dock
