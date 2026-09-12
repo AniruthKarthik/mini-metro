@@ -10,6 +10,7 @@ except ImportError:
 import argparse
 import time
 import glob
+import collections
 
 import numpy as np
 import torch
@@ -478,6 +479,9 @@ def run_training(args=None):
     )
 
     start_time = time.time()
+    recent_scores = collections.deque(maxlen=20)
+    best_avg_score = -1.0
+    best_model_path = os.path.join(CHECKPOINT_DIR, "model_best.pt")
 
     # --------------------------------------------------------
     # TRAINING EPOCHS
@@ -622,6 +626,16 @@ def run_training(args=None):
                                     writer.add_scalar(f"rewards/{channel}", val, global_step)
                             if "total_track_length" in info:
                                 writer.add_scalar("metrics/total_track_length", info["total_track_length"], global_step)
+
+                            # Track all-time best model based on rolling average score
+                            recent_scores.append(score)
+                            if len(recent_scores) >= 5:
+                                current_avg = float(np.mean(recent_scores))
+                                if current_avg > best_avg_score:
+                                    best_avg_score = current_avg
+                                    torch.save(model.state_dict(), best_model_path)
+                                    print(f"🌟 New all-time best model! Rolling Avg Score: {best_avg_score:.1f} (Latest: {score}) -> Saved {best_model_path}", flush=True)
+                                    writer.add_scalar("charts/best_rolling_score", best_avg_score, global_step)
 
             # ------------------------------------------------
             # GAE

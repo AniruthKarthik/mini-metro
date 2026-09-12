@@ -8,6 +8,7 @@ except ImportError:
         os.execv(venv_python, [venv_python] + sys.argv)
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+import collections
 import argparse
 import time
 import numpy as np
@@ -330,6 +331,10 @@ def run_training(args=None):
     use_amp = (device.type == "cuda")
     amp_dtype = torch.bfloat16 if (use_amp and torch.cuda.is_bf16_supported()) else torch.float16
 
+    recent_scores = collections.deque(maxlen=20)
+    best_avg_score = -1.0
+    best_model_path = os.path.join(checkpoint_dir, "model_best.pt")
+
     for update in range(start_update, num_updates + 1):
         update_start_time = time.time()
         print(f"\n⏳ Performing Update {update}/{num_updates}...", flush=True)
@@ -403,6 +408,16 @@ def run_training(args=None):
                             writer.add_scalar("metrics/total_track_length", info["total_track_length"], global_step)
 
                         print(f"🗺️ [{map_name.upper()} | Env {idx:02d}] step={global_step} | Return={ep_r:.2f} | Score={ep_score} | Length={ep_l} steps", flush=True)
+
+                        # Track all-time best model based on rolling average score
+                        recent_scores.append(ep_score)
+                        if len(recent_scores) >= 5:
+                            current_avg = float(np.mean(recent_scores))
+                            if current_avg > best_avg_score:
+                                best_avg_score = current_avg
+                                torch.save(raw_model.state_dict(), best_model_path)
+                                print(f"🌟 New all-time best model! Rolling Avg Score: {best_avg_score:.1f} (Latest: {ep_score}) -> Saved {best_model_path}", flush=True)
+                                writer.add_scalar("charts/best_rolling_score", best_avg_score, global_step)
 
         with torch.no_grad():
             with torch.amp.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):

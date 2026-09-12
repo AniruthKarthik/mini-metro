@@ -47,10 +47,15 @@ def get_checkpoint_priority(path: str) -> tuple:
     elif "minimetro_ppo" in path and "local" not in path:
         tier = 2
 
-    is_final = 1 if "model_final.pt" in os.path.basename(path) else 0
+    model_rank = 0
+    if "model_best.pt" in os.path.basename(path):
+        model_rank = 2
+    elif "model_final.pt" in os.path.basename(path):
+        model_rank = 1
+
     mtime = os.path.getmtime(path)
 
-    return (hidden_dim, tier, is_final, mtime)
+    return (hidden_dim, tier, model_rank, mtime)
 
 
 def load_model(device, model_override=None):
