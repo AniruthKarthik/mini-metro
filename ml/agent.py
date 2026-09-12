@@ -21,7 +21,6 @@ import argparse
 import numpy as np
 from websockets.sync.client import connect
 from model import MiniMetroActorCritic
-from eval import GrandmasterPolicy
 
 # Observation dims — must match simulator/engine/observation.go constants
 NODE_DIM   = 32   # PHASE-5: was 29
@@ -156,16 +155,6 @@ def describe_action(action_id: int) -> str:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Mini Metro Live AI Agent")
-    parser.add_argument(
-        "--policy",
-        type=str,
-        choices=["grandmaster", "model"],
-        default="grandmaster",
-        help="Strategy to use: 'grandmaster' (default, scores >300 pax) or 'model' (neural network)",
-    )
-    args = parser.parse_args()
-
     if torch.cuda.is_available():
         device = torch.device("cuda")
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
@@ -175,25 +164,15 @@ def main():
     else:
         device = torch.device("cpu")
 
-    if args.policy == "grandmaster":
-        gm_policy = GrandmasterPolicy()
-        model = None
-        print("=" * 78)
-        print("🚇 MINI METRO: GRANDMASTER ALGORITHMIC CONTROLLER MODE")
-        print("🏆 Strategy: Short Headway (≤5 st/line), Proactive Hubs, Dynamic Crisis Relief")
-        print("🎯 Expected Score: > 300 Passengers Delivered")
-        print(f"⚙️  Compute Engine: {device}")
-        print("=" * 78)
-    else:
-        model, model_path = load_model(device)
-        model.eval()
-        gm_policy = None
-        print("=" * 78)
-        print("🚇 MINI METRO: DEEP REINFORCEMENT LEARNING (RL) AGENT MODE")
-        print("🧠 Model Policy: Graph Attention Network (PPO Actor-Critic)")
-        print(f"📁 Checkpoint: {model_path}")
-        print(f"⚙️  Compute Engine: {device}")
-        print("=" * 78)
+    model, model_path = load_model(device)
+    model.eval()
+
+    print("=" * 78)
+    print("🚇 MINI METRO: DEEP REINFORCEMENT LEARNING (RL) AGENT MODE")
+    print("🧠 Model Policy: Graph Attention Network (PPO Actor-Critic)")
+    print(f"📁 Checkpoint: {model_path}")
+    print(f"⚙️  Compute Engine: {device}")
+    print("=" * 78)
 
     print("[AI] Connecting to Mini Metro WebSocket server...")
     while True:
@@ -207,9 +186,7 @@ def main():
                     if not data.get("ai_enabled"):
                         continue
                     if data.get("paused") or not data.get("alive"):
-                        lstm_state = None # Reset state on game over
-                        if gm_policy is not None:
-                            gm_policy.reset()
+                        lstm_state = None  # Reset state on game over
                         continue
 
                     if data.get("tick", 0) % 120 != 0:
@@ -221,22 +198,12 @@ def main():
                             continue
 
                         obs_json = resp.json()
-                        if gm_policy is not None:
-                            obs_np = {
-                                "nodes": np.array(obs_json["nodes"], dtype=np.float32).reshape(MAX_NODES, NODE_DIM),
-                                "edges": np.array(obs_json["edges"], dtype=np.int32).reshape(MAX_EDGES, 2).T,
-                                "edge_attrs": np.array(obs_json["edge_attrs"], dtype=np.float32).reshape(MAX_EDGES, EDGE_DIM),
-                                "globals": np.array(obs_json["globals"], dtype=np.float32),
-                                "action_mask": np.array(obs_json["action_mask"], dtype=bool),
-                            }
-                            action_id = gm_policy.act(obs_np)
-                        else:
-                            obs_tensor = obs_from_json(obs_json, device)
-                            with torch.no_grad():
-                                action, _, _, _, lstm_state = model.get_action_and_value(
-                                    obs_tensor, lstm_state=lstm_state, mask=obs_tensor["action_mask"]
-                                )
-                            action_id = int(action.item())
+                        obs_tensor = obs_from_json(obs_json, device)
+                        with torch.no_grad():
+                            action, _, _, _, lstm_state = model.get_action_and_value(
+                                obs_tensor, lstm_state=lstm_state, mask=obs_tensor["action_mask"]
+                            )
+                        action_id = int(action.item())
 
                         if action_id == 0:
                             continue  # No-Op — don't spam the server

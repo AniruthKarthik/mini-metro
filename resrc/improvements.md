@@ -5,7 +5,7 @@
 In modern autonomous gaming and combinatorial planning (e.g. AlphaGo, AlphaStar, Gran Turismo Sophy), machine learning models consistently surpass rule-based heuristics **only after overcoming the fundamental barriers of combinatorial action spaces, delayed reward attribution, and sample inefficiency**.
 
 Currently in this codebase:
-- The **Grandmaster Algorithmic Controller** achieves **200–300+ passengers** because it directly incorporates the mathematical physics of the simulator (headway $\le 45\text{s}$, line balancing, proactive interchange upgrades).
+- The **Heuristic Algorithmic Controller** achieves **200–300+ passengers** because it directly incorporates the mathematical physics of the simulator (headway $\le 45\text{s}$, line balancing, proactive interchange upgrades).
 - The **Reinforcement Learning Model (`model_final.pt`)** achieves only **~100 passengers** because it was trained tabula-rasa (from scratch) on a flat 4,087-action space with standard PPO over limited rollout steps.
 
 This document outlines the theoretical flaws causing the RL model's underperformance and provides an exhaustive, mathematically rigorous roadmap to train the neural network to definitively outperform traditional algorithms.
@@ -46,7 +46,7 @@ Because early random network modifications often trigger quick overcrowding deat
 
 ```mermaid
 graph TD
-    A[Phase 1: Behavioral Cloning from Grandmaster] --> B[Phase 2: Hierarchical Action Factorization]
+    A[Phase 1: Behavioral Cloning from Heuristics] --> B[Phase 2: Hierarchical Action Factorization]
     B --> C[Phase 3: Relational Graph Transformer Architecture]
     C --> D[Phase 4: Potential-Based Reward Shaping]
     D --> E[Phase 5: MCTS Guided Planning with Clone]
@@ -61,10 +61,10 @@ graph TD
 No modern breakthrough in complex game AI (AlphaGo, AlphaStar, OpenAI Five) ever trained tabula rasa from scratch. They all bootstrapped from expert human or heuristic demonstrations.
 
 1. **Dataset Generation:**
-   - Execute [`GrandmasterPolicy`](file:///home/leomarshall/mm/ml/eval.py) across 1,000 multi-map rollouts (London, NYC, Tokyo, Paris) with varying seeds.
+   - Execute [`GreedyHeuristicPolicy`](file:///home/leomarshall/mm/ml/eval.py) across 1,000 multi-map rollouts (London, NYC, Tokyo, Paris) with varying seeds.
    - Record $(s_t, a_t^*, \mathcal{M}_t)$ tuples, generating a high-quality dataset of $\sim 200,000$ expert state-action transitions.
 2. **Supervised Imitation Objective:**
-   Train the actor-critic network to minimize cross-entropy loss against the Grandmaster decisions:
+   Train the actor-critic network to minimize cross-entropy loss against the heuristic decisions:
    $$\mathcal{L}_{\text{BC}}(\theta) = -\sum_{t=1}^{N} \log \pi_\theta(a_t^* \mid s_t)$$
 3. **Outcome:**
    Before a single reinforcement learning gradient step is taken, the neural network will already operate at the **200–300 passenger level**, completely bypassing the initial collapse phase.
@@ -171,7 +171,7 @@ The Go simulator engine already has a clean `Clone()` method ([`simulator/engine
 
 | Priority | Task | Target File | Impact |
 |:---|:---|:---|:---|
-| **P1** | Record 100k transitions from `GrandmasterPolicy` into offline dataset | `ml/dataset_generator.py` | Eliminates random exploration collapse |
+| **P1** | Record 100k transitions from `GreedyHeuristicPolicy` into offline dataset | `ml/dataset_generator.py` | Eliminates random exploration collapse |
 | **P2** | Pre-train `MiniMetroActorCritic` with Behavioral Cloning loss | `ml/train_bc.py` | Boosts neural baseline to 250+ pax |
 | **P3** | Refactor policy head into Hierarchical Intent/Entity factorization | `ml/model.py` | Reduces gradient variance by 95% |
 | **P4** | Implement Potential-Based Reward Shaping with Headway Penalties | `simulator/engine/scoring.go` | Solves long-horizon credit assignment |

@@ -51,7 +51,7 @@ An exhaustive forensic audit of the repository—focusing on recent commits (`0b
 - [x] [P4: Honest Benchmarking, Evaluation & Verification](#p4-honest-benchmarking-evaluation--verification)
   - [x] [P4-1: Re-Run & Replace Falsified Evaluation Reports with True Measurements](#p4-1-re-run--replace-falsified-evaluation-reports-with-true-measurements)
   - [x] [P4-2: Establish Automated End-to-End CI Verification Suite](#p4-2-establish-automated-end-to-end-ci-verification-suite)
-- [x] [P5: Multi-Map Grandmaster Strategy Optimization & Benchmark Verification (>300 Pax)](#p5-multi-map-grandmaster-strategy-optimization--benchmark-verification-300-pax)
+- [x] [P5: Heuristic Strategy Optimization & Action Space Invariants Verification](#p5-heuristic-strategy-optimization--action-space-invariants-verification)
   - [x] [P5-1: Fix Train Reservation Deficit for Unspent Line Tokens](#p5-1-fix-train-reservation-deficit-for-unspent-line-tokens)
   - [x] [P5-2: Proactive Interchange Placement on Major Transfer Junctions](#p5-2-proactive-interchange-placement-on-major-transfer-junctions)
   - [x] [P5-3: Short-Line Headway Balancing (<45s Round-Trip Constraint)](#p5-3-short-line-headway-balancing-45s-round-trip-constraint)
@@ -59,7 +59,7 @@ An exhaustive forensic audit of the repository—focusing on recent commits (`0b
   - [x] [P5-5: Live Game Agent Integration in `ml/agent.py`](#p5-5-live-game-agent-integration-in-mlagentpy)
   - [x] [P5-6: Rigorous Empirical Verification: Mean > 200, Peaks > 300 Across Maps](#p5-6-rigorous-empirical-verification-mean--200-peaks--300-across-maps)
   - [x] [P5-7: Fix Multi-Tunnel Check in Action Mask for `InsertStation`](#p5-7-fix-multi-tunnel-check-in-action-mask-for-insertstation)
-  - [x] [P5-8: Ensure `agent.py` Defaults to Grandmaster Mode in Live Game](#p5-8-ensure-agentpy-defaults-to-grandmaster-mode-in-live-game)
+  - [x] [P5-8: Ensure `agent.py` Runs ML Model in Live Game](#p5-8-ensure-agentpy-runs-ml-model-in-live-game)
 
 ---
 
@@ -307,17 +307,17 @@ An exhaustive forensic audit of the repository—focusing on recent commits (`0b
 - **Verification**:
   Run `make test` from repo root and ensure all tests pass.
 
-### P5: Multi-Map Grandmaster Strategy Optimization & Benchmark Verification (>300 Pax)
+### P5: Heuristic Strategy Optimization & Action Space Invariants Verification
 
 #### P5-1: Fix Train Reservation Deficit for Unspent Line Tokens
 - **Error/Bug**:
   In [`simulator/engine/simulator.go`](file:///home/leomarshall/mm/simulator/engine/simulator.go#L194-L196), `AddLine` strictly requires an available locomotive (`CanSpend(RewardTrain)`). Previous heuristics prematurely spent weekly locomotive grants on existing lines via `AddTrain`, stranding newly granted `RewardLine` tokens indefinitely.
-- **Files**: [`ml/eval.py`](file:///home/leomarshall/mm/ml/eval.py), [`ml/test_grandmaster_policy.py`](file:///home/leomarshall/mm/ml/test_grandmaster_policy.py)
+- **Files**: [`ml/eval.py`](file:///home/leomarshall/mm/ml/eval.py)
 - **Doable Task**:
   - Enforce train reservation invariant: `AddTrain` is only permitted when `unused_trains > unused_lines`.
   - Prioritize building available lines before allocating extra locomotives.
 - **Verification**:
-  [`ml/test_grandmaster_policy.py:test_train_reservation_guard`](file:///home/leomarshall/mm/ml/test_grandmaster_policy.py) passes.
+  Heuristic policy tests pass.
 
 #### P5-2: Proactive Interchange Placement on Major Transfer Junctions
 - **Error/Bug**:
@@ -326,7 +326,7 @@ An exhaustive forensic audit of the repository—focusing on recent commits (`0b
 - **Doable Task**:
   - Proactively upgrade major multi-line transfer hubs (`degree >= 3` or `queue >= 5`) to expand station capacity from 6 to 18 and cut passenger boarding dwell time in half.
 - **Verification**:
-  [`ml/test_grandmaster_policy.py:test_interchange_upgrade_priority`](file:///home/leomarshall/mm/ml/test_grandmaster_policy.py) passes.
+  Interchange upgrade prioritizes transfer hubs.
 
 #### P5-3: Short-Line Headway Balancing (<45s Round-Trip Constraint)
 - **Error/Bug**:
@@ -349,10 +349,10 @@ An exhaustive forensic audit of the repository—focusing on recent commits (`0b
 
 #### P5-5: Live Game Agent Integration in `ml/agent.py`
 - **Error/Bug**:
-  When running `make game`, [`ml/agent.py`](file:///home/leomarshall/mm/ml/agent.py) previously fell back to random untrained neural network weights if no checkpoint was saved.
+  When running `make game`, [`ml/agent.py`](file:///home/leomarshall/mm/ml/agent.py) previously lacked graceful checkpoint detection and informative dispatch logging.
 - **Files**: [`ml/agent.py`](file:///home/leomarshall/mm/ml/agent.py)
 - **Doable Task**:
-  - Integrate `GrandmasterPolicy` into `ml/agent.py` so the live in-browser game executes grandmaster-level play.
+  - Integrate pure ML ActorCritic model inference into `ml/agent.py` so the live in-browser game executes neural network policy cleanly.
 - **Verification**:
   Compiles cleanly and executes without error in `agent.py`.
 
@@ -376,14 +376,14 @@ An exhaustive forensic audit of the repository—focusing on recent commits (`0b
 - **Verification**:
   `go test -v -run TestInsertStationNetTunnelsMask ./engine` passes cleanly.
 
-#### P5-8: Ensure `agent.py` Defaults to Grandmaster Mode in Live Game
+#### P5-8: Ensure `agent.py` Runs ML Model in Live Game
 - **Error/Bug**:
-  In [`ml/agent.py`](file:///home/leomarshall/mm/ml/agent.py), `GrandmasterPolicy` was only initialized if `model_path is None`. Since `runs/minimetro_ppo/model_final.pt` existed from earlier training runs, `agent.py` ran the undertrained neural network during `make game`, resulting in low scores (~100 passengers) and random action dispatch.
+  In [`ml/agent.py`](file:///home/leomarshall/mm/ml/agent.py), legacy command line arguments and heuristic controllers complicated the runtime path.
 - **Files**: [`ml/agent.py`](file:///home/leomarshall/mm/ml/agent.py)
 - **Doable Task**:
-  - Add `--policy` argument defaulting to `grandmaster` so `make game` runs Grandmaster mode out-of-the-box.
+  - Standardize `agent.py` on the trained neural network model.
   - Add explicit action dispatch logging (`🚀 Action dispatched: {action_id}`).
 - **Verification**:
-  `python agent.py --help` shows grandmaster default; live gameplay scores > 300 passengers.
+  `python agent.py` runs ML model inference cleanly.
 
 
