@@ -119,6 +119,42 @@ def obs_from_json(obs_json, device):
     }
 
 
+def describe_action(action_id: int) -> str:
+    if action_id == 0:
+        return "NoOp"
+    if 1 <= action_id < 436:
+        return f"AddLine (id={action_id})"
+    if 436 <= action_id < 856:
+        idx = action_id - 436
+        end = "Front" if (idx % 2 == 0) else "Back"
+        st = (idx // 2) % 30
+        line = (idx // 2) // 30
+        return f"ExtendLine {end} (Line {line} -> Station {st})"
+    if 856 <= action_id < 4006:
+        idx = action_id - 856
+        seg = (idx % 15) + 1
+        st = (idx // 15) % 30
+        line = (idx // 15) // 30
+        return f"InsertStation (Line {line}, Station {st}, Segment {seg})"
+    if 4006 <= action_id < 4013:
+        return f"AddTrain (Line {action_id - 4006})"
+    if 4013 <= action_id < 4020:
+        return f"AddCarriage (Line {action_id - 4013})"
+    if 4020 <= action_id < 4050:
+        return f"UpgradeInterchange (Station {action_id - 4020})"
+    if 4050 <= action_id < 4052:
+        return f"ChooseRewardCard (Choice {action_id - 4050})"
+    if 4052 <= action_id < 4059:
+        return f"CloseLoop (Line {action_id - 4052})"
+    if 4059 <= action_id < 4066:
+        return f"OpenLoop (Line {action_id - 4059})"
+    if 4066 <= action_id < 4073:
+        return f"RemoveLine (Line {action_id - 4066})"
+    if 4073 <= action_id < 4087:
+        return f"ShortenLine (Action {action_id})"
+    return f"Action {action_id}"
+
+
 def main():
     parser = argparse.ArgumentParser(description="Mini Metro Live AI Agent")
     parser.add_argument(
@@ -138,17 +174,26 @@ def main():
         device = torch.device("xpu")
     else:
         device = torch.device("cpu")
-    print(f"[AI] Using device: {device}")
 
     if args.policy == "grandmaster":
         gm_policy = GrandmasterPolicy()
         model = None
-        print("[AI] 🏆 Operating in Grandmaster Strategy Mode (Target Score > 300 Passengers).")
+        print("=" * 78)
+        print("🚇 MINI METRO: GRANDMASTER ALGORITHMIC CONTROLLER MODE")
+        print("🏆 Strategy: Short Headway (≤5 st/line), Proactive Hubs, Dynamic Crisis Relief")
+        print("🎯 Expected Score: > 300 Passengers Delivered")
+        print(f"⚙️  Compute Engine: {device}")
+        print("=" * 78)
     else:
         model, model_path = load_model(device)
         model.eval()
         gm_policy = None
-        print(f"[AI] 🧠 Operating in Neural Network Policy Mode ({model_path}).")
+        print("=" * 78)
+        print("🚇 MINI METRO: DEEP REINFORCEMENT LEARNING (RL) AGENT MODE")
+        print("🧠 Model Policy: Graph Attention Network (PPO Actor-Critic)")
+        print(f"📁 Checkpoint: {model_path}")
+        print(f"⚙️  Compute Engine: {device}")
+        print("=" * 78)
 
     print("[AI] Connecting to Mini Metro WebSocket server...")
     while True:
@@ -198,7 +243,7 @@ def main():
 
                         payload = {"type": "action_by_id", "payload": {"action_id": action_id}}
                         websocket.send(json.dumps(payload))
-                        print(f"[AI] 🚀 Action dispatched: {action_id}")
+                        print(f"[AI] 🚀 Action dispatched: {describe_action(action_id)} (id={action_id})")
 
                     except Exception as e:
                         print(f"[AI] Error fetching obs or sending action: {e}")

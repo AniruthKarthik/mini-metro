@@ -60,6 +60,31 @@ class TestGrandmasterPolicy(unittest.TestCase):
         act = self.policy.act(obs)
         self.assertEqual(act, 4021, f"Expected Station 1 (deg 4 hub) to receive Interchange, got {act}")
 
+    def test_unconnected_station_priority(self):
+        """Verify that unconnected stations are prioritized and connected before routine train additions."""
+        env = MiniMetroEnv(map_id=0)
+        obs, _ = env.reset(seed=1000)
+
+        # Line 0 exists with stations 0 and 1
+        obs["globals"][0] = 0.0  # 0 unused lines
+        obs["globals"][1] = 2.0  # 2 unused trains
+        obs["edges"][:, 0] = [0, 1]
+        obs["edge_attrs"][0, 0] = 1.0  # Line 0 active edge
+        obs["nodes"][0, 23] = 1.0  # Station 0 degree 1
+        obs["nodes"][1, 23] = 1.0  # Station 1 degree 1
+
+        # Station 2 is alive but unconnected (degree = 0)
+        obs["nodes"][2, 2:12] = 0.0
+        obs["nodes"][2, 3] = 1.0  # Triangle
+        obs["nodes"][2, 23] = 0.0  # Degree 0
+        # Make ExtendLine for Station 2 legal on Line 0
+        # Line 0 back extend to Station 2: idx = 436 + (0 * 30 + 2) * 2 + 1 = 441
+        obs["action_mask"][441] = True
+
+        act = self.policy.act(obs)
+        # Should choose ExtendLine (441) rather than routine AddTrain (4006)
+        self.assertEqual(act, 441, f"Expected ExtendLine to connect Station 2 (441), got {act}")
+
     def test_full_rollout_stability(self):
         """Verify full episode rollout stability and non-zero score."""
         env = MiniMetroEnv(map_id=0)

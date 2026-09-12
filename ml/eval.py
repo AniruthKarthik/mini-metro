@@ -262,7 +262,46 @@ class GrandmasterPolicy(BasePolicy):
             if best_pair >= 0:
                 return 1 + best_pair
 
-        # 4. Emergency Extra Train / Carriage Allocation
+        # 4. Connect Unconnected Stations (Top Priority: Never leave a station isolated!)
+        if unconnected:
+            unconnected_sorted = sorted(
+                unconnected,
+                key=lambda s: (float(nodes[s, 22]), float(np.sum(nodes[s, 12:22]))),
+                reverse=True
+            )
+            for target in unconnected_sorted:
+                t_pos = nodes[target, 0:2]
+                best_act = -1
+                best_dist_score = -9999.0
+
+                for l_id in sorted(active_lines, key=lambda l: line_lengths.get(l, 0)):
+                    l_len = line_lengths.get(l_id, 0)
+                    if mask[436:856].any():
+                        for end in [0, 1]:
+                            idx = 436 + (l_id * 30 + target) * 2 + end
+                            if idx < 856 and mask[idx]:
+                                min_st_d = min(float(np.linalg.norm(t_pos - nodes[st, 0:2])) for st in line_stations.get(l_id, set()))
+                                dist_score = 150.0 - min_st_d * 3.0 - l_len * 6.0
+                                if dist_score > best_dist_score:
+                                    best_dist_score = dist_score
+                                    best_act = idx
+
+                    if mask[856:4006].any():
+                        legal_ins = np.where(mask[856:4006])[0]
+                        for ins in legal_ins:
+                            rem = ins // 15
+                            st_id = rem % 30
+                            l = rem // 30
+                            if st_id == target and l == l_id:
+                                dist_score = 140.0 - l_len * 6.0
+                                if dist_score > best_dist_score:
+                                    best_dist_score = dist_score
+                                    best_act = 856 + ins
+
+                if best_act >= 0:
+                    return best_act
+
+        # 5. Emergency Extra Train / Carriage Allocation
         extra_trains = unused_trains - unused_lines
         urgent_pool = critical_stations if critical_stations else oc_stations
         if extra_trains > 0 and urgent_pool:
@@ -281,52 +320,7 @@ class GrandmasterPolicy(BasePolicy):
                     if mask[4013 + l]:
                         return 4013 + l
 
-        # 5. Routine AddCarriage & AddTrain (Extra trains only!)
-        if unused_carriages > 0 and mask[4013:4020].any():
-            legal_c = np.where(mask[4013:4020])[0]
-            best_c = max(legal_c, key=lambda l: sum(np.sum(nodes[s, 12:22]) for s in line_stations.get(l, set())))
-            return 4013 + best_c
-
-        if extra_trains > 0 and mask[4006:4013].any():
-            legal_t = np.where(mask[4006:4013])[0]
-            best_t = max(legal_t, key=lambda l: (line_lengths.get(l, 0), sum(np.sum(nodes[s, 12:22]) for s in line_stations.get(l, set()))))
-            return 4006 + best_t
-
-        # 6. Connect Unconnected Stations (Minimal Track Sprawl, Short-Headway)
-        if unconnected:
-            target = unconnected[0]
-            t_pos = nodes[target, 0:2]
-            best_act = -1
-            best_dist_score = -9999.0
-
-            for l_id in sorted(active_lines, key=lambda l: line_lengths.get(l, 0)):
-                l_len = line_lengths.get(l_id, 0)
-                if mask[436:856].any():
-                    for end in [0, 1]:
-                        idx = 436 + (l_id * 30 + target) * 2 + end
-                        if idx < 856 and mask[idx]:
-                            min_st_d = min(float(np.linalg.norm(t_pos - nodes[st, 0:2])) for st in line_stations.get(l_id, set()))
-                            dist_score = 100.0 - min_st_d * 3.0 - l_len * 8.0
-                            if dist_score > best_dist_score:
-                                best_dist_score = dist_score
-                                best_act = idx
-
-                if mask[856:4006].any():
-                    legal_ins = np.where(mask[856:4006])[0]
-                    for ins in legal_ins:
-                        rem = ins // 15
-                        st_id = rem % 30
-                        l = rem // 30
-                        if st_id == target and l == l_id:
-                            dist_score = 95.0 - l_len * 8.0
-                            if dist_score > best_dist_score:
-                                best_dist_score = dist_score
-                                best_act = 856 + ins
-
-            if best_act >= 0:
-                return best_act
-
-        # 7. Crisis Intervention: Dual-service relief for stations with oc > 0.25
+        # 6. Crisis Intervention: Dual-service relief for stations with oc > 0.25
         if critical_stations:
             for target in critical_stations:
                 t_pos = nodes[target, 0:2]
@@ -347,6 +341,17 @@ class GrandmasterPolicy(BasePolicy):
                                     l = rem // 30
                                     if st_id == target and l == l_id:
                                         return 856 + ins
+
+        # 7. Routine AddCarriage & AddTrain (Extra trains only!)
+        if unused_carriages > 0 and mask[4013:4020].any():
+            legal_c = np.where(mask[4013:4020])[0]
+            best_c = max(legal_c, key=lambda l: sum(np.sum(nodes[s, 12:22]) for s in line_stations.get(l, set())))
+            return 4013 + best_c
+
+        if extra_trains > 0 and mask[4006:4013].any():
+            legal_t = np.where(mask[4006:4013])[0]
+            best_t = max(legal_t, key=lambda l: (line_lengths.get(l, 0), sum(np.sum(nodes[s, 12:22]) for s in line_stations.get(l, set()))))
+            return 4006 + best_t
 
         # 8. CloseLoop for Compact Cycles (4-6 stations)
         if mask[4052:4059].any():
