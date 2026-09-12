@@ -24,6 +24,7 @@ from env import MiniMetroEnv, LineOrientationAugmentation
 from model import MiniMetroActorCritic
 from ppo import PPO
 from probing import compute_expansion_metrics
+from curriculum import CurriculumManager
 
 MAP_NAMES = {
     0: "London",
@@ -32,13 +33,14 @@ MAP_NAMES = {
     3: "Berlin",
 }
 
-def make_env(seed, map_id=-1, map_pool=None, map_weights=None, flip_prob=0.5):
+def make_env(seed, map_id=-1, map_pool=None, map_weights=None, flip_prob=0.5, use_pbrs=True):
     def thunk():
         env = MiniMetroEnv(
             map_id=map_id,
             seed=seed,
             map_pool=map_pool,
-            map_weights=map_weights
+            map_weights=map_weights,
+            use_pbrs=use_pbrs,
         )
         if flip_prob > 0:
             env = LineOrientationAugmentation(env, flip_prob=flip_prob)
@@ -97,6 +99,12 @@ def parse_args():
                         help="Worker map allocation: 'stratified' (round-robin per worker) or 'mixed' (sampled on reset)")
     parser.add_argument("--map-weights", type=float, nargs="+", default=None,
                         help="Relative sampling weights for maps in 'mixed' mode (e.g., 1 1 1 2 to emphasize Berlin)")
+    parser.add_argument("--curriculum", action=argparse.BooleanOptionalAction, default=True,
+                        help="Enable procedural multi-map curriculum learning (Stage 1 Berlin -> Stage 2 London/Tokyo -> Stage 3 All Maps)")
+    parser.add_argument("--pbrs", action=argparse.BooleanOptionalAction, default=True,
+                        help="Enable Potential-Based Reward Shaping (Ng et al., 1999) for dense temporal credit assignment")
+    parser.add_argument("--hierarchical", action=argparse.BooleanOptionalAction, default=True,
+                        help="Enable two-stage Hierarchical Action Factorization")
     parser.add_argument("--fine-tune", action="store_true",
                         help="Fine-tune starting from the latest existing model checkpoint")
     parser.add_argument("--pretrained", type=str, default=None,
@@ -162,14 +170,18 @@ def run_training(args=None):
     writer = SummaryWriter(checkpoint_dir)
 
     # Construct multi-map environments
-    maps = args.maps
-    map_mode = args.map_mode
-    map_weights = args.map_weights
+    curriculum = CurriculumManager(enabled=args.curriculum, custom_maps=args.maps)
+    maps = curriculum.get_maps()
+    map_mode = "mixed" if args.curriculum else args.map_mode
+    map_weights = curriculum.get_weights() if args.curriculum else args.map_weights
 
     print("=" * 70)
     print("🚇 MiniMetro Multi-Map PPO Training & Fine-Tuning")
     print("=" * 70)
     print(f"Mode            : {'Fine-Tuning' if (args.fine_tune or args.pretrained) else 'Standard Training'}")
+    print(f"Curriculum      : {curriculum.get_stage_name() if args.curriculum else 'Disabled'}")
+    print(f"PBRS Shaping    : {'Enabled (Ng et al. 1999)' if args.pbrs else 'Disabled'}")
+    print(f"Hierarchical    : {'Enabled' if args.hierarchical else 'Disabled'}")
     print(f"Maps            : {[MAP_NAMES.get(m, f'Map_{m}') for m in maps]} (IDs: {maps})")
     print(f"Map Strategy    : {map_mode.upper()}")
     if map_mode == "mixed" and map_weights:
@@ -179,11 +191,11 @@ def run_training(args=None):
     if map_mode == "stratified":
         for i in range(num_envs):
             assigned_map = maps[i % len(maps)]
-            env_fns.append(make_env(seed=i, map_id=assigned_map, flip_prob=0.5))
+            env_fns.append(make_env(seed=i, map_id=assigned_map, flip_prob=0.5, use_pbrs=args.pbrs))
             print(f"  Worker {i:02d} -> {MAP_NAMES.get(assigned_map, f'Map_{assigned_map}')} (ID {assigned_map})")
     else:
         for i in range(num_envs):
-            env_fns.append(make_env(seed=i, map_id=-1, map_pool=maps, map_weights=map_weights, flip_prob=0.5))
+            env_fns.append(make_env(seed=i, map_id=-1, map_pool=maps, map_weights=map_weights, flip_prob=0.5, use_pbrs=args.pbrs))
             print(f"  Worker {i:02d} -> Dynamic Curriculum over maps {maps}")
 
     # Use AsyncVectorEnv with 'spawn' and shared_memory=False to prevent Python buffer and POSIX semaphore leaks
@@ -269,7 +281,7 @@ def run_training(args=None):
         hidden_dim = 256
     print(f"Model hidden_dim: {hidden_dim}", flush=True)
 
-    base_model = MiniMetroActorCritic(hidden_dim=hidden_dim).to(device)
+    base_model = MiniMetroActorCritic(hidden_dim=hidden_dim, use_hierarchical=args.hierarchical).to(device)
     if device.type == "cuda" and torch.cuda.device_count() > 1:
         print(f"🔥 Enabling DataParallel across {torch.cuda.device_count()} GPUs!", flush=True)
         model = torch.nn.DataParallel(base_model)
@@ -302,6 +314,9 @@ def run_training(args=None):
                         print(f"⚠️ Could not restore optimizer state ({opt_err}). Using reinitialized optimizer.", flush=True)
                 start_update = checkpoint_data.get("update", 0) + 1 if isinstance(checkpoint_data, dict) else 1
                 global_step = checkpoint_data.get("global_step", (start_update - 1) * batch_size) if isinstance(checkpoint_data, dict) else 0
+                if isinstance(checkpoint_data, dict) and "curriculum_state_dict" in checkpoint_data and args.curriculum:
+                    curriculum.load_state_dict(checkpoint_data["curriculum_state_dict"])
+                    print(f"🎓 Restored Curriculum State -> {curriculum.get_stage_name()}", flush=True)
                 print(f"✅ Resuming training from update {start_update}/{num_updates} | global_step={global_step}", flush=True)
         except Exception as e:
             print(f"⚠️ Could not apply checkpoint: {e}. Starting fresh.", flush=True)
@@ -346,6 +361,8 @@ def run_training(args=None):
                 "global_step": global_step,
                 "model_state_dict": raw_model.state_dict(),
                 "optimizer_state_dict": agent.optimizer.state_dict(),
+                "curriculum_state_dict": curriculum.state_dict(),
+                "best_avg_score": best_avg_score,
             }
             torch.save(checkpoint_save, checkpoint_path)
             cleanup_old_checkpoints(checkpoint_dir, keep_last=5)
@@ -418,6 +435,10 @@ def run_training(args=None):
                                 torch.save(raw_model.state_dict(), best_model_path)
                                 print(f"🌟 New all-time best model! Rolling Avg Score: {best_avg_score:.1f} (Latest: {ep_score}) -> Saved {best_model_path}", flush=True)
                                 writer.add_scalar("charts/best_rolling_score", best_avg_score, global_step)
+
+                            if args.curriculum and curriculum.update(best_avg_score, global_step):
+                                envs.call("set_map_pool", curriculum.get_maps(), curriculum.get_weights())
+                                writer.add_scalar("charts/curriculum_stage", curriculum.stage_num, global_step)
 
         with torch.no_grad():
             with torch.amp.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):

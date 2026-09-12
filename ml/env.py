@@ -84,7 +84,7 @@ class MiniMetroEnv(gym.Env):
     """
     Gymnasium environment wrapper for the Mini Metro Go simulator.
     """
-    def __init__(self, map_id=-1, seed=None, map_pool=None, map_weights=None):
+    def __init__(self, map_id=-1, seed=None, map_pool=None, map_weights=None, use_pbrs: bool = False, pbrs_gamma: float = 0.99):
         super().__init__()
         
         self.map_id = map_id
@@ -92,6 +92,9 @@ class MiniMetroEnv(gym.Env):
         self.map_weights = list(map_weights) if map_weights is not None else None
         self.current_map = 0 if map_id == -1 else map_id
         self._seed_val = seed
+        self.use_pbrs = use_pbrs
+        self.pbrs_gamma = pbrs_gamma
+        self._prev_potential = 0.0
             
         self.handle = None
         
@@ -148,6 +151,48 @@ class MiniMetroEnv(gym.Env):
             "track_efficiency": 0.0,
             "disruption": 0.0,
         }
+        if self.use_pbrs:
+            self._episode_reward_breakdown["pbrs"] = 0.0
+
+    def set_map_pool(self, map_pool, map_weights=None):
+        """Update map pool and sampling weights dynamically during curriculum training."""
+        self.map_pool = list(map_pool) if map_pool is not None else [0, 1, 2, 3]
+        self.map_weights = list(map_weights) if map_weights is not None else None
+
+    def compute_state_potential(self, obs=None) -> float:
+        """
+        Computes state potential Phi(s) for Potential-Based Reward Shaping (PBRS) (Ng et al., 1999).
+        Guarantees that the optimal policy pi* is invariant while accelerating credit assignment.
+        """
+        if self.handle is None:
+            return 0.0
+        if obs is None:
+            obs = self._get_obs()
+
+        nodes = obs["nodes"]
+        num_nodes = int(obs["num_nodes"][0]) if "num_nodes" in obs else len(nodes)
+        
+        queue_stress = 0.0
+        overcrowd_stress = 0.0
+        unconnected_count = 0
+
+        for i in range(num_nodes):
+            st = nodes[i]
+            q_total = float(st[12:22].sum())
+            cap = 18.0 if bool(st[24]) else 6.0
+            fill = q_total / max(1.0, cap)
+            queue_stress += (fill ** 2)
+
+            overcrowd_progress = float(st[22])
+            if overcrowd_progress > 0.0:
+                overcrowd_stress += (overcrowd_progress ** 2)
+
+            degree = float(st[23])
+            if degree < 0.5:
+                unconnected_count += 1
+
+        phi = - (0.2 * queue_stress + 1.0 * overcrowd_stress + 0.5 * unconnected_count)
+        return float(phi)
         
     def reset(self, seed=None, options=None):
         if seed is not None:
@@ -182,9 +227,14 @@ class MiniMetroEnv(gym.Env):
             "track_efficiency": 0.0,
             "disruption": 0.0,
         }
+        if self.use_pbrs:
+            self._episode_reward_breakdown["pbrs"] = 0.0
 
-        
         obs = self._get_obs()
+        if self.use_pbrs:
+            self._prev_potential = self.compute_state_potential(obs)
+        else:
+            self._prev_potential = 0.0
         info = {}
         return obs, info
 
@@ -250,11 +300,12 @@ class MiniMetroEnv(gym.Env):
         cloned_handle = lib.CloneSimulator(self.handle)
         if not cloned_handle:
             raise RuntimeError("CloneSimulator returned null handle")
-        new_env = MiniMetroEnv(map_id=self.map_id, seed=self._seed_val)
+        new_env = MiniMetroEnv(map_id=self.map_id, seed=self._seed_val, use_pbrs=self.use_pbrs, pbrs_gamma=self.pbrs_gamma)
         if new_env.handle is not None:
             lib.FreeSimulator(new_env.handle)
         new_env.handle = cloned_handle
         new_env.scoring_config = dict(self.scoring_config)
+        new_env._prev_potential = self._prev_potential
         return new_env
 
     def simulate_candidate(self, action_id: int, duration: float = 4.0):
@@ -407,6 +458,8 @@ class MiniMetroEnv(gym.Env):
                 "track_efficiency": 0.0,
                 "disruption": 0.0,
             }
+            if self.use_pbrs:
+                step_breakdown["pbrs"] = 0.0
 
             sub_steps = 0
             emergency_break = False
@@ -495,6 +548,13 @@ class MiniMetroEnv(gym.Env):
                 if emergency:
                     emergency_break = True
                     break
+
+            if self.use_pbrs:
+                curr_pot = 0.0 if done else self.compute_state_potential(obs)
+                pbrs_delta = (self.pbrs_gamma * curr_pot) - self._prev_potential
+                total_reward += pbrs_delta
+                step_breakdown["pbrs"] += pbrs_delta
+                self._prev_potential = curr_pot
 
             for k, v in step_breakdown.items():
                 self._episode_reward_breakdown[k] += v

@@ -24,6 +24,7 @@ from env import MiniMetroEnv, LineOrientationAugmentation
 from model import MiniMetroActorCritic
 from ppo import PPO
 from probing import compute_expansion_metrics
+from curriculum import CurriculumManager
 
 
 # ============================================================
@@ -37,13 +38,14 @@ MAP_NAMES = {
     3: "Berlin",
 }
 
-def make_env(seed, map_id=0, map_pool=None, map_weights=None, flip_prob=0.5):
+def make_env(seed, map_id=0, map_pool=None, map_weights=None, flip_prob=0.5, use_pbrs=True):
     def thunk():
         env = MiniMetroEnv(
             map_id=map_id,
             seed=seed,
             map_pool=map_pool,
-            map_weights=map_weights
+            map_weights=map_weights,
+            use_pbrs=use_pbrs,
         )
         if flip_prob > 0:
             env = LineOrientationAugmentation(env, flip_prob=flip_prob)
@@ -68,6 +70,8 @@ def save_checkpoint(
     update,
     global_step,
     checkpoint_dir=CHECKPOINT_DIR,
+    curriculum_state_dict=None,
+    best_avg_score=-1.0,
 ):
     """
     Save everything needed to resume training.
@@ -91,7 +95,10 @@ def save_checkpoint(
         "update": update,
         "global_step": global_step,
         "model_state_dict": model.state_dict(),
+        "best_avg_score": best_avg_score,
     }
+    if curriculum_state_dict is not None:
+        checkpoint["curriculum_state_dict"] = curriculum_state_dict
 
     # PPO implementation may expose optimizer as agent.optimizer.
     if hasattr(agent, "optimizer"):
@@ -148,6 +155,7 @@ def load_checkpoint(
     model,
     agent,
     device,
+    curriculum=None,
 ):
     """
     Load model/optimizer/RNG state.
@@ -182,6 +190,10 @@ def load_checkpoint(
                     f"⚠️ Could not restore optimizer state ({opt_err}). "
                     f"Architecture parameters changed — using reinitialized optimizer."
                 )
+
+    if curriculum is not None and "curriculum_state_dict" in checkpoint:
+        curriculum.load_state_dict(checkpoint["curriculum_state_dict"])
+        print(f"🎓 Restored Curriculum State -> {curriculum.get_stage_name()}", flush=True)
 
     # Restore RNG state when available.
     if "torch_rng_state" in checkpoint:
@@ -238,6 +250,14 @@ def parse_args():
                         help="List of map IDs to train on: 0=London, 1=NYC, 2=Tokyo, 3=Berlin")
     parser.add_argument("--map-mode", type=str, choices=["stratified", "mixed"], default="stratified",
                         help="Worker map allocation: 'stratified' or 'mixed'")
+    parser.add_argument("--curriculum", action=argparse.BooleanOptionalAction, default=True,
+                        help="Enable procedural multi-map curriculum learning (Stage 1 Berlin -> Stage 2 London/Tokyo -> Stage 3 All Maps)")
+    parser.add_argument("--pbrs", action=argparse.BooleanOptionalAction, default=True,
+                        help="Enable Potential-Based Reward Shaping (Ng et al., 1999) for dense temporal credit assignment")
+    parser.add_argument("--hierarchical", action=argparse.BooleanOptionalAction, default=True,
+                        help="Enable two-stage Hierarchical Action Factorization")
+    parser.add_argument("--hidden-dim", type=int, default=32,
+                        help="Model hidden dimension (default: 32)")
     parser.add_argument("--total-timesteps", type=int, default=40_000,
                         help="Total environment steps to train (default: 40,000)")
     parser.add_argument("--num-envs", type=int, default=16,
@@ -261,6 +281,11 @@ def run_training(args=None):
     total_timesteps = args.total_timesteps
     maps = args.maps
     map_mode = args.map_mode
+
+    curriculum = CurriculumManager(enabled=args.curriculum, custom_maps=args.maps)
+    maps = curriculum.get_maps()
+    map_mode = "mixed" if args.curriculum else args.map_mode
+    map_weights = curriculum.get_weights() if args.curriculum else None
 
     # Number of environment transitions per update.
     rollout_size = num_envs * num_steps
@@ -299,14 +324,17 @@ def run_training(args=None):
     print("=" * 70)
     print("🚇 MiniMetro Local Multi-Map PPO Training")
     print("=" * 70)
-    print(f"Device          : {device}")
-    print(f"Maps            : {[MAP_NAMES.get(m, f'Map_{m}') for m in maps]} (IDs: {maps})")
-    print(f"Map Strategy    : {map_mode.upper()}")
+    print(f"Device           : {device}")
+    print(f"Curriculum       : {curriculum.get_stage_name() if args.curriculum else 'Disabled'}")
+    print(f"PBRS Shaping     : {'Enabled (Ng et al. 1999)' if args.pbrs else 'Disabled'}")
+    print(f"Hierarchical     : {'Enabled' if args.hierarchical else 'Disabled'}")
+    print(f"Maps             : {[MAP_NAMES.get(m, f'Map_{m}') for m in maps]} (IDs: {maps})")
+    print(f"Map Strategy     : {map_mode.upper()}")
     print(f"Num environments : {num_envs}")
-    print(f"Steps/update    : {num_steps}")
-    print(f"Rollout size    : {rollout_size}")
-    print(f"Target steps    : {total_timesteps}")
-    print(f"Total updates   : {num_updates}")
+    print(f"Steps/update     : {num_steps}")
+    print(f"Rollout size     : {rollout_size}")
+    print(f"Target steps     : {total_timesteps}")
+    print(f"Total updates    : {num_updates}")
     print("=" * 70)
 
     # --------------------------------------------------------
@@ -332,11 +360,11 @@ def run_training(args=None):
     if map_mode == "stratified":
         for i in range(num_envs):
             assigned_map = maps[i % len(maps)]
-            env_fns.append(make_env(seed=i, map_id=assigned_map, flip_prob=0.5))
+            env_fns.append(make_env(seed=i, map_id=assigned_map, flip_prob=0.5, use_pbrs=args.pbrs))
             print(f"  Worker {i:02d} -> {MAP_NAMES.get(assigned_map, f'Map_{assigned_map}')} (ID {assigned_map})")
     else:
         for i in range(num_envs):
-            env_fns.append(make_env(seed=i, map_id=-1, map_pool=maps, flip_prob=0.5))
+            env_fns.append(make_env(seed=i, map_id=-1, map_pool=maps, map_weights=map_weights, flip_prob=0.5, use_pbrs=args.pbrs))
             print(f"  Worker {i:02d} -> Dynamic Curriculum over maps {maps}")
 
     envs = gym.vector.AsyncVectorEnv(
@@ -350,7 +378,8 @@ def run_training(args=None):
     # DEVICE & MODEL
     # --------------------------------------------------------
 
-    model = MiniMetroActorCritic(hidden_dim=32).to(device)
+    hidden_dim = args.hidden_dim
+    model = MiniMetroActorCritic(hidden_dim=hidden_dim, use_hierarchical=args.hierarchical).to(device)
     agent = PPO(
         model,
         lr=3e-4,
@@ -378,6 +407,7 @@ def run_training(args=None):
                 model,
                 agent,
                 device,
+                curriculum=curriculum if args.curriculum else None,
             )
             start_update = loaded_update + 1
             print(f"✅ Resumed from update {start_update - 1} | global_step={global_step}")
@@ -435,7 +465,6 @@ def run_training(args=None):
     # LSTM STATE STORAGE
     # --------------------------------------------------------
 
-    hidden_dim = 32
     lstm_hx = torch.zeros(
         (num_steps, num_envs, hidden_dim * 5),
         dtype=torch.float32,
@@ -636,6 +665,10 @@ def run_training(args=None):
                                     torch.save(model.state_dict(), best_model_path)
                                     print(f"🌟 New all-time best model! Rolling Avg Score: {best_avg_score:.1f} (Latest: {score}) -> Saved {best_model_path}", flush=True)
                                     writer.add_scalar("charts/best_rolling_score", best_avg_score, global_step)
+
+                                if args.curriculum and curriculum.update(best_avg_score, global_step):
+                                    envs.call("set_map_pool", curriculum.get_maps(), curriculum.get_weights())
+                                    writer.add_scalar("charts/curriculum_stage", curriculum.stage_num, global_step)
 
             # ------------------------------------------------
             # GAE
@@ -879,6 +912,8 @@ def run_training(args=None):
                 agent,
                 update,
                 global_step,
+                curriculum_state_dict=curriculum.state_dict() if args.curriculum else None,
+                best_avg_score=best_avg_score,
             )
 
     except KeyboardInterrupt:
