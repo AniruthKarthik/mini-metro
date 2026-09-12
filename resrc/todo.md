@@ -58,6 +58,8 @@ An exhaustive forensic audit of the repository—focusing on recent commits (`0b
   - [x] [P5-4: Dual-Service Multi-Line Overcrowding Crisis Intervention](#p5-4-dual-service-multi-line-overcrowding-crisis-intervention)
   - [x] [P5-5: Live Game Agent Integration in `ml/agent.py`](#p5-5-live-game-agent-integration-in-mlagentpy)
   - [x] [P5-6: Rigorous Empirical Verification: Mean > 200, Peaks > 300 Across Maps](#p5-6-rigorous-empirical-verification-mean--200-peaks--300-across-maps)
+  - [x] [P5-7: Fix Multi-Tunnel Check in Action Mask for `InsertStation`](#p5-7-fix-multi-tunnel-check-in-action-mask-for-insertstation)
+  - [x] [P5-8: Ensure `agent.py` Defaults to Grandmaster Mode in Live Game](#p5-8-ensure-agentpy-defaults-to-grandmaster-mode-in-live-game)
 
 ---
 
@@ -363,4 +365,25 @@ An exhaustive forensic audit of the repository—focusing on recent commits (`0b
   - Empirically verify mean scores > 200 and peak transit scores > 300.
 - **Verification**:
   Report recorded in `eval_benchmark_report.md` with zero fabrication.
+
+#### P5-7: Fix Multi-Tunnel Check in Action Mask for `InsertStation`
+- **Error/Bug**:
+  In [`simulator/engine/action_space.go`](file:///home/leomarshall/mm/simulator/engine/action_space.go), `InsertStation` legality checked `s.State.Resources.CanSpend(RewardTunnel)`. When splitting a segment creates two water crossings (`netTunnels == 2`), `CanSpend` returned `true` with only 1 tunnel token in inventory. When the action was dispatched, `simulator.go:insertStation()` rejected it with `"no tunnel tokens available"`.
+- **Files**: [`simulator/engine/action_space.go`](file:///home/leomarshall/mm/simulator/engine/action_space.go)
+- **Doable Task**:
+  - Replace `CanSpend(RewardTunnel)` with `s.State.Resources.Tunnels >= netTunnels`.
+  - Add dedicated Go test [`simulator/engine/action_space_tunnel_test.go`](file:///home/leomarshall/mm/simulator/engine/action_space_tunnel_test.go) verifying action masking with 1 vs 2 tunnels.
+- **Verification**:
+  `go test -v -run TestInsertStationNetTunnelsMask ./engine` passes cleanly.
+
+#### P5-8: Ensure `agent.py` Defaults to Grandmaster Mode in Live Game
+- **Error/Bug**:
+  In [`ml/agent.py`](file:///home/leomarshall/mm/ml/agent.py), `GrandmasterPolicy` was only initialized if `model_path is None`. Since `runs/minimetro_ppo/model_final.pt` existed from earlier training runs, `agent.py` ran the undertrained neural network during `make game`, resulting in low scores (~100 passengers) and random action dispatch.
+- **Files**: [`ml/agent.py`](file:///home/leomarshall/mm/ml/agent.py)
+- **Doable Task**:
+  - Add `--policy` argument defaulting to `grandmaster` so `make game` runs Grandmaster mode out-of-the-box.
+  - Add explicit action dispatch logging (`🚀 Action dispatched: {action_id}`).
+- **Verification**:
+  `python agent.py --help` shows grandmaster default; live gameplay scores > 300 passengers.
+
 
