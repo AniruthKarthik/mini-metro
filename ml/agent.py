@@ -251,6 +251,10 @@ def find_best_add_line_action(obs_json: dict) -> tuple:
             if not mask[act_id]:
                 continue
 
+            # Ensure both stations are alive
+            if not (np.any(nodes[u, 2:7] > 0) and np.any(nodes[v, 2:7] > 0)):
+                continue
+
             u_pos = nodes[u, 0:2]
             v_pos = nodes[v, 0:2]
             dist = float(np.linalg.norm(u_pos - v_pos))
@@ -261,44 +265,49 @@ def find_best_add_line_action(obs_json: dict) -> tuple:
             v_shape = int(np.argmax(nodes[v, 2:7]))
             u_deg = float(nodes[u, 23])
             v_deg = float(nodes[v, 23])
-            u_prog = float(nodes[u, 22])
-            v_prog = float(nodes[v, 22])
+            u_prog = float(nodes[u, 27]) if nodes.shape[-1] > 27 else float(nodes[u, 22])
+            v_prog = float(nodes[v, 27]) if nodes.shape[-1] > 27 else float(nodes[v, 22])
             u_fill = float(nodes[u, 25])
             v_fill = float(nodes[v, 25])
-
-            # Only consider creating a line if at least one station is completely unserved (degree == 0)
-            # or in critical overcrowding danger
-            if u_deg > 0 and v_deg > 0 and u_prog < 0.3 and v_prog < 0.3:
-                continue
+            u_hub = float(nodes[u, 24])
+            v_hub = float(nodes[v, 24])
 
             score = 0.0
 
-            # 1. Critical coverage: Unconnected stations (degree 0) get highest priority
+            # 1. Unconnected station coverage (degree 0) gets top priority
             if u_deg == 0:
-                score += 100.0
+                score += 80.0
             if v_deg == 0:
-                score += 100.0
+                score += 80.0
 
-            # 2. Shape diversity: Direct connection between different shapes
+            # 2. Shape diversity: connecting different shapes is critical in Mini Metro
             if u_shape != v_shape:
-                score += 25.0
-                if u_shape in (2, 3, 4) or v_shape in (2, 3, 4):
+                score += 30.0
+                # Rare shapes (Square=2, Star=3, Pentagon=4, Cross=5) are top destinations
+                if u_shape >= 2 or v_shape >= 2:
                     score += 15.0
+            else:
+                # Direct lines between identical shapes provide zero transfer value
+                score -= 25.0
 
-            # 3. Direct passenger demand satisfaction:
-            if 0 <= v_shape < 5:
-                score += float(nodes[u, 12 + v_shape]) * 6.0
-            if 0 <= u_shape < 5:
-                score += float(nodes[v, 12 + u_shape]) * 6.0
+            # 3. Direct passenger demand satisfaction (passengers waiting for the other station's shape)
+            if 0 <= v_shape < 10:
+                score += float(nodes[u, 12 + v_shape]) * 8.0
+            if 0 <= u_shape < 10:
+                score += float(nodes[v, 12 + u_shape]) * 8.0
 
-            # 4. Overcrowding crisis relief: immediate emergency relief line
-            score += (u_prog + v_prog) * 40.0
+            # 4. Overcrowding crisis relief & queue pressure
+            score += (u_prog + v_prog) * 60.0
+            score += (u_fill + v_fill) * 15.0
 
-            # 5. Station queue pressure
-            score += (u_fill + v_fill) * 10.0
+            # 5. Compact line geometry (favor rapid turnaround, penalize giant cross-map sprawl)
+            score -= dist * 20.0
 
-            # 6. Distance penalty (prefer rapid-turnaround compact lines)
-            score -= dist * 25.0
+            # 6. Station piling penalty: avoid stacking 3+ lines on regular stations unless interchange
+            if u_deg >= 2 and u_hub == 0:
+                score -= 25.0
+            if v_deg >= 2 and v_hub == 0:
+                score -= 25.0
 
             if score > best_score:
                 best_score = score
@@ -383,15 +392,50 @@ def main():
                                 )
                             action_id = int(action.item())
 
-                            # Proactively utilize extra lines ONLY when model chose NoOp (idling) and we have spare lines & trains
-                            if action_id == 0:
-                                globals_vec = obs_json.get("globals", [])
-                                unused_lines = globals_vec[0] if len(globals_vec) > 0 else 0
-                                unused_trains = globals_vec[1] if len(globals_vec) > 1 else 0
+                            globals_vec = obs_json.get("globals", [])
+                            unused_lines = int(globals_vec[0]) if len(globals_vec) > 0 else 0
+                            unused_trains = int(globals_vec[1]) if len(globals_vec) > 1 else 0
 
-                                if unused_lines > 0 and unused_trains > 0:
-                                    best_line_act, line_score = find_best_add_line_action(obs_json)
-                                    if best_line_act > 0 and line_score >= 60.0:
+                            # Invariant P5-1: Train reservation protection
+                            # Prevent AddTrain (4006..4012) from burning the last locomotive needed to build a waiting line
+                            if 4006 <= action_id <= 4012 and unused_trains <= unused_lines and unused_lines > 0:
+                                action_id = 0
+
+                            # Proactive Multi-Line Deployment: Put reserve lines to work
+                            if unused_lines > 0 and unused_trains > 0:
+                                best_line_act, line_score = find_best_add_line_action(obs_json)
+                                if best_line_act > 0:
+                                    is_extending_long_line = False
+                                    if 436 <= action_id < 4006:  # ExtendLine or InsertStation
+                                        raw_edge_attrs = obs_json.get("edge_attrs", [])
+                                        if len(raw_edge_attrs) > 0:
+                                            try:
+                                                edge_attrs = np.array(raw_edge_attrs, dtype=np.float32).reshape(-1, 10)
+                                                target_line = -1
+                                                if 436 <= action_id < 856:
+                                                    idx = action_id - 436
+                                                    rem = idx // 2
+                                                    target_line = rem // 30
+                                                elif 856 <= action_id < 4006:
+                                                    idx = action_id - 856
+                                                    rem = idx // 15
+                                                    target_line = rem // 30
+                                                if 0 <= target_line < 7 and edge_attrs.shape[0] > 0:
+                                                    line_segs = int(np.sum(edge_attrs[:, target_line] > 0)) // 2
+                                                    if line_segs >= 5:
+                                                        is_extending_long_line = True
+                                            except Exception:
+                                                pass
+
+                                    # Trigger AddLine proactively:
+                                    # 1. When model idles (NoOp) and positive-value line found
+                                    # 2. When model tries to make an already long line even longer (>= 5 segs)
+                                    # 3. When a high-impact line opportunity is detected (score >= 40.0)
+                                    if action_id == 0 and line_score >= 10.0:
+                                        action_id = best_line_act
+                                    elif is_extending_long_line and line_score >= 20.0:
+                                        action_id = best_line_act
+                                    elif line_score >= 40.0:
                                         action_id = best_line_act
 
                         if action_id == 0:
