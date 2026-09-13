@@ -61,15 +61,27 @@ def get_checkpoint_priority(path: str) -> tuple:
 def load_model(device, model_override=None):
     """Find and load the best available checkpoint. Returns (model, path_or_None)."""
     if model_override:
-        if not os.path.exists(model_override):
-            if os.path.exists(os.path.join(SCRIPT_DIR, model_override)):
-                model_path = os.path.abspath(os.path.join(SCRIPT_DIR, model_override))
-            elif os.path.exists(os.path.join(REPO_ROOT, model_override)):
-                model_path = os.path.abspath(os.path.join(REPO_ROOT, model_override))
-            else:
-                raise FileNotFoundError(f"Specified model checkpoint does not exist: {model_override}")
-        else:
-            model_path = os.path.abspath(model_override)
+        candidate_paths = [
+            model_override,
+            os.path.join(SCRIPT_DIR, model_override),
+            os.path.join(REPO_ROOT, model_override),
+        ]
+        found_path = next((p for p in candidate_paths if os.path.exists(p)), None)
+        if found_path is None and "model_best.pt" in model_override:
+            fallback = model_override.replace("model_best.pt", "model_final.pt")
+            fallback_candidates = [
+                fallback,
+                os.path.join(SCRIPT_DIR, fallback),
+                os.path.join(REPO_ROOT, fallback),
+            ]
+            found_fallback = next((p for p in fallback_candidates if os.path.exists(p)), None)
+            if found_fallback:
+                print(f"[AI] [WARNING] Requested '{model_override}' not found, falling back to '{found_fallback}'")
+                found_path = found_fallback
+
+        if found_path is None:
+            raise FileNotFoundError(f"Specified model checkpoint does not exist: {model_override}")
+        model_path = os.path.abspath(found_path)
     else:
         search_dirs = [
             "runs/minimetro_ppo_finetuned",

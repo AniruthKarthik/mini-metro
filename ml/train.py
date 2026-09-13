@@ -48,9 +48,22 @@ def make_env(seed, map_id=-1, map_pool=None, map_weights=None, flip_prob=0.5, us
         return env
     return thunk
 
-def find_latest_checkpoint(checkpoint_dir="runs/minimetro_ppo"):
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_CHECKPOINT_DIR = os.path.join(SCRIPT_DIR, "runs", "minimetro_ppo")
+
+def find_latest_checkpoint(checkpoint_dir=DEFAULT_CHECKPOINT_DIR, prefer_best=True):
+    if checkpoint_dir is None:
+        checkpoint_dir = DEFAULT_CHECKPOINT_DIR
+    if not os.path.isabs(checkpoint_dir):
+        checkpoint_dir = os.path.abspath(os.path.join(SCRIPT_DIR, checkpoint_dir))
     if not os.path.exists(checkpoint_dir):
         return None, 0
+
+    if prefer_best:
+        best_path = os.path.join(checkpoint_dir, "model_best.pt")
+        if os.path.exists(best_path):
+            return best_path, 0
+
     files = [f for f in os.listdir(checkpoint_dir) if (f.startswith("checkpoint_") or f.startswith("model_")) and f.endswith(".pt")]
     
     def get_update_num(f):
@@ -62,6 +75,8 @@ def find_latest_checkpoint(checkpoint_dir="runs/minimetro_ppo"):
 
     files = sorted([f for f in files if get_update_num(f) >= 0], key=get_update_num)
     if not files:
+        if os.path.exists(os.path.join(checkpoint_dir, "model_best.pt")):
+            return os.path.join(checkpoint_dir, "model_best.pt"), 0
         if "model_final.pt" in os.listdir(checkpoint_dir):
             return os.path.join(checkpoint_dir, "model_final.pt"), 0
         return None, 0
@@ -69,7 +84,11 @@ def find_latest_checkpoint(checkpoint_dir="runs/minimetro_ppo"):
     latest_file = files[-1]
     return os.path.join(checkpoint_dir, latest_file), get_update_num(latest_file)
 
-def cleanup_old_checkpoints(checkpoint_dir="runs/minimetro_ppo", keep_last=5):
+def cleanup_old_checkpoints(checkpoint_dir=DEFAULT_CHECKPOINT_DIR, keep_last=5):
+    if checkpoint_dir is None:
+        checkpoint_dir = DEFAULT_CHECKPOINT_DIR
+    if not os.path.isabs(checkpoint_dir):
+        checkpoint_dir = os.path.abspath(os.path.join(SCRIPT_DIR, checkpoint_dir))
     if not os.path.exists(checkpoint_dir):
         return
     files = [f for f in os.listdir(checkpoint_dir) if f.startswith("checkpoint_") and f.endswith(".pt")]
@@ -131,8 +150,8 @@ def parse_args():
                         help="PPO target KL divergence threshold (default: 0.015)")
     parser.add_argument("--hidden-dim", type=int, default=None,
                         help="Model hidden dimension (default: 256, or introspected from checkpoint)")
-    parser.add_argument("--checkpoint-dir", type=str, default="runs/minimetro_ppo",
-                        help="Directory to save checkpoints (default: runs/minimetro_ppo)")
+    parser.add_argument("--checkpoint-dir", type=str, default=DEFAULT_CHECKPOINT_DIR,
+                        help=f"Directory to save checkpoints (default: {DEFAULT_CHECKPOINT_DIR})")
     return parser.parse_args()
 
 def run_training(args=None):
@@ -170,6 +189,11 @@ def run_training(args=None):
         base_lr = 3e-4
 
     checkpoint_dir = args.checkpoint_dir
+    if not os.path.isabs(checkpoint_dir):
+        if checkpoint_dir.startswith("ml/"):
+            checkpoint_dir = os.path.abspath(checkpoint_dir)
+        else:
+            checkpoint_dir = os.path.abspath(os.path.join(SCRIPT_DIR, checkpoint_dir))
     os.makedirs(checkpoint_dir, exist_ok=True)
     writer = SummaryWriter(checkpoint_dir)
 
@@ -254,19 +278,19 @@ def run_training(args=None):
     print(f"Total updates   : {num_updates}")
     print("=" * 70, flush=True)
 
-    # Checkpoint resolution
+    # Checkpoint resolution: prioritize model_best.pt
     ckpt_to_load = None
     if args.pretrained:
         ckpt_to_load = args.pretrained
     elif args.fine_tune:
-        search_dirs = [checkpoint_dir, "runs/minimetro_ppo", "runs/minimetro_ppo_local"]
+        search_dirs = [checkpoint_dir, os.path.join(SCRIPT_DIR, "runs/minimetro_ppo"), os.path.join(SCRIPT_DIR, "runs/minimetro_ppo_local")]
         for d in search_dirs:
-            f, _ = find_latest_checkpoint(d)
+            f, _ = find_latest_checkpoint(d, prefer_best=True)
             if f and os.path.exists(f):
                 ckpt_to_load = f
                 break
     else:
-        latest_ckpt_path, latest_update = find_latest_checkpoint(checkpoint_dir)
+        latest_ckpt_path, latest_update = find_latest_checkpoint(checkpoint_dir, prefer_best=True)
         if latest_ckpt_path:
             ckpt_to_load = latest_ckpt_path
 
@@ -357,6 +381,8 @@ def run_training(args=None):
 
     recent_scores = collections.deque(maxlen=20)
     best_avg_score = -1.0
+    if checkpoint_data is not None and isinstance(checkpoint_data, dict):
+        best_avg_score = float(checkpoint_data.get("best_avg_score", -1.0))
     best_model_path = os.path.join(checkpoint_dir, "model_best.pt")
 
     for update in range(start_update, num_updates + 1):
@@ -466,7 +492,15 @@ def run_training(args=None):
                     current_avg = float(np.mean(recent_scores))
                     if current_avg > best_avg_score:
                         best_avg_score = current_avg
-                        torch.save(raw_model.state_dict(), best_model_path)
+                        best_checkpoint = {
+                            "update": update,
+                            "global_step": global_step,
+                            "model_state_dict": raw_model.state_dict(),
+                            "optimizer_state_dict": agent.optimizer.state_dict(),
+                            "curriculum_state_dict": curriculum.state_dict() if args.curriculum else None,
+                            "best_avg_score": best_avg_score,
+                        }
+                        torch.save(best_checkpoint, best_model_path)
                         print(f"[BEST] New all-time best model! Rolling Avg Score: {best_avg_score:.1f} (Latest: {ep_score}) -> Saved {best_model_path}", flush=True)
                         writer.add_scalar("charts/best_rolling_score", best_avg_score, global_step)
 

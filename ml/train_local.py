@@ -61,7 +61,8 @@ def make_env(seed, map_id=0, map_pool=None, map_weights=None, flip_prob=0.5, use
 # CHECKPOINT HELPERS
 # ============================================================
 
-CHECKPOINT_DIR = "runs/minimetro_ppo_local"
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CHECKPOINT_DIR = os.path.join(SCRIPT_DIR, "runs", "minimetro_ppo_local")
 
 
 def save_checkpoint(
@@ -127,23 +128,33 @@ def save_checkpoint(
     return checkpoint_path
 
 
-def find_latest_checkpoint(checkpoint_dir=CHECKPOINT_DIR):
+def find_latest_checkpoint(checkpoint_dir=CHECKPOINT_DIR, prefer_best=True):
     """
-    Find the checkpoint with the highest update number.
+    Find checkpoint. If prefer_best is True, prioritize model_best.pt.
+    Otherwise find the checkpoint with the highest update number.
     """
     if not os.path.exists(checkpoint_dir):
         return None
 
+    if prefer_best:
+        best_path = os.path.join(checkpoint_dir, "model_best.pt")
+        if os.path.exists(best_path):
+            return best_path
+
     valid_ckpts = []
     for f in os.listdir(checkpoint_dir):
         if f.startswith("checkpoint_") and f.endswith(".pt"):
-            if f in ("checkpoint_error.pt", "checkpoint_emergency.pt"):
+            if f in ("checkpoint_error.pt", "checkpoint_emergency.pt", "checkpoint_interrupted.pt"):
                 continue
             parts = f.replace("checkpoint_", "").replace(".pt", "")
             if parts.isdigit():
                 valid_ckpts.append((int(parts), os.path.join(checkpoint_dir, f)))
 
     if not valid_ckpts:
+        if os.path.exists(os.path.join(checkpoint_dir, "model_best.pt")):
+            return os.path.join(checkpoint_dir, "model_best.pt")
+        if os.path.exists(os.path.join(checkpoint_dir, "model_final.pt")):
+            return os.path.join(checkpoint_dir, "model_final.pt")
         return None
 
     valid_ckpts.sort(key=lambda x: x[0])
@@ -162,7 +173,8 @@ def load_checkpoint(
 
     Returns:
         update,
-        global_step
+        global_step,
+        best_avg_score
     """
 
     print(
@@ -176,11 +188,15 @@ def load_checkpoint(
         weights_only=False,
     )
 
-    model_sd = checkpoint.get("model_state_dict", checkpoint.get("model"))
+    if isinstance(checkpoint, dict) and ("model_state_dict" in checkpoint or "model" in checkpoint):
+        model_sd = checkpoint.get("model_state_dict", checkpoint.get("model"))
+    else:
+        model_sd = checkpoint
+
     if model_sd is not None:
         model.load_state_dict(model_sd)
 
-    if hasattr(agent, "optimizer"):
+    if hasattr(agent, "optimizer") and isinstance(checkpoint, dict):
         optim_sd = checkpoint.get("optimizer_state_dict", checkpoint.get("optimizer"))
         if optim_sd is not None:
             try:
@@ -191,12 +207,12 @@ def load_checkpoint(
                     f"Architecture parameters changed — using reinitialized optimizer."
                 )
 
-    if curriculum is not None and "curriculum_state_dict" in checkpoint:
+    if curriculum is not None and isinstance(checkpoint, dict) and "curriculum_state_dict" in checkpoint:
         curriculum.load_state_dict(checkpoint["curriculum_state_dict"])
         print(f"[CURRICULUM] Restored Curriculum State -> {curriculum.get_stage_name()}", flush=True)
 
     # Restore RNG state when available.
-    if "torch_rng_state" in checkpoint:
+    if isinstance(checkpoint, dict) and "torch_rng_state" in checkpoint:
         try:
             torch.set_rng_state(
                 checkpoint["torch_rng_state"]
@@ -205,7 +221,8 @@ def load_checkpoint(
             pass
 
     if (
-        torch.cuda.is_available()
+        isinstance(checkpoint, dict)
+        and torch.cuda.is_available()
         and "cuda_rng_state" in checkpoint
     ):
         try:
@@ -215,7 +232,7 @@ def load_checkpoint(
         except Exception:
             pass
 
-    if "numpy_rng_state" in checkpoint:
+    if isinstance(checkpoint, dict) and "numpy_rng_state" in checkpoint:
         try:
             np.random.set_state(
                 checkpoint["numpy_rng_state"]
@@ -223,21 +240,16 @@ def load_checkpoint(
         except Exception:
             pass
 
-    update = int(
-        checkpoint.get("update", 0)
-    )
-
-    global_step = int(
-        checkpoint.get("global_step", 0)
-    )
+    update = int(checkpoint.get("update", 0)) if isinstance(checkpoint, dict) else 0
+    global_step = int(checkpoint.get("global_step", 0)) if isinstance(checkpoint, dict) else 0
+    best_avg_score = float(checkpoint.get("best_avg_score", -1.0)) if isinstance(checkpoint, dict) else -1.0
 
     print(
-        f"[OK] Resumed from update {update} "
-        f"| global_step={global_step}",
+        f"[OK] Loaded checkpoint from {checkpoint_path} (update={update}, global_step={global_step})",
         flush=True
     )
 
-    return update, global_step
+    return update, global_step, best_avg_score
 
 
 # ============================================================
@@ -406,20 +418,27 @@ def run_training(args=None):
 
     start_update = 1
     global_step = 0
+    best_avg_score = -1.0
 
-    latest_ckpt = find_latest_checkpoint(CHECKPOINT_DIR)
+    target_ckpt = None
+    if args.pretrained:
+        target_ckpt = args.pretrained
+    else:
+        target_ckpt = find_latest_checkpoint(CHECKPOINT_DIR, prefer_best=True)
 
-    if latest_ckpt:
+    if target_ckpt:
         try:
-            loaded_update, global_step = load_checkpoint(
-                latest_ckpt,
+            loaded_update, global_step, loaded_best_score = load_checkpoint(
+                target_ckpt,
                 model,
                 agent,
                 device,
                 curriculum=curriculum if args.curriculum else None,
             )
             start_update = loaded_update + 1
-            print(f"[OK] Resumed from update {start_update - 1} | global_step={global_step}")
+            if loaded_best_score > 0:
+                best_avg_score = loaded_best_score
+            print(f"[OK] Resumed from update {start_update - 1} | global_step={global_step} | best_score={best_avg_score}")
         except Exception as e:
             print(f"[WARNING] Could not load checkpoint:\n{e}\nStarting a new training run.")
             start_update = 1
@@ -518,7 +537,7 @@ def run_training(args=None):
 
     start_time = time.time()
     recent_scores = collections.deque(maxlen=20)
-    best_avg_score = -1.0
+    best_avg_score = best_avg_score if "best_avg_score" in locals() and best_avg_score > 0 else -1.0
     best_model_path = os.path.join(CHECKPOINT_DIR, "model_best.pt")
 
     # --------------------------------------------------------
@@ -684,7 +703,17 @@ def run_training(args=None):
                         current_avg = float(np.mean(recent_scores))
                         if current_avg > best_avg_score:
                             best_avg_score = current_avg
-                            torch.save(model.state_dict(), best_model_path)
+                            best_checkpoint = {
+                                "update": update,
+                                "global_step": global_step,
+                                "model_state_dict": model.state_dict(),
+                                "best_avg_score": best_avg_score,
+                            }
+                            if curriculum is not None:
+                                best_checkpoint["curriculum_state_dict"] = curriculum.state_dict()
+                            if hasattr(agent, "optimizer"):
+                                best_checkpoint["optimizer_state_dict"] = agent.optimizer.state_dict()
+                            torch.save(best_checkpoint, best_model_path)
                             print(f"[BEST] New all-time best model! Rolling Avg Score: {best_avg_score:.1f} (Latest: {score}) -> Saved {best_model_path}", flush=True)
                             writer.add_scalar("charts/best_rolling_score", best_avg_score, global_step)
 

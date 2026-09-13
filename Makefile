@@ -59,7 +59,7 @@ gpu-game: clean
 	@echo ""
 	@echo "================================================================================"
 	@echo "STARTING MINI METRO: ACTUAL TRAINED MODEL (GPU / 256-DIM PPO)"
-	@echo "Model Policy: ml/runs/minimetro_ppo/model_final.pt (hidden_dim=256)"
+	@echo "Model Policy: ml/runs/minimetro_ppo/model_best.pt (hidden_dim=256)"
 	@echo "Initial Stations: Randomized Spawning"
 	@echo "================================================================================"
 	@echo ""
@@ -67,7 +67,7 @@ gpu-game: clean
 	@trap "echo 'Shutting down...'; kill 0" EXIT; \
 	(cd ui && npm run dev -- --port 3000 --host 2>&1 | sed -e 's/^/\x1b[36m[UI]\x1b[0m /') & \
 	(cd simulator && go run cmd/server/main.go -addr :6969 -map london 2>&1 | sed -e 's/^/\x1b[32m[BACKEND]\x1b[0m /') & \
-	(cd ml && source venv/bin/activate && PYTHONUNBUFFERED=1 python agent.py --model runs/minimetro_ppo/model_final.pt 2>&1 | sed -e 's/^/\x1b[35m[AI]\x1b[0m /') & \
+	(cd ml && source venv/bin/activate && PYTHONUNBUFFERED=1 python agent.py --model runs/minimetro_ppo/model_best.pt 2>&1 | sed -e 's/^/\x1b[35m[AI]\x1b[0m /') & \
 	sleep 3 && (xdg-open http://localhost:3000 2>/dev/null || python -m webbrowser http://localhost:3000); \
 	wait
 
@@ -75,7 +75,7 @@ cpu-game: clean
 	@echo ""
 	@echo "================================================================================"
 	@echo "STARTING MINI METRO: LOCAL CPU TRAINED MODEL (32-DIM PPO)"
-	@echo "Model Policy: ml/runs/minimetro_ppo_local/model_final.pt (hidden_dim=32)"
+	@echo "Model Policy: ml/runs/minimetro_ppo_local/model_best.pt (hidden_dim=32)"
 	@echo "Initial Stations: Randomized Spawning"
 	@echo "================================================================================"
 	@echo ""
@@ -83,6 +83,6 @@ cpu-game: clean
 	@trap "echo 'Shutting down...'; kill 0" EXIT; \
 	(cd ui && npm run dev -- --port 3000 --host 2>&1 | sed -e 's/^/\x1b[36m[UI]\x1b[0m /') & \
 	(cd simulator && go run cmd/server/main.go -addr :6969 -map london 2>&1 | sed -e 's/^/\x1b[32m[BACKEND]\x1b[0m /') & \
-	(cd ml && source venv/bin/activate && PYTHONUNBUFFERED=1 python agent.py --model runs/minimetro_ppo_local/model_final.pt --device cpu 2>&1 | sed -e 's/^/\x1b[35m[AI]\x1b[0m /') & \
+	(cd ml && source venv/bin/activate && PYTHONUNBUFFERED=1 python agent.py --model runs/minimetro_ppo_local/model_best.pt --device cpu 2>&1 | sed -e 's/^/\x1b[35m[AI]\x1b[0m /') & \
 	sleep 3 && (xdg-open http://localhost:3000 2>/dev/null || python -m webbrowser http://localhost:3000); \
 	wait
