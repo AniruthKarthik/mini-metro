@@ -32,6 +32,14 @@ from env import MiniMetroEnv
 from model import MiniMetroActorCritic, ACTION_TYPE_SLICES
 from intervention import StrategicInterventionArbiter, is_high_impact_structural_action
 from mcts import GuidedLookaheadSearcher
+from agent import (
+    find_best_add_line_action,
+    find_best_extend_line_action,
+    find_best_emergency_interchange_action,
+    find_best_add_train_action,
+    find_best_add_carriage_action,
+    find_best_close_loop_action,
+)
 
 MAP_NAMES = {
     0: "London",
@@ -136,6 +144,125 @@ class ModelGuidedLookaheadPolicy(BasePolicy):
                     obs_tensor, lstm_state=self.lstm_state, mask=obs_tensor["action_mask"].bool()
                 )
             return int(action.item())
+
+
+class ModelLiveAgentPolicy(BasePolicy):
+    """
+    Live Agent hybrid policy: Combines neural actor-critic inference with
+    proactive multi-line deployment, emergency station coverage, crisis interchange
+    upgrades, and surplus train/carriage allocation (identical to ml/agent.py).
+    """
+    def __init__(self, model: MiniMetroActorCritic, device: torch.device = torch.device("cpu"), deterministic: bool = True):
+        self.model = model
+        self.device = device
+        self.deterministic = deterministic
+        self.lstm_state = None
+
+    def reset(self, seed: Optional[int] = None):
+        self.lstm_state = None
+
+    def act(self, obs: Dict[str, np.ndarray], env: Optional[Any] = None) -> int:
+        mask = obs["action_mask"]
+        globals_vec = obs["globals"]
+
+        # Weekly reward cards
+        if mask[4050] or mask[4051]:
+            c0_type = int(np.argmax(globals_vec[13:18])) if len(globals_vec) >= 18 else -1
+            c1_type = int(np.argmax(globals_vec[18:23])) if len(globals_vec) >= 23 else -1
+            prio = {0: 10, 1: 9, 4: 7, 3: 5, 2: 4}
+            v0 = prio.get(c0_type, 0)
+            v1 = prio.get(c1_type, 0)
+            if mask[4050] and v0 >= v1:
+                return 4050
+            elif mask[4051]:
+                return 4051
+            return 4050
+
+        obs_tensor = {
+            k: torch.as_tensor(v, device=self.device).unsqueeze(0)
+            for k, v in obs.items()
+        }
+        with torch.no_grad():
+            action, _, _, _, self.lstm_state = self.model.get_action_and_value(
+                obs_tensor, lstm_state=self.lstm_state, mask=obs_tensor["action_mask"].bool(), deterministic=self.deterministic
+            )
+        action_id = int(action.item())
+
+        unused_lines = int(globals_vec[0]) if len(globals_vec) > 0 else 0
+        unused_trains = int(globals_vec[1]) if len(globals_vec) > 1 else 0
+        unused_carriages = int(globals_vec[2]) if len(globals_vec) > 2 else 0
+        unused_interchanges = int(globals_vec[4]) if len(globals_vec) > 4 else 0
+
+        # Invariant P5-1: Train reservation protection
+        if 4006 <= action_id <= 4012 and unused_trains <= unused_lines and unused_lines > 0:
+            action_id = 0
+
+        # Priority 1: Emergency Interchange Upgrade
+        if unused_interchanges > 0:
+            best_hub_act, hub_score = find_best_emergency_interchange_action(obs)
+            if best_hub_act > 0 and hub_score >= 50.0:
+                action_id = best_hub_act
+
+        # Priority 2: Emergency Unconnected Station Coverage
+        best_ext_act, ext_score = find_best_extend_line_action(obs, only_unconnected=True)
+        if best_ext_act > 0 and ext_score >= 80.0:
+            if unused_lines > 0 and unused_trains > 0:
+                best_line_act, line_score = find_best_add_line_action(obs)
+                if best_line_act > 0 and line_score >= ext_score:
+                    action_id = best_line_act
+                else:
+                    action_id = best_ext_act
+            else:
+                action_id = best_ext_act
+
+        # Priority 3: Proactive Multi-Line Deployment
+        elif unused_lines > 0 and unused_trains > 0:
+            best_line_act, line_score = find_best_add_line_action(obs)
+            if best_line_act > 0:
+                is_extending_long_line = False
+                edge_attrs = obs.get("edge_attrs")
+                if edge_attrs is not None and len(edge_attrs) > 0:
+                    try:
+                        target_line = -1
+                        if 436 <= action_id < 856:
+                            idx = action_id - 436
+                            target_line = (idx // 2) // 30
+                        elif 856 <= action_id < 4006:
+                            idx = action_id - 856
+                            target_line = (idx // 15) // 30
+                        if 0 <= target_line < 7:
+                            line_segs = int(np.sum(edge_attrs[:, target_line] > 0)) // 2
+                            if line_segs >= 5:
+                                is_extending_long_line = True
+                    except Exception:
+                        pass
+
+                if action_id == 0 and line_score >= 10.0:
+                    action_id = best_line_act
+                elif is_extending_long_line and line_score >= 20.0:
+                    action_id = best_line_act
+                elif line_score >= 40.0:
+                    action_id = best_line_act
+
+        # Priority 4: Surplus Locomotive Dispatch
+        if action_id == 0 and unused_trains > unused_lines:
+            best_tr_act, tr_score = find_best_add_train_action(obs)
+            if best_tr_act > 0 and tr_score >= 15.0:
+                action_id = best_tr_act
+
+        # Priority 5: Surplus Carriage Dispatch
+        if action_id == 0 and unused_carriages > 0:
+            best_carr_act, carr_score = find_best_add_carriage_action(obs)
+            if best_carr_act > 0:
+                action_id = best_carr_act
+
+        # Priority 6: Loop Closing Optimization
+        if action_id == 0:
+            best_loop_act, loop_score = find_best_close_loop_action(obs)
+            if best_loop_act > 0 and loop_score >= 45.0:
+                action_id = best_loop_act
+
+        return action_id
 
 
 class RandomLegalPolicy(BasePolicy):
@@ -557,6 +684,10 @@ def run_evaluation_suite(
                 elif pol_key in ("greedy", "greedy_heuristic", "greedy heuristic baseline"):
                     policy = GreedyHeuristicPolicy(seed=seed)
                     display_name = "Greedy Heuristic"
+                elif pol_key in ("live_agent", "hybrid", "model_live_agent", "model (live agent)"):
+                    assert model is not None, "Model required for live_agent policy"
+                    policy = ModelLiveAgentPolicy(model, device=device, deterministic=True)
+                    display_name = "Model (Live Agent Hybrid)"
                 else:
                     raise ValueError(f"Unknown policy name: {pol_name}")
 
