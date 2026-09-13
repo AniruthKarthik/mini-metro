@@ -191,7 +191,15 @@ class MiniMetroEnv(gym.Env):
             if degree < 0.5:
                 unconnected_count += 1
 
-        phi = - (0.2 * queue_stress + 1.0 * overcrowd_stress + 0.5 * unconnected_count)
+        headway_stress = 0.0
+        edge_attrs = obs.get("edge_attrs")
+        if edge_attrs is not None and len(edge_attrs) > 0:
+            for l in range(7):
+                l_segs = int(np.sum(edge_attrs[:, l] > 0)) // 2
+                if l_segs > 4:
+                    headway_stress += float((l_segs - 4) ** 2)
+
+        phi = - (0.2 * queue_stress + 1.0 * overcrowd_stress + 0.5 * unconnected_count + 0.3 * headway_stress)
         return float(phi)
         
     def reset(self, seed=None, options=None):

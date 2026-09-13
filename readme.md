@@ -20,7 +20,8 @@ A research and simulation environment for Mini Metro. The project combines a Go 
 12. [Monitoring & TensorBoard Metrics](#monitoring--tensorboard-metrics)
 13. [Project Directory Structure](#project-directory-structure)
 14. [Troubleshooting & FAQ](#troubleshooting--faq)
-15. [License & Disclaimers](#license--disclaimers)
+15. [Acknowledgments & Model Provenance](#acknowledgments--model-provenance)
+16. [License & Disclaimers](#license--disclaimers)
 
 ---
 
@@ -415,6 +416,11 @@ cd ml
 
 ## Checkpoint Management & Inference Hierarchy
 
+> [!IMPORTANT]
+> **Model Provenance & Retraining Recommendation**:
+> - The model checkpoints committed in this repository are not always strictly trained with the exact current revision of the code. It is strongly recommended to **retrain after cloning** (`make train` or `make train-local`) for optimal performance and architectural compatibility.
+
+
 Training runs automatically save checkpoints in versioned directory structures:
 - GPU Runs: `ml/runs/minimetro_ppo/`
 - Local CPU Runs: `ml/runs/minimetro_ppo_local/`
@@ -581,6 +587,15 @@ tensorboard --logdir ml/runs
 
 ### 6. Which model is loaded by default when I launch the game?
 **Answer**: When you run `make game`, the agent introspects all available checkpoint folders and loads `model_best.pt` from the highest-capacity trained model available.
+
+### 7. Should I use the included model checkpoints directly?
+**Answer**: The pre-packaged models in the repo are not always the ones trained with the latest code modifications. For peak performance and full feature compatibility, it is better to retrain after cloning (`make train` on GPU or `make train-local` on CPU).
+
+---
+
+## Acknowledgments
+
+- [Krishanth-K](https://github.com/Krishanth-K/) — the surrogate mother of all the models produced (he trained them all with his laptop)!
 
 ---
 

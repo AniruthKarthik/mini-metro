@@ -251,6 +251,10 @@ def find_best_add_line_action(obs_json: dict) -> tuple:
             if not mask[act_id]:
                 continue
 
+            # Ensure both stations are alive
+            if not (np.any(nodes[u, 2:7] > 0) and np.any(nodes[v, 2:7] > 0)):
+                continue
+
             u_pos = nodes[u, 0:2]
             v_pos = nodes[v, 0:2]
             dist = float(np.linalg.norm(u_pos - v_pos))
@@ -261,45 +265,260 @@ def find_best_add_line_action(obs_json: dict) -> tuple:
             v_shape = int(np.argmax(nodes[v, 2:7]))
             u_deg = float(nodes[u, 23])
             v_deg = float(nodes[v, 23])
-            u_prog = float(nodes[u, 22])
-            v_prog = float(nodes[v, 22])
+            u_prog = float(nodes[u, 27]) if nodes.shape[-1] > 27 else float(nodes[u, 22])
+            v_prog = float(nodes[v, 27]) if nodes.shape[-1] > 27 else float(nodes[v, 22])
             u_fill = float(nodes[u, 25])
             v_fill = float(nodes[v, 25])
-
-            # Only consider creating a line if at least one station is completely unserved (degree == 0)
-            # or in critical overcrowding danger
-            if u_deg > 0 and v_deg > 0 and u_prog < 0.3 and v_prog < 0.3:
-                continue
+            u_hub = float(nodes[u, 24])
+            v_hub = float(nodes[v, 24])
 
             score = 0.0
 
-            # 1. Critical coverage: Unconnected stations (degree 0) get highest priority
+            # 1. Unconnected station coverage (degree 0) gets top priority
             if u_deg == 0:
-                score += 100.0
+                score += 80.0
             if v_deg == 0:
-                score += 100.0
+                score += 80.0
 
-            # 2. Shape diversity: Direct connection between different shapes
+            # 2. Shape diversity: connecting different shapes is critical in Mini Metro
             if u_shape != v_shape:
-                score += 25.0
-                if u_shape in (2, 3, 4) or v_shape in (2, 3, 4):
+                score += 30.0
+                # Rare shapes (Square=2, Star=3, Pentagon=4, Cross=5) are top destinations
+                if u_shape >= 2 or v_shape >= 2:
                     score += 15.0
+            else:
+                # Direct lines between identical shapes provide zero transfer value
+                score -= 25.0
 
-            # 3. Direct passenger demand satisfaction:
-            if 0 <= v_shape < 5:
-                score += float(nodes[u, 12 + v_shape]) * 6.0
-            if 0 <= u_shape < 5:
-                score += float(nodes[v, 12 + u_shape]) * 6.0
+            # 3. Direct passenger demand satisfaction (passengers waiting for the other station's shape)
+            if 0 <= v_shape < 10:
+                score += float(nodes[u, 12 + v_shape]) * 8.0
+            if 0 <= u_shape < 10:
+                score += float(nodes[v, 12 + u_shape]) * 8.0
 
-            # 4. Overcrowding crisis relief: immediate emergency relief line
-            score += (u_prog + v_prog) * 40.0
+            # 4. Overcrowding crisis relief & queue pressure
+            score += (u_prog + v_prog) * 60.0
+            score += (u_fill + v_fill) * 15.0
 
-            # 5. Station queue pressure
-            score += (u_fill + v_fill) * 10.0
+            # 5. Compact line geometry (favor rapid turnaround, penalize giant cross-map sprawl)
+            score -= dist * 20.0
 
-            # 6. Distance penalty (prefer rapid-turnaround compact lines)
-            score -= dist * 25.0
+            # 6. Station piling penalty: avoid stacking 3+ lines on regular stations unless interchange
+            if u_deg >= 2 and u_hub == 0:
+                score -= 25.0
+            if v_deg >= 2 and v_hub == 0:
+                score -= 25.0
 
+            if score > best_score:
+                best_score = score
+                best_act = act_id
+
+    return best_act, best_score
+
+
+def find_best_extend_line_action(obs_json: dict, only_unconnected: bool = True) -> tuple:
+    mask = obs_json["action_mask"]
+    nodes = np.array(obs_json["nodes"], dtype=np.float32).reshape(MAX_NODES, NODE_DIM)
+    
+    # Check alive stations with degree 0
+    unconnected = [i for i in range(30) if np.any(nodes[i, 2:7] > 0) and nodes[i, 23] == 0]
+    if only_unconnected and len(unconnected) == 0:
+        return 0, 0.0
+
+    raw_edge_attrs = obs_json.get("edge_attrs", [])
+    edge_attrs = np.array(raw_edge_attrs, dtype=np.float32).reshape(-1, 10) if len(raw_edge_attrs) > 0 else np.zeros((0, 10))
+
+    line_segs = {}
+    for l in range(7):
+        if edge_attrs.shape[0] > 0:
+            line_segs[l] = int(np.sum(edge_attrs[:, l] > 0)) // 2
+        else:
+            line_segs[l] = 0
+
+    best_act = 0
+    best_score = -1e9
+
+    target_stations = unconnected if only_unconnected else [i for i in range(30) if np.any(nodes[i, 2:7] > 0)]
+
+    # 1. Search legal ExtendLine actions (436..855)
+    for act_id in range(436, 856):
+        if not mask[act_id]:
+            continue
+        idx = act_id - 436
+        rem = idx // 2
+        st_id = rem % 30
+        line_id = rem // 30
+
+        if st_id not in target_stations:
+            continue
+
+        st_shape = int(np.argmax(nodes[st_id, 2:7]))
+        st_deg = float(nodes[st_id, 23])
+        st_prog = float(nodes[st_id, 27]) if nodes.shape[-1] > 27 else float(nodes[st_id, 22])
+        st_fill = float(nodes[st_id, 25])
+
+        score = 0.0
+        if st_deg == 0:
+            score += 100.0  # Top priority: unserved stations must be connected
+
+        if st_shape >= 2:
+            score += 15.0  # Rare destination shape
+
+        score += st_prog * 60.0 + st_fill * 15.0
+
+        # Line length / headway penalty: avoid making an already long line longer
+        segs = line_segs.get(line_id, 0)
+        if segs >= 5:
+            score -= (segs - 4) * 25.0
+        elif segs == 0:
+            score -= 10.0
+
+        if score > best_score:
+            best_score = score
+            best_act = act_id
+
+    # 2. If no valid ExtendLine found for an unconnected station, search InsertStation (856..4005)
+    if best_score < 50.0 and len(unconnected) > 0:
+        for act_id in range(856, 4006):
+            if not mask[act_id]:
+                continue
+            idx = act_id - 856
+            rem = idx // 15
+            st_id = rem % 30
+            line_id = rem // 30
+            if st_id in unconnected:
+                segs = line_segs.get(line_id, 0)
+                score = 80.0
+                if segs >= 5:
+                    score -= (segs - 4) * 20.0
+                if score > best_score:
+                    best_score = score
+                    best_act = act_id
+
+    return best_act, best_score
+
+
+def find_best_emergency_interchange_action(obs_json: dict) -> tuple:
+    mask = obs_json["action_mask"]
+    legal = np.where(mask[4020:4050])[0]
+    if len(legal) == 0:
+        return 0, 0.0
+
+    nodes = np.array(obs_json["nodes"], dtype=np.float32).reshape(MAX_NODES, NODE_DIM)
+    best_act = 0
+    best_score = -1e9
+
+    for idx in legal:
+        st_id = int(idx)
+        act_id = 4020 + st_id
+        prog = float(nodes[st_id, 27]) if nodes.shape[-1] > 27 else float(nodes[st_id, 22])
+        fill = float(nodes[st_id, 25])
+        deg = float(nodes[st_id, 23])
+
+        score = prog * 150.0 + fill * 40.0 + deg * 15.0
+        if prog >= 0.35 or fill >= 0.75 or deg >= 3:
+            if score > best_score:
+                best_score = score
+                best_act = act_id
+
+    return best_act, best_score
+
+
+def find_best_add_train_action(obs_json: dict) -> tuple:
+    mask = obs_json["action_mask"]
+    legal = np.where(mask[4006:4013])[0]
+    if len(legal) == 0:
+        return 0, 0.0
+
+    raw_edge_attrs = obs_json.get("edge_attrs", [])
+    if len(raw_edge_attrs) == 0:
+        return 4006 + int(legal[0]), 10.0
+
+    edge_attrs = np.array(raw_edge_attrs, dtype=np.float32).reshape(-1, 10)
+    nodes = np.array(obs_json["nodes"], dtype=np.float32).reshape(MAX_NODES, NODE_DIM)
+
+    best_act = 0
+    best_score = -1e9
+
+    for idx in legal:
+        line_id = int(idx)
+        act_id = 4006 + line_id
+
+        l_mask = edge_attrs[:, line_id] > 0
+        segs = int(np.sum(l_mask)) // 2
+        if segs == 0:
+            continue
+
+        edges_raw = obs_json.get("edges", [])
+        line_queue = 0.0
+        max_prog = 0.0
+        if len(edges_raw) > 0:
+            edges_arr = np.array(edges_raw, dtype=np.int64).reshape(-1, 2)
+            active_edges = edges_arr[l_mask]
+            st_ids = np.unique(active_edges)
+            for s in st_ids:
+                if 0 <= s < 30:
+                    line_queue += float(np.sum(nodes[s, 12:22]))
+                    p = float(nodes[s, 27]) if nodes.shape[-1] > 27 else float(nodes[s, 22])
+                    if p > max_prog:
+                        max_prog = p
+
+        score = line_queue * 5.0 + max_prog * 80.0 + segs * 10.0
+        if score > best_score:
+            best_score = score
+            best_act = act_id
+
+    return best_act, best_score
+
+
+def find_best_add_carriage_action(obs_json: dict) -> tuple:
+    mask = obs_json["action_mask"]
+    legal = np.where(mask[4013:4020])[0]
+    if len(legal) == 0:
+        return 0, 0.0
+
+    raw_edge_attrs = obs_json.get("edge_attrs", [])
+    if len(raw_edge_attrs) == 0:
+        return 4013 + int(legal[0]), 10.0
+
+    edge_attrs = np.array(raw_edge_attrs, dtype=np.float32).reshape(-1, 10)
+    best_act = 4013 + int(legal[0])
+    best_score = 0.0
+
+    for idx in legal:
+        line_id = int(idx)
+        act_id = 4013 + line_id
+        l_mask = edge_attrs[:, line_id] > 0
+        segs = int(np.sum(l_mask)) // 2
+        score = segs * 10.0
+        if score > best_score:
+            best_score = score
+            best_act = act_id
+
+    return best_act, best_score
+
+
+def find_best_close_loop_action(obs_json: dict) -> tuple:
+    mask = obs_json["action_mask"]
+    legal = np.where(mask[4052:4059])[0]
+    if len(legal) == 0:
+        return 0, 0.0
+
+    raw_edge_attrs = obs_json.get("edge_attrs", [])
+    if len(raw_edge_attrs) == 0:
+        return 0, 0.0
+
+    edge_attrs = np.array(raw_edge_attrs, dtype=np.float32).reshape(-1, 10)
+    best_act = 0
+    best_score = -1e9
+
+    for idx in legal:
+        line_id = int(idx)
+        act_id = 4052 + line_id
+        l_mask = edge_attrs[:, line_id] > 0
+        segs = int(np.sum(l_mask)) // 2
+        if segs >= 3:
+            score = 30.0 + segs * 5.0
             if score > best_score:
                 best_score = score
                 best_act = act_id
@@ -383,16 +602,89 @@ def main():
                                 )
                             action_id = int(action.item())
 
-                            # Proactively utilize extra lines ONLY when model chose NoOp (idling) and we have spare lines & trains
-                            if action_id == 0:
-                                globals_vec = obs_json.get("globals", [])
-                                unused_lines = globals_vec[0] if len(globals_vec) > 0 else 0
-                                unused_trains = globals_vec[1] if len(globals_vec) > 1 else 0
+                            globals_vec = obs_json.get("globals", [])
+                            unused_lines = int(globals_vec[0]) if len(globals_vec) > 0 else 0
+                            unused_trains = int(globals_vec[1]) if len(globals_vec) > 1 else 0
+                            unused_carriages = int(globals_vec[2]) if len(globals_vec) > 2 else 0
+                            unused_interchanges = int(globals_vec[4]) if len(globals_vec) > 4 else 0
 
+                            # Invariant P5-1: Train reservation protection
+                            # Prevent AddTrain (4006..4012) from burning the last locomotive needed to build a waiting line
+                            if 4006 <= action_id <= 4012 and unused_trains <= unused_lines and unused_lines > 0:
+                                action_id = 0
+
+                            # Priority 1: Emergency Interchange Upgrade (critical crisis relief)
+                            if unused_interchanges > 0:
+                                best_hub_act, hub_score = find_best_emergency_interchange_action(obs_json)
+                                if best_hub_act > 0 and hub_score >= 50.0:
+                                    action_id = best_hub_act
+
+                            # Priority 2: Emergency Unconnected Station Coverage
+                            best_ext_act, ext_score = find_best_extend_line_action(obs_json, only_unconnected=True)
+                            if best_ext_act > 0 and ext_score >= 80.0:
                                 if unused_lines > 0 and unused_trains > 0:
                                     best_line_act, line_score = find_best_add_line_action(obs_json)
-                                    if best_line_act > 0 and line_score >= 60.0:
+                                    if best_line_act > 0 and line_score >= ext_score:
                                         action_id = best_line_act
+                                    else:
+                                        action_id = best_ext_act
+                                else:
+                                    action_id = best_ext_act
+
+                            # Priority 3: Proactive Multi-Line Deployment: Put reserve lines to work
+                            elif unused_lines > 0 and unused_trains > 0:
+                                best_line_act, line_score = find_best_add_line_action(obs_json)
+                                if best_line_act > 0:
+                                    is_extending_long_line = False
+                                    if 436 <= action_id < 4006:  # ExtendLine or InsertStation
+                                        raw_edge_attrs = obs_json.get("edge_attrs", [])
+                                        if len(raw_edge_attrs) > 0:
+                                            try:
+                                                edge_attrs = np.array(raw_edge_attrs, dtype=np.float32).reshape(-1, 10)
+                                                target_line = -1
+                                                if 436 <= action_id < 856:
+                                                    idx = action_id - 436
+                                                    rem = idx // 2
+                                                    target_line = rem // 30
+                                                elif 856 <= action_id < 4006:
+                                                    idx = action_id - 856
+                                                    rem = idx // 15
+                                                    target_line = rem // 30
+                                                if 0 <= target_line < 7 and edge_attrs.shape[0] > 0:
+                                                    line_segs = int(np.sum(edge_attrs[:, target_line] > 0)) // 2
+                                                    if line_segs >= 5:
+                                                        is_extending_long_line = True
+                                            except Exception:
+                                                pass
+
+                                    # Trigger AddLine proactively:
+                                    # 1. When model idles (NoOp) and positive-value line found
+                                    # 2. When model tries to make an already long line even longer (>= 5 segs)
+                                    # 3. When a high-impact line opportunity is detected (score >= 40.0)
+                                    if action_id == 0 and line_score >= 10.0:
+                                        action_id = best_line_act
+                                    elif is_extending_long_line and line_score >= 20.0:
+                                        action_id = best_line_act
+                                    elif line_score >= 40.0:
+                                        action_id = best_line_act
+
+                            # Priority 4: Surplus Locomotive Dispatch
+                            if action_id == 0 and unused_trains > unused_lines:
+                                best_tr_act, tr_score = find_best_add_train_action(obs_json)
+                                if best_tr_act > 0 and tr_score >= 15.0:
+                                    action_id = best_tr_act
+
+                            # Priority 5: Surplus Carriage Dispatch
+                            if action_id == 0 and unused_carriages > 0:
+                                best_carr_act, carr_score = find_best_add_carriage_action(obs_json)
+                                if best_carr_act > 0:
+                                    action_id = best_carr_act
+
+                            # Priority 6: Loop Closing Optimization
+                            if action_id == 0:
+                                best_loop_act, loop_score = find_best_close_loop_action(obs_json)
+                                if best_loop_act > 0 and loop_score >= 45.0:
+                                    action_id = best_loop_act
 
                         if action_id == 0:
                             continue  # No-Op — don't spam the server
